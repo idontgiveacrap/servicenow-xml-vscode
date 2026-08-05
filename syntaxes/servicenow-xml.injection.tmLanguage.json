@@ -1,0 +1,90 @@
+{
+  "scopeName": "servicenow-xml.injection",
+  "injectionSelector": "L:text.xml -comment.block",
+  "patterns": [
+    {
+      "begin": "(?i)(<)(script|client_script_v2|script_true|script_false)(\\b[^>]*>)\\s*(<!\\[CDATA\\[)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" },
+        "4": { "name": "punctuation.definition.string.begin.xml" }
+      },
+      "end": "(\\]\\]>)\\s*(</)\\s*((?i)script|client_script_v2|script_true|script_false)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.string.end.xml" },
+        "2": { "name": "punctuation.definition.tag.xml" },
+        "3": { "name": "entity.name.tag.localname.xml" },
+        "4": { "name": "punctuation.definition.tag.xml" }
+      },
+      "contentName": "meta.embedded.block.javascript",
+      "patterns": [{ "include": "source.js" }]
+    },
+    {
+      "begin": "(?i)(<)(css|style)(\\b[^>]*>)\\s*(<!\\[CDATA\\[)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" },
+        "4": { "name": "punctuation.definition.string.begin.xml" }
+      },
+      "end": "(\\]\\]>)\\s*(</)\\s*((?i)css|style)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.string.end.xml" },
+        "2": { "name": "punctuation.definition.tag.xml" },
+        "3": { "name": "entity.name.tag.localname.xml" },
+        "4": { "name": "punctuation.definition.tag.xml" }
+      },
+      "contentName": "meta.embedded.block.css",
+      "patterns": [{ "include": "source.css" }]
+    },
+    {
+      "begin": "(?i)(<)(css|style)(\\b[^>]*>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "end": "(?i)(</)\\s*(css|style)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "contentName": "meta.embedded.block.css",
+      "patterns": [{ "include": "source.css" }]
+    },
+    {
+      "begin": "(?i)(<)(composition|layout|props|style_config|output_schema|bundles|data|state_properties|required_translations)(\\b[^>]*>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "end": "(?i)(</)\\s*(composition|layout|props|style_config|output_schema|bundles|data|state_properties|required_translations)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "contentName": "meta.embedded.block.json",
+      "patterns": [{ "include": "source.json" }]
+    },
+    {
+      "begin": "(?i)(<)([A-Za-z_][\\w.-]*)(\\b[^>]*>)(?=\\s*[\\{\\[])",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "end": "(?i)(</)\\s*(\\2)\\s*(>)",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.xml" },
+        "2": { "name": "entity.name.tag.localname.xml" },
+        "3": { "name": "punctuation.definition.tag.xml" }
+      },
+      "contentName": "meta.embedded.block.json",
+      "patterns": [{ "include": "source.json" }]
+    }
+  ]
+}

@@ -1,0 +1,92 @@
+{
+  "name": "servicenow-xml",
+  "displayName": "ServiceNow XML",
+  "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Linters",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:xml"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "servicenowXml.showDocumentKind",
+        "title": "ServiceNow XML: Show Document Kind"
+      },
+      {
+        "command": "servicenowXml.revalidate",
+        "title": "ServiceNow XML: Revalidate Active Document"
+      }
+    ],
+    "configuration": {
+      "title": "ServiceNow XML",
+      "properties": {
+        "servicenowXml.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable ServiceNow XML validation and JS linting."
+        },
+        "servicenowXml.lintJavaScript": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lint embedded JavaScript in script CDATA regions."
+        },
+        "servicenowXml.ignoreGlobs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "**/author_elective_update/**"
+          ],
+          "description": "Glob patterns for XML paths to skip (validation and lint)."
+        },
+        "servicenowXml.debounceMs": {
+          "type": "number",
+          "default": 400,
+          "description": "Debounce delay (ms) before re-validating on edit."
+        }
+      }
+    },
+    "grammars": [
+      {
+        "scopeName": "servicenow-xml.injection",
+        "path": "./syntaxes/servicenow-xml.injection.tmLanguage.json",
+        "injectTo": [
+          "text.xml"
+        ],
+        "embeddedLanguages": {
+          "meta.embedded.block.javascript": "javascript",
+          "source.js": "javascript"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "package": "npm run build && vsce package --no-dependencies",
+    "compile": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@xmldom/xmldom": "^0.9.8",
+    "eslint": "^8.57.1",
+    "minimatch": "^9.0.5"
+  }
+}
