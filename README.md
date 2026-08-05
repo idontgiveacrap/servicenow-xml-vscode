@@ -22,9 +22,9 @@ npm run package
 
 | Kind | Recognition (v1) | Validation |
 |------|------------------|------------|
-| `scoped_app_record_update` | `<record_update>` + rows with app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action values, `sys_id`, filename `{table}_{sys_id}.xml` match, script CDATA |
-| `data_record_export` | Record rows **without** app metadata | Minimal `sys_id` checks; full rules pending examples |
-| `customer_update` | Update-set / `sys_update_xml` / related markers | Heuristic only; rules pending examples |
+| `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action values, `sys_id`, filename `{table}_{sys_id}.xml` match, script CDATA |
+| `data_record_export` | Record rows **without** app metadata | `sys_id` presence/format; refine further with more samples |
+| `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Name/type/payload CDATA, nested payload XML, remote set refs |
 | `unknown_sn_xml` | Well-formed XML, no kind match | Warning only |
 | `not_xml` | Parse failure | XML well-formedness error |
 
@@ -37,7 +37,7 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.enable` | `true` | Toggle diagnostics |
 | `servicenowXml.lintJavaScript` | `true` | Lint embedded script fields |
 | `servicenowXml.ignoreGlobs` | `**/author_elective_update/**` | Skip diagnostics for matching paths |
-| `servicenowXml.debounceMs` | `300` | Edit debounce |
+| `servicenowXml.debounceMs` | `400` | Edit debounce |
 
 ## Fixtures
 

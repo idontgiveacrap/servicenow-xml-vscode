@@ -1,5 +1,8 @@
 ﻿# Customer / update-set fixtures
 
-Place example **customer update** or **update-set** XML files here (for example `sys_remote_update_set`, `sys_update_xml`, or unload payloads).
+Sample XML for the `customer_update` kind:
 
-The `customer_update` kind is recognized heuristically; full structural rules wait on real samples.
+- `sys_remote_update_set_….xml` — remote update-set header (+ members when present)
+- `sys_update_xml_….xml` — single customer update with `<payload>` CDATA
+
+Drop additional real exports here when refining rules.
