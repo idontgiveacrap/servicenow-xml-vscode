@@ -25,6 +25,18 @@ try {
     ),
     'navigator enable command must be registered in the extension manifest'
   );
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.navigator.sortBy'
+    ],
+    'navigator sortBy setting must be registered in the extension manifest'
+  );
+  assert.ok(
+    manifest.contributes.commands.some(
+      (command) => command.command === 'servicenowXml.navigator.sortBy'
+    ),
+    'navigator sortBy command must be registered in the extension manifest'
+  );
 
   esbuild.buildSync({
     entryPoints: [path.join(__dirname, '..', 'src', 'navigator', 'recordName.ts')],
@@ -52,8 +64,21 @@ try {
     displayName: 'HelloWorld',
     sysId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     action: 'INSERT_OR_UPDATE',
-    apiName: 'x_example.HelloWorld'
+    apiName: 'x_example.HelloWorld',
+    sysModCount: 1
   });
+
+  const deleteXml = `<record_update table="sys_scoped_cache">
+      <sys_scoped_cache action="DELETE">
+        <name>Key translations</name>
+        <sys_id>c6e46af2c3c8831086f39f3ed4013126</sys_id>
+        <sys_mod_count>3</sys_mod_count>
+      </sys_scoped_cache>
+    </record_update>`;
+  const deleted = extractRecordIdentity(deleteXml);
+  assert.equal(deleted?.action, 'DELETE');
+  assert.equal(deleted?.displayName, 'Key translations');
+  assert.equal(deleted?.sysModCount, 3);
 
   const multiRecordXml = `<record_update table="sys_script_include">
       <sys_script_include action="INSERT_OR_UPDATE">

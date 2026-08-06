@@ -1,6 +1,23 @@
 import * as vscode from 'vscode';
 import { getIgnoreGlobs, isPathIgnored } from '../ignorePaths';
 import { extractRecordIdentities } from './recordName';
+import { RecordUsageStore } from './usage';
+
+/** Selectable Records navigator sort modes. */
+export type NavigatorSortBy =
+  | 'mostOpened'
+  | 'recentlyOpened'
+  | 'recentlyUpdated'
+  | 'sysModCount'
+  | 'name';
+
+const SORT_BY_VALUES: readonly NavigatorSortBy[] = [
+  'mostOpened',
+  'recentlyOpened',
+  'recentlyUpdated',
+  'sysModCount',
+  'name'
+] as const;
 
 /** One indexed ServiceNow record tied to its export file. */
 export interface CatalogRecord {
@@ -9,6 +26,11 @@ export interface CatalogRecord {
   sysId?: string;
   action?: string;
   apiName?: string;
+  sysModCount?: number;
+  /** File modification time in ms (shared across rows in the same file). */
+  mtimeMs?: number;
+  openCount: number;
+  lastOpenedAt?: number;
   uri: vscode.Uri;
   relativePath: string;
 }
@@ -23,18 +45,23 @@ export class RecordCatalog implements vscode.Disposable {
   private byTable = new Map<string, CatalogRecord[]>();
   private allRecords: CatalogRecord[] = [];
   private recordsByUri = new Map<string, CatalogRecord[]>();
+  private tableOrder: string[] = [];
   private loaded = false;
   private loading: Promise<void> | undefined;
   private refreshQueued = false;
   private scanGeneration = 0;
   private watchers: vscode.FileSystemWatcher[] = [];
   private watchDebounce: NodeJS.Timeout | undefined;
+  private usageRebuildDebounce: NodeJS.Timeout | undefined;
   private readonly pendingFileChanges = new Map<string, vscode.Uri | undefined>();
   private readonly listeners = new Set<CatalogListener>();
   private readonly disposables: vscode.Disposable[] = [];
+  private readonly usage: RecordUsageStore;
 
-  constructor() {
+  constructor(workspaceState: vscode.Memento) {
+    this.usage = new RecordUsageStore(workspaceState);
     this.disposables.push(
+      this.usage,
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (
           e.affectsConfiguration('servicenowXml.navigator') ||
@@ -43,7 +70,21 @@ export class RecordCatalog implements vscode.Disposable {
           if (!this.isEnabled()) {
             this.clearAndStopWatching();
             this.notify();
-          } else if (this.loaded) {
+            return;
+          }
+          // Sort-only changes rebuild views without rescanning the workspace.
+          if (
+            this.loaded &&
+            e.affectsConfiguration('servicenowXml.navigator.sortBy') &&
+            !e.affectsConfiguration('servicenowXml.navigator.enable') &&
+            !e.affectsConfiguration('servicenowXml.navigator.includeDelete') &&
+            !e.affectsConfiguration('servicenowXml.ignoreGlobs')
+          ) {
+            this.rebuildViews();
+            this.notify();
+            return;
+          }
+          if (this.loaded) {
             void this.refresh({ showProgress: false }).catch((error: unknown) => {
               const message = error instanceof Error ? error.message : String(error);
               void vscode.window.showErrorMessage(
@@ -69,6 +110,10 @@ export class RecordCatalog implements vscode.Disposable {
 
   dispose(): void {
     this.clearAndStopWatching();
+    if (this.usageRebuildDebounce) {
+      clearTimeout(this.usageRebuildDebounce);
+      this.usageRebuildDebounce = undefined;
+    }
     for (const d of this.disposables) {
       d.dispose();
     }
@@ -98,12 +143,27 @@ export class RecordCatalog implements vscode.Disposable {
       .get<boolean>('navigator.includeDelete', false);
   }
 
+  /**
+   * Current navigator sort mode (defaults to mostOpened).
+   */
+  sortBy(): NavigatorSortBy {
+    const raw = vscode.workspace
+      .getConfiguration('servicenowXml')
+      .get<string>('navigator.sortBy', 'mostOpened');
+    return SORT_BY_VALUES.includes(raw as NavigatorSortBy)
+      ? (raw as NavigatorSortBy)
+      : 'mostOpened';
+  }
+
   isLoaded(): boolean {
     return this.loaded;
   }
 
+  /**
+   * Table folders in current sort order.
+   */
   getTables(): string[] {
-    return [...this.byTable.keys()].sort((a, b) => a.localeCompare(b));
+    return this.tableOrder;
   }
 
   getRecordsForTable(table: string): CatalogRecord[] {
@@ -112,6 +172,37 @@ export class RecordCatalog implements vscode.Disposable {
 
   getAllRecords(): CatalogRecord[] {
     return this.allRecords;
+  }
+
+  /**
+   * Whether the URI is indexed in the catalog (any primary row).
+   */
+  hasUri(uri: vscode.Uri): boolean {
+    return this.recordsByUri.has(uri.toString());
+  }
+
+  /**
+   * Record an open for every catalog row under this URI, then rebuild sort views.
+   */
+  recordDocumentOpen(uri: vscode.Uri): void {
+    const records = this.recordsByUri.get(uri.toString());
+    if (!records || records.length === 0) {
+      return;
+    }
+    for (const record of records) {
+      this.usage.recordOpen(uri, record.sysId);
+    }
+    if (this.usageRebuildDebounce) {
+      clearTimeout(this.usageRebuildDebounce);
+    }
+    this.usageRebuildDebounce = setTimeout(() => {
+      this.usageRebuildDebounce = undefined;
+      if (!this.loaded || !this.isEnabled()) {
+        return;
+      }
+      this.rebuildViews();
+      this.notify();
+    }, 200);
   }
 
   /**
@@ -223,10 +314,19 @@ export class RecordCatalog implements vscode.Disposable {
   }
 
   /**
-   * Rebuild sorted table and flat views from the URI-keyed catalog.
+   * Merge usage stats and rebuild sorted table / flat views from the URI-keyed catalog.
    */
   private rebuildViews(): void {
-    const records = [...this.recordsByUri.values()].flat();
+    const sortBy = this.sortBy();
+    const records = [...this.recordsByUri.values()].flat().map((record) => {
+      const usage = this.usage.get(record.uri, record.sysId);
+      return {
+        ...record,
+        openCount: usage?.openCount ?? 0,
+        lastOpenedAt: usage?.lastOpenedAt
+      };
+    });
+
     const byTable = new Map<string, CatalogRecord[]>();
     for (const record of records) {
       const list = byTable.get(record.table);
@@ -237,13 +337,13 @@ export class RecordCatalog implements vscode.Disposable {
       }
     }
     for (const list of byTable.values()) {
-      list.sort((a, b) => a.displayName.localeCompare(b.displayName));
+      list.sort((a, b) => compareRecords(a, b, sortBy));
     }
     this.byTable = byTable;
-    this.allRecords = records.sort((a, b) => {
-      const t = a.table.localeCompare(b.table);
-      return t !== 0 ? t : a.displayName.localeCompare(b.displayName);
-    });
+    this.tableOrder = [...byTable.keys()].sort((a, b) =>
+      compareTables(a, b, byTable.get(a) ?? [], byTable.get(b) ?? [], sortBy)
+    );
+    this.allRecords = records.sort((a, b) => compareRecords(a, b, sortBy));
   }
 
   /**
@@ -284,8 +384,14 @@ export class RecordCatalog implements vscode.Disposable {
       return [];
     }
     let bytes: Uint8Array;
+    let mtimeMs: number | undefined;
     try {
-      bytes = await vscode.workspace.fs.readFile(uri);
+      const [fileBytes, stat] = await Promise.all([
+        vscode.workspace.fs.readFile(uri),
+        vscode.workspace.fs.stat(uri)
+      ]);
+      bytes = fileBytes;
+      mtimeMs = stat.mtime;
     } catch {
       return [];
     }
@@ -296,15 +402,22 @@ export class RecordCatalog implements vscode.Disposable {
     const relativePath = vscode.workspace.asRelativePath(uri, false);
     return identities
       .filter((identity) => includeDelete || identity.action !== 'DELETE')
-      .map((identity) => ({
-        table: identity.table,
-        displayName: identity.displayName,
-        sysId: identity.sysId,
-        action: identity.action,
-        apiName: identity.apiName,
-        uri,
-        relativePath
-      }));
+      .map((identity) => {
+        const usage = this.usage.get(uri, identity.sysId);
+        return {
+          table: identity.table,
+          displayName: identity.displayName,
+          sysId: identity.sysId,
+          action: identity.action,
+          apiName: identity.apiName,
+          sysModCount: identity.sysModCount,
+          mtimeMs,
+          openCount: usage?.openCount ?? 0,
+          lastOpenedAt: usage?.lastOpenedAt,
+          uri,
+          relativePath
+        };
+      });
   }
 
   private startWatching(): void {
@@ -403,6 +516,7 @@ export class RecordCatalog implements vscode.Disposable {
     this.byTable = new Map();
     this.allRecords = [];
     this.recordsByUri = new Map();
+    this.tableOrder = [];
     this.loaded = false;
   }
 
@@ -411,4 +525,129 @@ export class RecordCatalog implements vscode.Disposable {
       listener();
     }
   }
+}
+
+/**
+ * Compare two records for the active sort mode (missing metrics sort last).
+ */
+function compareRecords(
+  a: CatalogRecord,
+  b: CatalogRecord,
+  sortBy: NavigatorSortBy
+): number {
+  let primary = 0;
+  switch (sortBy) {
+    case 'mostOpened':
+      primary = b.openCount - a.openCount;
+      break;
+    case 'recentlyOpened':
+      primary = compareOptionalDesc(a.lastOpenedAt, b.lastOpenedAt);
+      break;
+    case 'recentlyUpdated':
+      primary = compareOptionalDesc(a.mtimeMs, b.mtimeMs);
+      break;
+    case 'sysModCount':
+      primary = compareOptionalDesc(a.sysModCount, b.sysModCount);
+      break;
+    case 'name':
+      primary = a.displayName.localeCompare(b.displayName);
+      break;
+  }
+  if (primary !== 0) {
+    return primary;
+  }
+  const byName = a.displayName.localeCompare(b.displayName);
+  if (byName !== 0) {
+    return byName;
+  }
+  const aSys = a.sysId ?? '';
+  const bSys = b.sysId ?? '';
+  const bySys = aSys.localeCompare(bSys);
+  if (bySys !== 0) {
+    return bySys;
+  }
+  return a.relativePath.localeCompare(b.relativePath);
+}
+
+/**
+ * Compare table folders: name mode is alphabetical; usage modes use child aggregates.
+ */
+function compareTables(
+  tableA: string,
+  tableB: string,
+  recordsA: CatalogRecord[],
+  recordsB: CatalogRecord[],
+  sortBy: NavigatorSortBy
+): number {
+  let primary = 0;
+  switch (sortBy) {
+    case 'name':
+      primary = tableA.localeCompare(tableB);
+      break;
+    case 'mostOpened': {
+      const sumA = recordsA.reduce((sum, r) => sum + r.openCount, 0);
+      const sumB = recordsB.reduce((sum, r) => sum + r.openCount, 0);
+      primary = sumB - sumA;
+      break;
+    }
+    case 'recentlyOpened':
+      primary = compareOptionalDesc(
+        maxOptional(recordsA.map((r) => r.lastOpenedAt)),
+        maxOptional(recordsB.map((r) => r.lastOpenedAt))
+      );
+      break;
+    case 'recentlyUpdated':
+      primary = compareOptionalDesc(
+        maxOptional(recordsA.map((r) => r.mtimeMs)),
+        maxOptional(recordsB.map((r) => r.mtimeMs))
+      );
+      break;
+    case 'sysModCount':
+      primary = compareOptionalDesc(
+        maxOptional(recordsA.map((r) => r.sysModCount)),
+        maxOptional(recordsB.map((r) => r.sysModCount))
+      );
+      break;
+  }
+  if (primary !== 0) {
+    return primary;
+  }
+  return tableA.localeCompare(tableB);
+}
+
+/**
+ * Descending compare where undefined values sort after defined ones.
+ */
+function compareOptionalDesc(
+  a: number | undefined,
+  b: number | undefined
+): number {
+  const aMissing = a === undefined;
+  const bMissing = b === undefined;
+  if (aMissing && bMissing) {
+    return 0;
+  }
+  if (aMissing) {
+    return 1;
+  }
+  if (bMissing) {
+    return -1;
+  }
+  return b - a;
+}
+
+/**
+ * Max of optional numbers, ignoring undefined.
+ */
+function maxOptional(values: Array<number | undefined>): number | undefined {
+  let max: number | undefined;
+  for (const value of values) {
+    if (value === undefined) {
+      continue;
+    }
+    if (max === undefined || value > max) {
+      max = value;
+    }
+  }
+  return max;
 }

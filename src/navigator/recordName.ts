@@ -8,6 +8,8 @@ export interface RecordIdentity {
   sysId?: string;
   action?: string;
   apiName?: string;
+  /** ServiceNow update counter from `<sys_mod_count>`, when present. */
+  sysModCount?: number;
 }
 
 const META_ROOTS = new Set(['record_update', 'unload', 'xml', '?xml']);
@@ -73,6 +75,9 @@ function buildIdentity(
     table === 'sys_update_xml'
       ? extractElementText(recordText, 'target_name')
       : undefined;
+  const sysModCount = parseSysModCount(
+    extractElementText(recordText, 'sys_mod_count')
+  );
 
   let displayName = targetName || name || sysName;
   if (!displayName && apiName) {
@@ -88,8 +93,20 @@ function buildIdentity(
     displayName,
     sysId,
     action,
-    apiName: apiName || undefined
+    apiName: apiName || undefined,
+    sysModCount
   };
+}
+
+/**
+ * Parse `<sys_mod_count>` text as a non-negative integer, or undefined if absent/invalid.
+ */
+function parseSysModCount(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return undefined;
+  }
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
 interface PrimaryRowHit {

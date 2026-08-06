@@ -1,12 +1,44 @@
 import * as vscode from 'vscode';
 import { DiagnosticsController } from './diagnostics';
 import { KindStatusBar } from './statusBar';
-import { RecordCatalog } from './navigator/catalog';
+import { NavigatorSortBy, RecordCatalog } from './navigator/catalog';
 import {
   getRecordUriFromTreeElement,
   RecordsTreeProvider
 } from './navigator/tree';
 import { registerGoToRecord } from './navigator/goToRecord';
+
+const SORT_BY_PICKS: Array<{
+  label: string;
+  description: string;
+  value: NavigatorSortBy;
+}> = [
+  {
+    label: 'Most opened',
+    description: 'Open count (sum per table)',
+    value: 'mostOpened'
+  },
+  {
+    label: 'Recently opened',
+    description: 'Last open time',
+    value: 'recentlyOpened'
+  },
+  {
+    label: 'Recently updated',
+    description: 'File modification time',
+    value: 'recentlyUpdated'
+  },
+  {
+    label: 'sys_mod_count',
+    description: 'ServiceNow update count',
+    value: 'sysModCount'
+  },
+  {
+    label: 'Name',
+    description: 'Alphabetical',
+    value: 'name'
+  }
+];
 
 /**
  * Activate ServiceNow XML diagnostics and the optional Records navigator.
@@ -17,7 +49,7 @@ import { registerGoToRecord } from './navigator/goToRecord';
 export function activate(context: vscode.ExtensionContext): void {
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
-  const catalog = new RecordCatalog();
+  const catalog = new RecordCatalog(context.workspaceState);
   const treeProvider = new RecordsTreeProvider(catalog);
   const treeView = vscode.window.createTreeView('servicenowXml.records', {
     treeDataProvider: treeProvider,
@@ -106,6 +138,29 @@ function activateDiagnosticsAndCommands(
         );
       }
     }),
+    vscode.commands.registerCommand('servicenowXml.navigator.sortBy', async () => {
+      const current = catalog.sortBy();
+      const picked = await vscode.window.showQuickPick(
+        SORT_BY_PICKS.map((item) => ({
+          ...item,
+          description:
+            item.value === current
+              ? `${item.description} (current)`
+              : item.description
+        })),
+        { title: 'Sort Records by', placeHolder: 'Choose sort order' }
+      );
+      if (!picked) {
+        return;
+      }
+      await vscode.workspace
+        .getConfiguration('servicenowXml')
+        .update(
+          'navigator.sortBy',
+          picked.value,
+          vscode.ConfigurationTarget.Workspace
+        );
+    }),
     vscode.commands.registerCommand(
       'servicenowXml.revealInExplorer',
       async (element?: unknown) => {
@@ -132,6 +187,13 @@ function activateDiagnosticsAndCommands(
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.languageId === 'xml') {
         diagnostics.schedule(doc);
+        if (
+          catalog.isEnabled() &&
+          catalog.isLoaded() &&
+          catalog.hasUri(doc.uri)
+        ) {
+          catalog.recordDocumentOpen(doc.uri);
+        }
       }
     }),
     vscode.workspace.onDidChangeTextDocument((e) => {

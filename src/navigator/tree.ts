@@ -120,16 +120,18 @@ export class RecordsTreeProvider
     }
 
     const r = element.record;
+    const isDelete = r.action === 'DELETE';
     const item = new vscode.TreeItem(
-      r.displayName,
+      isDelete ? strikeThroughText(r.displayName) : r.displayName,
       vscode.TreeItemCollapsibleState.None
     );
-    item.description = r.table;
+    item.description = isDelete ? `DELETE · ${r.table}` : r.table;
     const tipLines = [
       r.displayName,
       `Table: ${r.table}`,
       r.sysId ? `sys_id: ${r.sysId}` : undefined,
       r.apiName ? `api_name: ${r.apiName}` : undefined,
+      isDelete ? 'Action: DELETE' : undefined,
       `File: ${r.relativePath}`
     ].filter(Boolean);
     item.tooltip = tipLines.join('\n');
@@ -140,7 +142,9 @@ export class RecordsTreeProvider
       arguments: [r.uri]
     };
     item.contextValue = 'servicenowXml.record';
-    item.iconPath = new vscode.ThemeIcon('file-code');
+    item.iconPath = isDelete
+      ? new vscode.ThemeIcon('trash', new vscode.ThemeColor('errorForeground'))
+      : new vscode.ThemeIcon('file-code');
     return item;
   }
 
@@ -217,4 +221,12 @@ export class RecordsTreeProvider
 
     return [];
   }
+}
+
+/**
+ * Apply combining long-stroke overlays so DELETE labels read as struck through.
+ * VS Code TreeItem has no public strikethrough style API.
+ */
+function strikeThroughText(text: string): string {
+  return Array.from(text, (ch) => `${ch}\u0336`).join('');
 }

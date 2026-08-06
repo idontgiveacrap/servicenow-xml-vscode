@@ -20,6 +20,7 @@
     "onCommand:servicenowXml.goToRecord",
     "onCommand:servicenowXml.navigator.enable",
     "onCommand:servicenowXml.navigator.refresh",
+    "onCommand:servicenowXml.navigator.sortBy",
     "onCommand:servicenowXml.revealInExplorer",
     "onCommand:servicenowXml.revealInFileExplorer"
   ],
@@ -46,6 +47,11 @@
         "command": "servicenowXml.navigator.refresh",
         "title": "ServiceNow XML: Refresh Records Navigator",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "servicenowXml.navigator.sortBy",
+        "title": "ServiceNow XML: Sort Records By…",
+        "icon": "$(sort-precedence)"
       },
       {
         "command": "servicenowXml.revealInExplorer",
@@ -85,9 +91,14 @@
     "menus": {
       "view/title": [
         {
+          "command": "servicenowXml.navigator.sortBy",
+          "when": "view == servicenowXml.records",
+          "group": "navigation@1"
+        },
+        {
           "command": "servicenowXml.navigator.refresh",
           "when": "view == servicenowXml.records",
-          "group": "navigation"
+          "group": "navigation@2"
         }
       ],
       "view/item/context": [
@@ -145,6 +156,25 @@
           "type": "boolean",
           "default": false,
           "description": "Include action=DELETE records in the navigator."
+        },
+        "servicenowXml.navigator.sortBy": {
+          "type": "string",
+          "default": "mostOpened",
+          "enum": [
+            "mostOpened",
+            "recentlyOpened",
+            "recentlyUpdated",
+            "sysModCount",
+            "name"
+          ],
+          "enumDescriptions": [
+            "Most opened (open count; table order by sum of opens)",
+            "Recently opened (last open time; table order by most recent child)",
+            "Recently updated (file mtime; table order by newest child)",
+            "sys_mod_count (ServiceNow update count; table order by max child)",
+            "Alphabetical by table then display name"
+          ],
+          "description": "Sort order for Records navigator tables and records."
         }
       }
     },

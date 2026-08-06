@@ -42,7 +42,21 @@ The catalog is built by scanning workspace `*.xml` (honoring `ignoreGlobs`), ext
 
 Refresh via the view title bar or **ServiceNow XML: Refresh Records Navigator**.
 
-`DELETE` rows are hidden unless `servicenowXml.navigator.includeDelete` is `true`. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
+### Sort order
+
+Default is **most opened**. Change via the sort icon on the Records view title, the **ServiceNow XML: Sort Records By…** command, or `servicenowXml.navigator.sortBy`:
+
+| Mode | Records within a table | Table folders |
+|------|------------------------|---------------|
+| `mostOpened` (default) | Open count ↓ | Sum of opens in the table ↓ |
+| `recentlyOpened` | Last open time ↓ | Max last-open among children ↓ |
+| `recentlyUpdated` | File mtime ↓ | Max mtime among children ↓ |
+| `sysModCount` | `<sys_mod_count>` ↓ | Max among children ↓ |
+| `name` | Display name A–Z | Table name A–Z |
+
+Open counts / last-opened times persist in workspace state. Missing metrics sort last.
+
+`DELETE` rows are hidden unless `servicenowXml.navigator.includeDelete` is `true`. When shown, they use a trash icon, struck-through label, and a `DELETE · {table}` description. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
 ## Document kinds
 
@@ -66,7 +80,8 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.ignoreGlobs` | `**/author_elective_update/**` | Skip paths for diagnostics, lint, and navigator |
 | `servicenowXml.debounceMs` | `400` | Edit debounce |
 | `servicenowXml.navigator.enable` | `false` | Opt-in Records navigator |
-| `servicenowXml.navigator.includeDelete` | `false` | Show DELETE rows in navigator |
+| `servicenowXml.navigator.includeDelete` | `false` | Show DELETE rows in navigator (trash + strikethrough) |
+| `servicenowXml.navigator.sortBy` | `mostOpened` | Sort tables/records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name` |
 
 ## Fixtures
 
