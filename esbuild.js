@@ -1,6 +1,7 @@
 const esbuild = require('esbuild');
 
 const watch = process.argv.includes('--watch');
+const production = process.argv.includes('--production');
 
 /** @type {import('esbuild').BuildOptions} */
 const options = {
@@ -11,8 +12,9 @@ const options = {
   format: 'cjs',
   platform: 'node',
   target: 'node18',
-  sourcemap: true,
-  minify: false,
+  sourcemap: !production,
+  minify: production,
+  legalComments: 'none',
   logLevel: 'info'
 };
 

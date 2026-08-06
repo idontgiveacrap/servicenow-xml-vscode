@@ -1,4 +1,4 @@
-import { Linter, type Linter as LinterType } from 'eslint';
+import type { Linter as LinterType } from 'eslint';
 import { ScriptRegion, mapScriptOffsetToXml } from './scriptRegions';
 import { SnDiagnostic } from './kinds/types';
 
@@ -48,10 +48,15 @@ const CLIENT_GLOBALS: Record<string, 'readonly' | 'writable'> = {
   api: 'readonly'
 };
 
-let linter: Linter | undefined;
+let linter: LinterType | undefined;
 
-function getLinter(): Linter {
+/**
+ * Load ESLint only when an embedded JavaScript region actually needs linting.
+ */
+function getLinter(): LinterType {
   if (!linter) {
+    // eslint is deliberately required lazily to keep XML-only activation lighter.
+    const { Linter } = require('eslint') as typeof import('eslint');
     linter = new Linter();
   }
   return linter;

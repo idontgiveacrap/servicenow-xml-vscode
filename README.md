@@ -5,6 +5,7 @@ Cursor / VS Code extension that:
 1. **Colorizes** JavaScript inside ServiceNow script CDATA fields (`script`, `client_script_v2`, `script_true`, `script_false`)
 2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022)
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
+4. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
 
 ## Install (Cursor)
 
@@ -17,6 +18,19 @@ npm run package
 
 2. In Cursor: **Extensions** → `…` → **Install from VSIX…** → select the generated `.vsix`
 3. Open a ServiceNow `*.xml` export; check the status bar for `SN XML: …` and the Problems panel for diagnostics
+
+## Records navigator (optional, lazy)
+
+Disabled by default. **No workspace scan, watchers, or index memory until you enable it and open the view (or run Go to Record).**
+
+1. Set `servicenowXml.navigator.enable` to `true` (or click **Enable ServiceNow Records navigator…** in the ServiceNow activity bar view)
+2. Open the **ServiceNow** activity icon → **Records**
+3. Browse by table → record name, or run **ServiceNow XML: Go to Record**
+4. Workspace symbol search (Go to Symbol in Workspace) also uses the same catalog once the navigator is enabled and a search runs
+
+Refresh via the view title bar or **ServiceNow XML: Refresh Records Navigator**.
+
+`DELETE` rows are hidden unless `servicenowXml.navigator.includeDelete` is `true`. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
 ## Document kinds
 
@@ -36,12 +50,15 @@ Status bar shows the active kind so misclassification is obvious.
 |---------|---------|---------|
 | `servicenowXml.enable` | `true` | Toggle diagnostics |
 | `servicenowXml.lintJavaScript` | `true` | Lint embedded script fields |
-| `servicenowXml.ignoreGlobs` | `**/author_elective_update/**` | Skip diagnostics for matching paths |
+| `servicenowXml.lintJson` | `true` | Lint embedded JSON fields |
+| `servicenowXml.ignoreGlobs` | `**/author_elective_update/**` | Skip paths for diagnostics, lint, and navigator |
 | `servicenowXml.debounceMs` | `400` | Edit debounce |
+| `servicenowXml.navigator.enable` | `false` | Opt-in Records navigator |
+| `servicenowXml.navigator.includeDelete` | `false` | Show DELETE rows in navigator |
 
 ## Fixtures
 
-See [`fixtures/`](fixtures/) for a minimal scoped-app sample and placeholders for other kinds. Drop real examples into those folders when refining detectors.
+See `fixtures/` for a minimal scoped-app sample and placeholders for other kinds. Drop real examples into those folders when refining detectors.
 
 ## Adding a kind
 
@@ -61,7 +78,9 @@ Press F5 in VS Code/Cursor against this folder to launch an Extension Developmen
 
 ## Non-goals (v1)
 
+- Renaming Explorer filenames or editor tabs
 - Per-table dictionary field schemas
 - Live instance schema
 - Macroponent JSON semantic validation
 - Marketplace publish
+- Depending on repo `index.json` for the navigator

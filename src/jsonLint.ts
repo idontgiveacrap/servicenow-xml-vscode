@@ -30,19 +30,21 @@ export function lintJsonRegions(regions: JsonRegion[]): SnDiagnostic[] {
 
       // Map using raw field content when it matches decoded (typical for data exports).
       // For entity-encoded UX fields, positions are approximate on the opening of the field.
-      const mapRegion =
-        region.content.trim() === text
-          ? {
-              ...region,
-              content: text,
-              bodyStartOffset:
-                region.bodyStartOffset + Math.max(0, region.content.indexOf(text)),
-              bodyStartCharacter:
-                region.bodyStartLine === offsetInString(region.content, Math.max(0, region.content.indexOf(text))).line
-                  ? region.bodyStartCharacter + Math.max(0, region.content.indexOf(text))
-                  : region.bodyStartCharacter
-            }
-          : region;
+      let mapRegion = region;
+      if (region.content.trim() === text) {
+        const trimOffset = Math.max(0, region.content.indexOf(text));
+        const trimPosition = offsetInString(region.content, trimOffset);
+        mapRegion = {
+          ...region,
+          content: text,
+          bodyStartOffset: region.bodyStartOffset + trimOffset,
+          bodyStartLine: region.bodyStartLine + trimPosition.line,
+          bodyStartCharacter:
+            trimPosition.line === 0
+              ? region.bodyStartCharacter + trimPosition.character
+              : trimPosition.character
+        };
+      }
 
       const start = mapScriptOffsetToXml(mapRegion, lineIn, colIn);
 

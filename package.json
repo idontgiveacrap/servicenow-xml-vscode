@@ -1,8 +1,8 @@
 {
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
-  "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation.",
-  "version": "0.1.0",
+  "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
+  "version": "2.2.0",
   "publisher": "local",
   "license": "UNLICENSED",
   "engines": {
@@ -10,10 +10,15 @@
   },
   "categories": [
     "Linters",
-    "Programming Languages"
+    "Programming Languages",
+    "Other"
   ],
   "activationEvents": [
-    "onLanguage:xml"
+    "onLanguage:xml",
+    "onView:servicenowXml.records",
+    "onCommand:servicenowXml.goToRecord",
+    "onCommand:servicenowXml.navigator.enable",
+    "onCommand:servicenowXml.navigator.refresh"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -25,8 +30,48 @@
       {
         "command": "servicenowXml.revalidate",
         "title": "ServiceNow XML: Revalidate Active Document"
+      },
+      {
+        "command": "servicenowXml.goToRecord",
+        "title": "ServiceNow XML: Go to Record"
+      },
+      {
+        "command": "servicenowXml.navigator.enable",
+        "title": "ServiceNow XML: Enable Records Navigator"
+      },
+      {
+        "command": "servicenowXml.navigator.refresh",
+        "title": "ServiceNow XML: Refresh Records Navigator",
+        "icon": "$(refresh)"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "servicenow-xml",
+          "title": "ServiceNow",
+          "icon": "media/servicenow.svg"
+        }
+      ]
+    },
+    "views": {
+      "servicenow-xml": [
+        {
+          "id": "servicenowXml.records",
+          "name": "Records",
+          "contextualTitle": "ServiceNow Records"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "servicenowXml.navigator.refresh",
+          "when": "view == servicenowXml.records",
+          "group": "navigation"
+        }
+      ]
+    },
     "configuration": {
       "title": "ServiceNow XML",
       "properties": {
@@ -40,6 +85,11 @@
           "default": true,
           "description": "Lint embedded JavaScript in script CDATA regions."
         },
+        "servicenowXml.lintJson": {
+          "type": "boolean",
+          "default": true,
+          "description": "Lint JSON embedded in known ServiceNow XML fields."
+        },
         "servicenowXml.ignoreGlobs": {
           "type": "array",
           "items": {
@@ -48,12 +98,22 @@
           "default": [
             "**/author_elective_update/**"
           ],
-          "description": "Glob patterns for XML paths to skip (validation and lint)."
+          "description": "Glob patterns for XML paths to skip (validation, lint, and navigator)."
         },
         "servicenowXml.debounceMs": {
           "type": "number",
           "default": 400,
           "description": "Debounce delay (ms) before re-validating on edit."
+        },
+        "servicenowXml.navigator.enable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used."
+        },
+        "servicenowXml.navigator.includeDelete": {
+          "type": "boolean",
+          "default": false,
+          "description": "Include action=DELETE records in the navigator."
         }
       }
     },
@@ -76,18 +136,20 @@
     "build": "node esbuild.js --production",
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
-    "compile": "npm run build"
+    "compile": "npm run build",
+    "test": "node scripts/smoke-record-name.js && tsc --noEmit"
   },
   "devDependencies": {
+    "@types/eslint": "^9.6.1",
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.2.0",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.1",
     "typescript": "^5.6.0"
   },
   "dependencies": {
     "eslint": "^8.57.1",
-    "fast-xml-parser": "^4.5.1",
+    "fast-xml-parser": "^5.10.1",
     "minimatch": "^9.0.5"
   }
 }

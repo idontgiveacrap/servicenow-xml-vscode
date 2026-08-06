@@ -36,17 +36,31 @@ export function offsetToPosition(
  * Decode common XML character entities used in ServiceNow field text.
  */
 export function decodeXmlEntities(raw: string): string {
-  return raw
-    .replace(/&#13;/g, '\r')
-    .replace(/&#10;/g, '\n')
-    .replace(/&#9;/g, '\t')
-    .replace(/&#x0*d;/gi, '\r')
-    .replace(/&#x0*a;/gi, '\n')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&');
+  return raw.replace(
+    /&(?:#(\d+)|#x([0-9a-f]+)|amp|lt|gt|quot|apos);/gi,
+    (entity, decimal: string | undefined, hex: string | undefined) => {
+      if (decimal || hex) {
+        const codePoint = Number.parseInt(decimal ?? hex ?? '', decimal ? 10 : 16);
+        return codePoint <= 0x10ffff
+          ? String.fromCodePoint(codePoint)
+          : entity;
+      }
+      switch (entity.toLowerCase()) {
+        case '&amp;':
+          return '&';
+        case '&lt;':
+          return '<';
+        case '&gt;':
+          return '>';
+        case '&quot;':
+          return '"';
+        case '&apos;':
+          return "'";
+        default:
+          return entity;
+      }
+    }
+  );
 }
 
 /**
@@ -145,7 +159,14 @@ function scanRecordRows(text: string): RecordRow[] {
     if (tableName === 'record_update' || tableName === 'unload') {
       continue;
     }
-    const action = match[3];
+    const rawAction = match[3];
+    const upperAction = rawAction.toUpperCase();
+    const lowerAction = rawAction.toLowerCase();
+    const action = PRIMARY_ACTIONS.has(upperAction)
+      ? upperAction
+      : CLEANUP_ACTIONS.has(lowerAction)
+        ? lowerAction
+        : rawAction;
     const startOffset = match.index;
     const pos = offsetToPosition(text, startOffset);
 
@@ -192,12 +213,19 @@ function extractSysId(
   rowStart: number,
   fullText: string
 ): { sysId: string; line: number; character: number } | undefined {
-  const m = rowXml.match(/<\s*sys_id\b[^>]*>([^<]*)<\/\s*sys_id\s*>/i);
+  const m = rowXml.match(
+    /<\s*sys_id\b[^>]*>\s*(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))\s*<\/\s*sys_id\s*>/i
+  );
   if (!m) {
     return undefined;
   }
-  const sysId = m[1].trim();
-  const localOffset = rowXml.indexOf(m[0]) + m[0].indexOf(sysId);
+  const rawValue = m[1] ?? m[2] ?? '';
+  const trimmedValue = rawValue.trim();
+  const sysId = m[1] != null ? trimmedValue : decodeXmlEntities(trimmedValue);
+  const localOffset =
+    rowXml.indexOf(m[0]) +
+    m[0].indexOf(rawValue) +
+    rawValue.indexOf(trimmedValue);
   const abs = rowStart + localOffset;
   const pos = offsetToPosition(fullText, abs);
   return { sysId, line: pos.line, character: pos.character };

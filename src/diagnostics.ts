@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { minimatch } from 'minimatch';
 import { classifyAndValidate } from './kinds';
 import { SnDiagnostic } from './kinds/types';
 import { parseSnXml } from './parseSnXml';
@@ -7,13 +6,14 @@ import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
 import { KindStatusBar } from './statusBar';
+import { isPathIgnored } from './ignorePaths';
 
 const COLLECTION_NAME = 'servicenowXml';
 
 /**
  * Owns diagnostic collection, debounce timers, and kind status updates.
  */
-export class DiagnosticsController {
+export class DiagnosticsController implements vscode.Disposable {
   private readonly collection: vscode.DiagnosticCollection;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly statusBar: KindStatusBar;
@@ -31,10 +31,6 @@ export class DiagnosticsController {
     this.collection.dispose();
   }
 
-  get diagnosticCollection(): vscode.DiagnosticCollection {
-    return this.collection;
-  }
-
   schedule(document: vscode.TextDocument): void {
     if (document.languageId !== 'xml') {
       return;
@@ -49,12 +45,28 @@ export class DiagnosticsController {
       .get<number>('debounceMs', 400);
     const timer = setTimeout(() => {
       this.timers.delete(key);
-      void this.refresh(document);
+      this.refresh(document);
     }, ms);
     this.timers.set(key, timer);
   }
 
-  async refresh(document: vscode.TextDocument): Promise<void> {
+  /**
+   * Cancel pending work and remove diagnostics when a document closes.
+   */
+  close(document: vscode.TextDocument): void {
+    const key = document.uri.toString();
+    const timer = this.timers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.timers.delete(key);
+    }
+    this.collection.delete(document.uri);
+  }
+
+  /**
+   * Parse and lint one XML document synchronously.
+   */
+  refresh(document: vscode.TextDocument): void {
     const config = vscode.workspace.getConfiguration('servicenowXml');
     if (!config.get<boolean>('enable', true)) {
       this.collection.delete(document.uri);
@@ -115,12 +127,7 @@ export class DiagnosticsController {
   }
 
   private isIgnored(document: vscode.TextDocument): boolean {
-    const globs =
-      vscode.workspace
-        .getConfiguration('servicenowXml')
-        .get<string[]>('ignoreGlobs', ['**/author_elective_update/**']) ?? [];
-    const fsPath = document.uri.fsPath.replace(/\\/g, '/');
-    return globs.some((g) => minimatch(fsPath, g, { dot: true }));
+    return isPathIgnored(document.uri.fsPath);
   }
 }
 

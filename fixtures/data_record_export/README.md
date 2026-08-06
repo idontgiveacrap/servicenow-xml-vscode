@@ -1,5 +1,5 @@
 ﻿# Data record export fixtures
 
-Place example list/form **data export** XML files here.
+- `x_example_0_staging.xml` — minimal data-table export (no `sys_scope` / app-update metadata)
 
-The `data_record_export` kind is detected heuristically today (record rows without scoped-app metadata such as `sys_scope` / `sys_update_name`). Full structural rules will be refined from real samples.
+Add more list/form export samples here to refine `data_record_export` rules.
