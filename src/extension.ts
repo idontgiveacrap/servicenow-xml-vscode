@@ -2,27 +2,30 @@ import * as vscode from 'vscode';
 import { DiagnosticsController } from './diagnostics';
 import { KindStatusBar } from './statusBar';
 import { RecordCatalog } from './navigator/catalog';
-import { RecordsTreeProvider } from './navigator/tree';
+import {
+  getRecordUriFromTreeElement,
+  RecordsTreeProvider
+} from './navigator/tree';
 import { registerGoToRecord } from './navigator/goToRecord';
 
 /**
  * Activate ServiceNow XML diagnostics and the optional Records navigator.
  * Syntax coloring is contributed via TextMate injection (no runtime hook needed).
- * The navigator does not scan until the view is opened or Go to Record is used.
+ * The tree provider is registered first so the Records view never sits without a provider.
+ * Catalog indexing stays lazy until the view is used and navigator.enable is true.
  */
 export function activate(context: vscode.ExtensionContext): void {
-  const statusBar = new KindStatusBar();
-  const diagnostics = new DiagnosticsController(statusBar);
+  // Register the Records tree before any heavier work so the activity-bar view
+  // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog();
   const treeProvider = new RecordsTreeProvider(catalog);
-
-  context.subscriptions.push(statusBar, diagnostics, catalog, treeProvider);
-
   const treeView = vscode.window.createTreeView('servicenowXml.records', {
     treeDataProvider: treeProvider,
     showCollapseAll: true
   });
   context.subscriptions.push(
+    catalog,
+    treeProvider,
     treeView,
     treeView.onDidChangeVisibility((e) => {
       treeProvider.setViewVisible(e.visible);
@@ -31,6 +34,30 @@ export function activate(context: vscode.ExtensionContext): void {
   if (treeView.visible) {
     treeProvider.setViewVisible(true);
   }
+
+  try {
+    activateDiagnosticsAndCommands(context, catalog, treeProvider, treeView);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[servicenow-xml] activation failed after tree registration:', error);
+    void vscode.window.showErrorMessage(
+      `ServiceNow XML activated the Records view, but other features failed: ${message}`
+    );
+  }
+}
+
+/**
+ * Wire diagnostics, commands, and search after the Records tree is available.
+ */
+function activateDiagnosticsAndCommands(
+  context: vscode.ExtensionContext,
+  catalog: RecordCatalog,
+  treeProvider: RecordsTreeProvider,
+  treeView: vscode.TreeView<unknown>
+): void {
+  const statusBar = new KindStatusBar();
+  const diagnostics = new DiagnosticsController(statusBar);
+  context.subscriptions.push(statusBar, diagnostics);
 
   registerGoToRecord(context, catalog);
 
@@ -78,7 +105,27 @@ export function activate(context: vscode.ExtensionContext): void {
           `ServiceNow Records refresh failed: ${message}`
         );
       }
-    })
+    }),
+    vscode.commands.registerCommand(
+      'servicenowXml.revealInExplorer',
+      async (element?: unknown) => {
+        const uri = getRecordUriFromTreeElement(element);
+        if (!uri) {
+          return;
+        }
+        await vscode.commands.executeCommand('revealInExplorer', uri);
+      }
+    ),
+    vscode.commands.registerCommand(
+      'servicenowXml.revealInFileExplorer',
+      async (element?: unknown) => {
+        const uri = getRecordUriFromTreeElement(element);
+        if (!uri) {
+          return;
+        }
+        await vscode.commands.executeCommand('revealFileInOS', uri);
+      }
+    )
   );
 
   context.subscriptions.push(

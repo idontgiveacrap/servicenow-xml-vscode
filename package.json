@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.2.0",
+  "version": "2.2.2",
   "publisher": "local",
   "license": "UNLICENSED",
   "engines": {
@@ -14,11 +14,14 @@
     "Other"
   ],
   "activationEvents": [
+    "onStartupFinished",
     "onLanguage:xml",
     "onView:servicenowXml.records",
     "onCommand:servicenowXml.goToRecord",
     "onCommand:servicenowXml.navigator.enable",
-    "onCommand:servicenowXml.navigator.refresh"
+    "onCommand:servicenowXml.navigator.refresh",
+    "onCommand:servicenowXml.revealInExplorer",
+    "onCommand:servicenowXml.revealInFileExplorer"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -43,6 +46,14 @@
         "command": "servicenowXml.navigator.refresh",
         "title": "ServiceNow XML: Refresh Records Navigator",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "servicenowXml.revealInExplorer",
+        "title": "Reveal in Explorer"
+      },
+      {
+        "command": "servicenowXml.revealInFileExplorer",
+        "title": "Reveal in File Explorer"
       }
     ],
     "viewsContainers": {
@@ -63,12 +74,32 @@
         }
       ]
     },
+    "viewsWelcome": {
+      "servicenowXml.records": [
+        {
+          "contents": "Enable the navigator to browse ServiceNow records by name.\n[Enable Records Navigator](command:servicenowXml.navigator.enable)",
+          "when": "!config.servicenowXml.navigator.enable"
+        }
+      ]
+    },
     "menus": {
       "view/title": [
         {
           "command": "servicenowXml.navigator.refresh",
           "when": "view == servicenowXml.records",
           "group": "navigation"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "servicenowXml.revealInExplorer",
+          "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
+          "group": "navigation@1"
+        },
+        {
+          "command": "servicenowXml.revealInFileExplorer",
+          "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
+          "group": "navigation@2"
         }
       ]
     },

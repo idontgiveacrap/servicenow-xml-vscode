@@ -26,7 +26,19 @@ Disabled by default. **No workspace scan, watchers, or index memory until you en
 1. Set `servicenowXml.navigator.enable` to `true` (or click **Enable ServiceNow Records navigator…** in the ServiceNow activity bar view)
 2. Open the **ServiceNow** activity icon → **Records**
 3. Browse by table → record name, or run **ServiceNow XML: Go to Record**
-4. Workspace symbol search (Go to Symbol in Workspace) also uses the same catalog once the navigator is enabled and a search runs
+4. Workspace symbol search (**Go to Symbol in Workspace**) also uses the same catalog once the navigator is enabled and a search runs
+5. Right-click a record for **Reveal in Explorer** (VS Code sidebar) or **Reveal in File Explorer** (OS file browser)
+
+### How search works
+
+There is no separate custom search UI beyond the tree. Two entry points share the same in-memory catalog:
+
+| Entry | How to open | Behavior |
+|-------|-------------|----------|
+| **Go to Record** | Command Palette → `ServiceNow XML: Go to Record` | QuickPick over indexed records. Type to filter by display name, table, `table.name`, `api_name`, `sys_id`, or relative path. Shows up to 200 matches. Selecting opens the XML file. |
+| **Workspace symbols** | `Ctrl+T` / **Go to Symbol in Workspace** | Same filters. Only runs after the navigator is enabled and you type a non-empty query (opening the picker alone does not index). |
+
+The catalog is built by scanning workspace `*.xml` (honoring `ignoreGlobs`), extracting primary record rows, and caching results until refresh / file-watch updates.
 
 Refresh via the view title bar or **ServiceNow XML: Refresh Records Navigator**.
 

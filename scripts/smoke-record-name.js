@@ -12,7 +12,7 @@ try {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
   );
-  assert.equal(manifest.version, '2.2.0');
+  assert.equal(manifest.version, '2.2.2');
   assert.ok(
     manifest.contributes.configuration.properties[
       'servicenowXml.navigator.enable'

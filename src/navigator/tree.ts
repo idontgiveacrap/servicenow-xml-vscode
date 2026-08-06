@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog } from './catalog';
 
-type TreeNode = TableNode | RecordNode | MessageNode;
+export type TreeNode = TableNode | RecordNode | MessageNode;
 
 interface TableNode {
   kind: 'table';
@@ -18,6 +18,23 @@ interface MessageNode {
   kind: 'message';
   label: string;
   command?: string;
+}
+
+/**
+ * Resolve a record URI from a Records tree context-menu element.
+ */
+export function getRecordUriFromTreeElement(
+  element: unknown
+): vscode.Uri | undefined {
+  if (
+    element &&
+    typeof element === 'object' &&
+    'kind' in element &&
+    (element as TreeNode).kind === 'record'
+  ) {
+    return (element as RecordNode).record.uri;
+  }
+  return undefined;
 }
 
 /**
