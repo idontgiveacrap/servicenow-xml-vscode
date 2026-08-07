@@ -17,10 +17,18 @@ export class DiagnosticsController implements vscode.Disposable {
   private readonly collection: vscode.DiagnosticCollection;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly statusBar: KindStatusBar;
+  private readonly isLintActive: () => boolean;
+  private readonly getWorkspaceAppSysId: () => string | undefined;
 
-  constructor(statusBar: KindStatusBar) {
+  constructor(
+    statusBar: KindStatusBar,
+    isLintActive: () => boolean,
+    getWorkspaceAppSysId: () => string | undefined = () => undefined
+  ) {
     this.collection = vscode.languages.createDiagnosticCollection(COLLECTION_NAME);
     this.statusBar = statusBar;
+    this.isLintActive = isLintActive;
+    this.getWorkspaceAppSysId = getWorkspaceAppSysId;
   }
 
   dispose(): void {
@@ -68,7 +76,7 @@ export class DiagnosticsController implements vscode.Disposable {
    */
   refresh(document: vscode.TextDocument): void {
     const config = vscode.workspace.getConfiguration('servicenowXml');
-    if (!config.get<boolean>('enable', true)) {
+    if (!this.isLintActive() || !config.get<boolean>('enable', true)) {
       this.collection.delete(document.uri);
       if (vscode.window.activeTextEditor?.document === document) {
         this.statusBar.clear();
@@ -87,7 +95,9 @@ export class DiagnosticsController implements vscode.Disposable {
     const text = document.getText();
     const filePath = document.uri.fsPath;
     const parsed = parseSnXml(text, filePath);
-    const classification = classifyAndValidate(parsed);
+    const classification = classifyAndValidate(parsed, {
+      workspaceAppSysId: this.getWorkspaceAppSysId()
+    });
 
     const snDiags: SnDiagnostic[] = [...classification.diagnostics];
 

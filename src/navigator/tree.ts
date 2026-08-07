@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog } from './catalog';
+import { matchesQuery } from './goToRecord';
 
 export type TreeNode = TableNode | RecordNode | MessageNode;
 
@@ -38,6 +39,54 @@ export function getRecordUriFromTreeElement(
 }
 
 /**
+ * Drag records (and table folders as their visible child files) as `text/uri-list`.
+ */
+export class RecordsDragAndDropController
+  implements vscode.TreeDragAndDropController<TreeNode>
+{
+  readonly dragMimeTypes = ['text/uri-list'];
+  readonly dropMimeTypes: string[] = [];
+
+  constructor(private readonly treeProvider: RecordsTreeProvider) {}
+
+  /**
+   * Pack dragged record file URIs into the data transfer.
+   */
+  handleDrag(
+    source: readonly TreeNode[],
+    dataTransfer: vscode.DataTransfer,
+    _token: vscode.CancellationToken
+  ): void {
+    const seen = new Set<string>();
+    const uris: string[] = [];
+    for (const node of source) {
+      for (const uri of this.treeProvider.getDragUris(node)) {
+        const key = uri.toString();
+        if (seen.has(key)) {
+          continue;
+        }
+        seen.add(key);
+        uris.push(key);
+      }
+    }
+    if (uris.length === 0) {
+      return;
+    }
+    dataTransfer.set(
+      'text/uri-list',
+      new vscode.DataTransferItem(uris.join('\r\n'))
+    );
+  }
+
+  /**
+   * Records tree is an index, not a drop target.
+   */
+  handleDrop(): void {
+    // no-op
+  }
+}
+
+/**
  * Tree data provider: tables as folders, records as leaves (name + table description).
  * Does not scan until the view is visible and the navigator is enabled.
  */
@@ -51,6 +100,8 @@ export class RecordsTreeProvider
 
   private viewVisible = false;
   private loadError = '';
+  /** Lowercased filter text; empty means show all. */
+  private filterQuery = '';
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly catalog: RecordCatalog) {
@@ -64,6 +115,45 @@ export class RecordsTreeProvider
     for (const d of this.disposables) {
       d.dispose();
     }
+  }
+
+  /**
+   * Current filter text as shown to the user (may be empty).
+   */
+  getFilterQuery(): string {
+    return this.filterQuery;
+  }
+
+  /**
+   * Apply a filter query (trimmed, lowercased) and refresh the tree.
+   */
+  setFilterQuery(query: string): void {
+    this.filterQuery = query.trim().toLowerCase();
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Clear the tree filter and refresh.
+   */
+  clearFilter(): void {
+    if (!this.filterQuery) {
+      return;
+    }
+    this.filterQuery = '';
+    this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * File URIs to include when dragging a tree node (respects the active filter).
+   */
+  getDragUris(node: TreeNode): vscode.Uri[] {
+    if (node.kind === 'record') {
+      return [node.record.uri];
+    }
+    if (node.kind === 'table') {
+      return this.filteredRecordsForTable(node.table).map((r) => r.uri);
+    }
+    return [];
   }
 
   /**
@@ -111,7 +201,9 @@ export class RecordsTreeProvider
     if (element.kind === 'table') {
       const item = new vscode.TreeItem(
         element.table,
-        vscode.TreeItemCollapsibleState.Collapsed
+        this.filterQuery
+          ? vscode.TreeItemCollapsibleState.Expanded
+          : vscode.TreeItemCollapsibleState.Collapsed
       );
       item.description = String(element.count);
       item.contextValue = 'servicenowXml.table';
@@ -196,30 +288,55 @@ export class RecordsTreeProvider
     }
 
     if (!element) {
-      const tables = this.catalog.getTables();
+      const tables = this.filteredTables();
       if (tables.length === 0) {
         return [
           {
             kind: 'message',
-            label: 'No ServiceNow records found'
+            label: this.filterQuery
+              ? 'No records match the filter'
+              : 'No ServiceNow records found'
           }
         ];
       }
-      return tables.map((table) => ({
-        kind: 'table' as const,
-        table,
-        count: this.catalog.getRecordsForTable(table).length
-      }));
+      return tables;
     }
 
     if (element.kind === 'table') {
-      return this.catalog.getRecordsForTable(element.table).map((record) => ({
+      return this.filteredRecordsForTable(element.table).map((record) => ({
         kind: 'record' as const,
         record
       }));
     }
 
     return [];
+  }
+
+  /**
+   * Tables with at least one matching record when filtered; otherwise all tables.
+   */
+  private filteredTables(): TableNode[] {
+    const tables = this.catalog.getTables();
+    const nodes: TableNode[] = [];
+    for (const table of tables) {
+      const count = this.filteredRecordsForTable(table).length;
+      if (count === 0) {
+        continue;
+      }
+      nodes.push({ kind: 'table', table, count });
+    }
+    return nodes;
+  }
+
+  /**
+   * Records under a table, optionally narrowed by the active filter query.
+   */
+  private filteredRecordsForTable(table: string): CatalogRecord[] {
+    const records = this.catalog.getRecordsForTable(table);
+    if (!this.filterQuery) {
+      return records;
+    }
+    return records.filter((record) => matchesQuery(record, this.filterQuery));
   }
 }
 

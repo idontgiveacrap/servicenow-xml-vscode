@@ -16,3 +16,15 @@ export function parseExportFileName(
   }
   return { table: m[1], sysId: m[2].toLowerCase() };
 }
+
+/**
+ * True when the path is `{sys_id}/sys_app_{sys_id}.xml` (same 32-hex id).
+ */
+export function matchesSnAppMarker(fsPath: string): boolean {
+  const parsed = parseExportFileName(fsPath);
+  if (!parsed || parsed.table.toLowerCase() !== 'sys_app') {
+    return false;
+  }
+  const parent = path.basename(path.dirname(fsPath));
+  return parent.toLowerCase() === parsed.sysId;
+}

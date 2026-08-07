@@ -186,6 +186,8 @@ function scanRecordRows(text: string): RecordRow[] {
     const rowXml = text.slice(startOffset, rowEnd);
     const sysIdInfo = extractSysId(rowXml, startOffset, text);
     const embeddedFields = extractEmbeddedFields(rowXml, startOffset, text);
+    const sysScopeValue = extractReferenceFieldValue(rowXml, 'sys_scope');
+    const sysPackageValue = extractReferenceFieldValue(rowXml, 'sys_package');
 
     rows.push({
       tableName,
@@ -200,12 +202,29 @@ function scanRecordRows(text: string): RecordRow[] {
       hasSysScope: /<\s*sys_scope\b/i.test(rowXml),
       hasSysUpdateName: /<\s*sys_update_name\b/i.test(rowXml),
       hasSysPackage: /<\s*sys_package\b/i.test(rowXml),
+      sysScopeValue,
+      sysPackageValue,
       embeddedFields,
       scriptFields: embeddedFields.filter((f) => f.language === 'javascript')
     });
   }
 
   return rows;
+}
+
+/**
+ * Read the body text of a reference-like field (`sys_scope`, `sys_package`, …).
+ */
+function extractReferenceFieldValue(
+  rowXml: string,
+  fieldName: string
+): string | undefined {
+  const el = extractRowElement(rowXml, fieldName);
+  if (!el) {
+    return undefined;
+  }
+  const value = (el.isCdata ? el.content : decodeXmlEntities(el.content)).trim();
+  return value.length > 0 ? value : undefined;
 }
 
 function extractSysId(

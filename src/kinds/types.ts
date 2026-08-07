@@ -43,6 +43,10 @@ export interface RecordRow {
   hasSysScope: boolean;
   hasSysUpdateName: boolean;
   hasSysPackage: boolean;
+  /** Trimmed `<sys_scope>` body when present (e.g. global or 32-hex). */
+  sysScopeValue?: string;
+  /** Trimmed `<sys_package>` body when present. */
+  sysPackageValue?: string;
   /** Script / JSON / CSS field hits on this row */
   embeddedFields: EmbeddedFieldHit[];
   /** Convenience: JS script fields only */
@@ -82,13 +86,19 @@ export interface KindProfile {
   /** Return true when this profile claims the document. First match wins. */
   matches: (doc: ParsedDocument) => boolean;
   /** Structure diagnostics for this kind. */
-  validate: (doc: ParsedDocument) => SnDiagnostic[];
+  validate: (doc: ParsedDocument, ctx?: ValidationContext) => SnDiagnostic[];
   /** Whether JS lint should run for INSERT_OR_UPDATE script rows. */
   lintScripts: boolean;
   /** Whether JSON field well-formedness should be checked. */
   lintJson?: boolean;
   /** Optional note shown when rules are incomplete. */
   pendingRulesNote?: string;
+}
+
+/** Optional workspace context passed into kind validators. */
+export interface ValidationContext {
+  /** Sys_id from `{sys_id}/sys_app_{sys_id}.xml` when the gate found a marker. */
+  workspaceAppSysId?: string;
 }
 
 export interface ClassificationResult {
@@ -132,6 +142,9 @@ export const PRIMARY_ACTIONS = new Set([
   'INSERT',
   'UPDATE'
 ]);
+
+/** Actions allowed on customer-update wrappers and scoped app table rows. */
+export const STRICT_RECORD_ACTIONS = new Set(['INSERT_OR_UPDATE', 'DELETE']);
 
 export const CLEANUP_ACTIONS = new Set(['delete_multiple', 'delete_multi']);
 

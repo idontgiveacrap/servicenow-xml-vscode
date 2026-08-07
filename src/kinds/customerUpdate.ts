@@ -1,8 +1,8 @@
 import { XMLValidator } from 'fast-xml-parser';
-import { KindProfile, SnDiagnostic } from './types';
+import { KindProfile, SnDiagnostic, STRICT_RECORD_ACTIONS } from './types';
 import {
+  decodeXmlEntities,
   extractRowElement,
-  isPrimaryAction,
   isValidSysId,
   offsetToPosition
 } from '../parseSnXml';
@@ -29,7 +29,7 @@ export const customerUpdate: KindProfile = {
     );
   },
 
-  validate(doc) {
+  validate(doc, ctx) {
     const diagnostics: SnDiagnostic[] = [];
     const remoteSets = doc.rows.filter((r) => r.tableName === 'sys_remote_update_set');
     const localSets = doc.rows.filter((r) => r.tableName === 'sys_update_set');
@@ -59,17 +59,31 @@ export const customerUpdate: KindProfile = {
     }
 
     const remoteSetIds = new Set<string>();
+    const containerAppIds: string[] = [];
 
     for (const row of remoteSets) {
       validateRemoteUpdateSet(doc, row, diagnostics);
       if (row.sysId && isValidSysId(row.sysId)) {
         remoteSetIds.add(row.sysId.toLowerCase());
       }
+      const appId = extractApplicationValue(doc.text, row);
+      if (appId) {
+        containerAppIds.push(appId);
+      }
     }
 
     for (const row of localSets) {
       validateLocalUpdateSet(doc, row, diagnostics);
+      const appId = extractApplicationValue(doc.text, row);
+      if (appId) {
+        containerAppIds.push(appId);
+      }
     }
+
+    // Prefer update-set <application> as the container id; else workspace app marker.
+    const containerAppId =
+      uniqueContainerAppId(containerAppIds) ??
+      normalizeAppId(ctx?.workspaceAppSysId);
 
     if (remoteSets.length > 0 && updates.length === 0) {
       diagnostics.push({
@@ -82,37 +96,42 @@ export const customerUpdate: KindProfile = {
       });
     }
 
+    if (containerAppIds.length > 1 && uniqueContainerAppId(containerAppIds) === undefined) {
+      diagnostics.push({
+        message:
+          'Multiple update-set headers declare different <application> values in this file.',
+        severity: 'warning',
+        line: remoteSets[0]?.line ?? localSets[0]?.line ?? 0,
+        character: remoteSets[0]?.character ?? localSets[0]?.character ?? 0,
+        code: 'cu-container-app-conflict'
+      });
+    }
+
     for (const row of updates) {
-      validateUpdateXml(doc, row, diagnostics, remoteSetIds);
+      validateUpdateXml(doc, row, diagnostics, remoteSetIds, containerAppId);
     }
 
     return diagnostics;
   }
 };
 
+type RowSlice = {
+  action: string;
+  sysId?: string;
+  sysIdLine?: number;
+  sysIdCharacter?: number;
+  line: number;
+  character: number;
+  startOffset: number;
+  endOffset: number;
+};
+
 function validateRemoteUpdateSet(
   doc: { text: string },
-  row: {
-    action: string;
-    sysId?: string;
-    sysIdLine?: number;
-    sysIdCharacter?: number;
-    line: number;
-    character: number;
-    startOffset: number;
-    endOffset: number;
-  },
+  row: RowSlice,
   diagnostics: SnDiagnostic[]
 ): void {
-  if (!isPrimaryAction(row.action) && row.action !== 'DELETE') {
-    diagnostics.push({
-      message: `Unexpected action "${row.action}" on <sys_remote_update_set>.`,
-      severity: 'warning',
-      line: row.line,
-      character: row.character,
-      code: 'cu-remote-bad-action'
-    });
-  }
+  pushStrictActionError(diagnostics, row, 'sys_remote_update_set', 'cu-remote-bad-action');
 
   if (!row.sysId) {
     diagnostics.push({
@@ -170,18 +189,11 @@ function validateRemoteUpdateSet(
 
 function validateLocalUpdateSet(
   doc: { text: string },
-  row: {
-    action: string;
-    sysId?: string;
-    sysIdLine?: number;
-    sysIdCharacter?: number;
-    line: number;
-    character: number;
-    startOffset: number;
-    endOffset: number;
-  },
+  row: RowSlice,
   diagnostics: SnDiagnostic[]
 ): void {
+  pushStrictActionError(diagnostics, row, 'sys_update_set', 'cu-set-bad-action');
+
   if (!row.sysId) {
     diagnostics.push({
       message: '<sys_update_set> is missing <sys_id>.',
@@ -215,28 +227,12 @@ function validateLocalUpdateSet(
 
 function validateUpdateXml(
   doc: { text: string },
-  row: {
-    action: string;
-    sysId?: string;
-    sysIdLine?: number;
-    sysIdCharacter?: number;
-    line: number;
-    character: number;
-    startOffset: number;
-    endOffset: number;
-  },
+  row: RowSlice,
   diagnostics: SnDiagnostic[],
-  remoteSetIds: Set<string>
+  remoteSetIds: Set<string>,
+  containerAppId: string | undefined
 ): void {
-  if (!isPrimaryAction(row.action) && row.action !== 'DELETE') {
-    diagnostics.push({
-      message: `Unexpected action "${row.action}" on <sys_update_xml>.`,
-      severity: 'warning',
-      line: row.line,
-      character: row.character,
-      code: 'cu-bad-action'
-    });
-  }
+  pushStrictActionError(diagnostics, row, 'sys_update_xml', 'cu-bad-action');
 
   if (!row.sysId) {
     diagnostics.push({
@@ -327,6 +323,19 @@ function validateUpdateXml(
     });
   }
 
+  if (containerAppId) {
+    const updateApp = extractApplicationValue(doc.text, row);
+    if (updateApp && updateApp !== containerAppId) {
+      diagnostics.push({
+        message: `<application> "${updateApp}" does not match update-set / workspace application "${containerAppId}".`,
+        severity: 'warning',
+        line: row.line,
+        character: row.character,
+        code: 'cu-application-mismatch'
+      });
+    }
+  }
+
   const payloadEl = extractRowElement(rowXml, 'payload');
   if (!payloadEl) {
     if (row.action !== 'DELETE') {
@@ -348,7 +357,9 @@ function validateUpdateXml(
         code: 'cu-payload-not-cdata'
       });
     }
-    const payload = payloadEl.content.trim();
+    const payload = payloadEl.isCdata
+      ? payloadEl.content.trim()
+      : decodeXmlEntities(payloadEl.content).trim();
     if (payload.length > 0) {
       const validation = XMLValidator.validate(payload, {
         allowBooleanAttributes: true
@@ -385,6 +396,15 @@ function validateUpdateXml(
           code: 'cu-payload-no-record-update'
         });
       }
+
+      if (containerAppId && validation === true) {
+        checkPayloadAppFields(
+          payload,
+          containerAppId,
+          row,
+          diagnostics
+        );
+      }
     }
   }
 
@@ -398,4 +418,85 @@ function validateUpdateXml(
       code: 'cu-category'
     });
   }
+}
+
+function pushStrictActionError(
+  diagnostics: SnDiagnostic[],
+  row: RowSlice,
+  tableLabel: string,
+  code: string
+): void {
+  if (STRICT_RECORD_ACTIONS.has(row.action)) {
+    return;
+  }
+  diagnostics.push({
+    message: `<${tableLabel}> action must be INSERT_OR_UPDATE or DELETE (found "${row.action}").`,
+    severity: 'error',
+    line: row.line,
+    character: row.character,
+    code
+  });
+}
+
+function extractApplicationValue(
+  text: string,
+  row: RowSlice
+): string | undefined {
+  const rowXml = text.slice(row.startOffset, row.endOffset);
+  const el = extractRowElement(rowXml, 'application');
+  if (!el) {
+    return undefined;
+  }
+  const value = (el.isCdata ? el.content : decodeXmlEntities(el.content)).trim();
+  return normalizeAppId(value);
+}
+
+function checkPayloadAppFields(
+  payload: string,
+  containerAppId: string,
+  row: RowSlice,
+  diagnostics: SnDiagnostic[]
+): void {
+  const scope = extractPayloadFieldValue(payload, 'sys_scope');
+  const pkg = extractPayloadFieldValue(payload, 'sys_package');
+  if (scope && scope.toLowerCase() !== containerAppId) {
+    diagnostics.push({
+      message: `Payload <sys_scope> "${scope}" does not match update-set / workspace application "${containerAppId}".`,
+      severity: 'warning',
+      line: row.line,
+      character: row.character,
+      code: 'cu-payload-sys-scope-mismatch'
+    });
+  }
+  if (pkg && pkg.toLowerCase() !== containerAppId) {
+    diagnostics.push({
+      message: `Payload <sys_package> "${pkg}" does not match update-set / workspace application "${containerAppId}".`,
+      severity: 'warning',
+      line: row.line,
+      character: row.character,
+      code: 'cu-payload-sys-package-mismatch'
+    });
+  }
+}
+
+function extractPayloadFieldValue(
+  payload: string,
+  fieldName: string
+): string | undefined {
+  const el = extractRowElement(payload, fieldName);
+  if (!el) {
+    return undefined;
+  }
+  const value = (el.isCdata ? el.content : decodeXmlEntities(el.content)).trim();
+  return value.length > 0 ? value : undefined;
+}
+
+function normalizeAppId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : undefined;
+}
+
+function uniqueContainerAppId(ids: string[]): string | undefined {
+  const unique = [...new Set(ids)];
+  return unique.length === 1 ? unique[0] : undefined;
 }

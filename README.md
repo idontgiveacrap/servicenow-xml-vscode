@@ -17,11 +17,23 @@ npm run package
 ```
 
 2. In Cursor: **Extensions** → `…` → **Install from VSIX…** → select the generated `.vsix`
-3. Open a ServiceNow `*.xml` export; check the status bar for `SN XML: …` and the Problems panel for diagnostics
+3. Open a ServiceNow app workspace (see below); open a `*.xml` export and check the status bar for `SN XML: …` and the Problems panel for diagnostics
+
+## Workspace gate
+
+Diagnostics/lint and the ServiceNow activity-bar Records view stay inactive until the workspace contains a marker file:
+
+`{sys_id}/sys_app_{sys_id}.xml`
+
+(same 32-hex id in the folder name and filename; may appear anywhere under the workspace, not only at the root). Paths matching `ignoreGlobs` do not count.
+
+Set `servicenowXml.enabledForAllWindows` to `true` to bypass that gate — useful for single-file windows (e.g. a one-off under Downloads) where there is no project folder layout. With the bypass on, open XML is still considered for linting, and the Records view remains available.
+
+`servicenowXml.enable` still toggles diagnostics after the gate (or bypass) passes.
 
 ## Records navigator (optional, lazy)
 
-Disabled by default. **No workspace scan, watchers, or index memory until you enable it and open the view (or run Go to Record).**
+Hidden until the workspace gate passes (or `enabledForAllWindows` is on). Disabled by default even then. **No workspace scan, watchers, or index memory until you enable it and open the view (or run Go to Record).**
 
 1. Set `servicenowXml.navigator.enable` to `true` (or click **Enable ServiceNow Records navigator…** in the ServiceNow activity bar view)
 2. Open the **ServiceNow** activity icon → **Records**
@@ -56,15 +68,15 @@ Default is **most opened**. Change via the sort icon on the Records view title, 
 
 Open counts / last-opened times persist in workspace state. Missing metrics sort last.
 
-`DELETE` rows are hidden unless `servicenowXml.navigator.includeDelete` is `true`. When shown, they use a trash icon, struck-through label, and a `DELETE · {table}` description. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
+`DELETE` rows are shown by default (trash icon, struck-through label, `DELETE · {table}` description). Set `servicenowXml.navigator.excludeDelete` to `true` to hide them. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
 ## Document kinds
 
 | Kind | Recognition (v1) | Validation |
 |------|------------------|------------|
-| `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action values, `sys_id`, filename `{table}_{sys_id}.xml` match, script CDATA |
+| `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action must be `INSERT_OR_UPDATE` or `DELETE` (error); `sys_id`; filename match; script CDATA; `sys_scope` / `sys_package` vs workspace app id (warning) |
 | `data_record_export` | Record rows **without** app metadata | `sys_id` presence/format; refine further with more samples |
-| `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Name/type/payload CDATA, nested payload XML, remote set refs |
+| `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Wrapper action must be `INSERT_OR_UPDATE` or `DELETE` (error); name/type/payload; update-set `<application>` must match member updates and payload `sys_scope` / `sys_package` (warning) |
 | `unknown_sn_xml` | Well-formed XML, no kind match | Warning only |
 | `not_xml` | Parse failure | XML well-formedness error |
 
@@ -72,16 +84,17 @@ Status bar shows the active kind so misclassification is obvious.
 
 ## Settings
 
-| Setting | Default | Purpose |
-|---------|---------|---------|
-| `servicenowXml.enable` | `true` | Toggle diagnostics |
-| `servicenowXml.lintJavaScript` | `true` | Lint embedded script fields |
-| `servicenowXml.lintJson` | `true` | Lint embedded JSON fields |
-| `servicenowXml.ignoreGlobs` | `**/author_elective_update/**` | Skip paths for diagnostics, lint, and navigator |
-| `servicenowXml.debounceMs` | `400` | Edit debounce |
-| `servicenowXml.navigator.enable` | `false` | Opt-in Records navigator |
-| `servicenowXml.navigator.includeDelete` | `false` | Show DELETE rows in navigator (trash + strikethrough) |
-| `servicenowXml.navigator.sortBy` | `mostOpened` | Sort tables/records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name` |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `servicenowXml.enable` | `true` | Enable ServiceNow XML validation and JS linting when the workspace gate passes (or `enabledForAllWindows` is on). |
+| `servicenowXml.enabledForAllWindows` | `false` | Bypass the ServiceNow app workspace gate so diagnostics run in any window (including single-file / non-project windows) and the Records navigator stays visible. |
+| `servicenowXml.lintJavaScript` | `true` | Lint embedded JavaScript in script CDATA regions. |
+| `servicenowXml.lintJson` | `true` | Lint JSON embedded in known ServiceNow XML fields. |
+| `servicenowXml.ignoreGlobs` | `["**/author_elective_update/**"]` | Glob patterns for XML paths to skip (validation, lint, navigator, and gate marker). |
+| `servicenowXml.debounceMs` | `400` | Debounce delay (ms) before re-validating on edit. |
+| `servicenowXml.navigator.enable` | `false` | Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used. |
+| `servicenowXml.navigator.excludeDelete` | `false` | Hide `action=DELETE` records from the navigator. |
+| `servicenowXml.navigator.sortBy` | `mostOpened` | Sort order for Records navigator tables and records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name`. |
 
 ## Fixtures
 

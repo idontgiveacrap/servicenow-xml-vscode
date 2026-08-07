@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.2.2",
+  "version": "2.2.3",
   "publisher": "local",
   "license": "UNLICENSED",
   "engines": {
@@ -21,6 +21,8 @@
     "onCommand:servicenowXml.navigator.enable",
     "onCommand:servicenowXml.navigator.refresh",
     "onCommand:servicenowXml.navigator.sortBy",
+    "onCommand:servicenowXml.navigator.filter",
+    "onCommand:servicenowXml.navigator.clearFilter",
     "onCommand:servicenowXml.revealInExplorer",
     "onCommand:servicenowXml.revealInFileExplorer"
   ],
@@ -54,6 +56,16 @@
         "icon": "$(sort-precedence)"
       },
       {
+        "command": "servicenowXml.navigator.filter",
+        "title": "ServiceNow XML: Filter Records…",
+        "icon": "$(filter)"
+      },
+      {
+        "command": "servicenowXml.navigator.clearFilter",
+        "title": "ServiceNow XML: Clear Records Filter",
+        "icon": "$(clear-all)"
+      },
+      {
         "command": "servicenowXml.revealInExplorer",
         "title": "Reveal in Explorer"
       },
@@ -76,7 +88,8 @@
         {
           "id": "servicenowXml.records",
           "name": "Records",
-          "contextualTitle": "ServiceNow Records"
+          "contextualTitle": "ServiceNow Records",
+          "when": "servicenowXml.isSnWorkspace || config.servicenowXml.enabledForAllWindows"
         }
       ]
     },
@@ -91,14 +104,24 @@
     "menus": {
       "view/title": [
         {
-          "command": "servicenowXml.navigator.sortBy",
+          "command": "servicenowXml.navigator.filter",
           "when": "view == servicenowXml.records",
           "group": "navigation@1"
         },
         {
+          "command": "servicenowXml.navigator.clearFilter",
+          "when": "view == servicenowXml.records && servicenowXml.recordsFiltered",
+          "group": "navigation@2"
+        },
+        {
+          "command": "servicenowXml.navigator.sortBy",
+          "when": "view == servicenowXml.records",
+          "group": "navigation@3"
+        },
+        {
           "command": "servicenowXml.navigator.refresh",
           "when": "view == servicenowXml.records",
-          "group": "navigation@2"
+          "group": "navigation@4"
         }
       ],
       "view/item/context": [
@@ -120,7 +143,12 @@
         "servicenowXml.enable": {
           "type": "boolean",
           "default": true,
-          "description": "Enable ServiceNow XML validation and JS linting."
+          "description": "Enable ServiceNow XML validation and JS linting when the workspace gate passes (or enabledForAllWindows is on)."
+        },
+        "servicenowXml.enabledForAllWindows": {
+          "type": "boolean",
+          "default": false,
+          "description": "Bypass the ServiceNow app workspace gate so diagnostics run in any window (including single-file / non-project windows) and the Records navigator stays visible."
         },
         "servicenowXml.lintJavaScript": {
           "type": "boolean",
@@ -152,10 +180,10 @@
           "default": false,
           "description": "Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used."
         },
-        "servicenowXml.navigator.includeDelete": {
+        "servicenowXml.navigator.excludeDelete": {
           "type": "boolean",
           "default": false,
-          "description": "Include action=DELETE records in the navigator."
+          "description": "Hide action=DELETE records from the navigator."
         },
         "servicenowXml.navigator.sortBy": {
           "type": "string",

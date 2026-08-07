@@ -114,7 +114,10 @@ function toQuickPick(record: CatalogRecord): RecordQuickPickItem {
   };
 }
 
-function matchesQuery(record: CatalogRecord, q: string): boolean {
+/**
+ * Match a catalog record against a lowercased query (name, table, api_name, sys_id, path).
+ */
+export function matchesQuery(record: CatalogRecord, q: string): boolean {
   if (record.displayName.toLowerCase().includes(q)) {
     return true;
   }

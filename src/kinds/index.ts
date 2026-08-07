@@ -2,7 +2,8 @@ import {
   ClassificationResult,
   DocumentKindId,
   KindProfile,
-  ParsedDocument
+  ParsedDocument,
+  ValidationContext
 } from './types';
 import { scopedAppRecordUpdate } from './scopedAppRecordUpdate';
 import { dataRecordExport } from './dataRecordExport';
@@ -20,7 +21,10 @@ export const KIND_PROFILES: KindProfile[] = [
 /**
  * Classify a parsed document and run the matching kind's structural rules.
  */
-export function classifyAndValidate(doc: ParsedDocument): ClassificationResult {
+export function classifyAndValidate(
+  doc: ParsedDocument,
+  ctx?: ValidationContext
+): ClassificationResult {
   if (!doc.wellFormed) {
     return {
       kind: 'not_xml',
@@ -33,7 +37,7 @@ export function classifyAndValidate(doc: ParsedDocument): ClassificationResult {
 
   for (const profile of KIND_PROFILES) {
     if (profile.matches(doc)) {
-      const diagnostics = profile.validate(doc);
+      const diagnostics = profile.validate(doc, ctx);
       if (profile.pendingRulesNote) {
         diagnostics.push({
           message: profile.pendingRulesNote,

@@ -12,7 +12,18 @@ try {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
   );
-  assert.equal(manifest.version, '2.2.2');
+  assert.equal(manifest.version, '2.2.3');
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.enabledForAllWindows'
+    ],
+    'enabledForAllWindows setting must be registered in the extension manifest'
+  );
+  assert.equal(
+    manifest.contributes.views['servicenow-xml'][0].when,
+    'servicenowXml.isSnWorkspace || config.servicenowXml.enabledForAllWindows',
+    'Records view must be gated by SN workspace context or enabledForAllWindows'
+  );
   assert.ok(
     manifest.contributes.configuration.properties[
       'servicenowXml.navigator.enable'
@@ -124,6 +135,34 @@ try {
   );
   assert.equal(normalized.rows[0].action, 'INSERT_OR_UPDATE');
   assert.equal(normalized.rows[0].sysId, '33333333333333333333333333333333');
+
+  const fileNameBundlePath = path.join(tempDir, 'fileName.cjs');
+  esbuild.buildSync({
+    entryPoints: [path.join(__dirname, '..', 'src', 'fileName.ts')],
+    bundle: true,
+    platform: 'node',
+    format: 'cjs',
+    outfile: fileNameBundlePath,
+    logLevel: 'silent'
+  });
+  const { matchesSnAppMarker } = require(fileNameBundlePath);
+  const sid = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  assert.equal(
+    matchesSnAppMarker(path.join('apps', sid, `sys_app_${sid}.xml`)),
+    true
+  );
+  assert.equal(
+    matchesSnAppMarker(path.join('apps', sid, `sys_app_${sid.toUpperCase()}.xml`)),
+    true
+  );
+  assert.equal(
+    matchesSnAppMarker(path.join('apps', 'other', `sys_app_${sid}.xml`)),
+    false
+  );
+  assert.equal(
+    matchesSnAppMarker(path.join(sid, `sys_script_include_${sid}.xml`)),
+    false
+  );
 
   console.log('navigator and XML parser smoke tests passed');
 } finally {

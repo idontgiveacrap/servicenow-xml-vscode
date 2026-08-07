@@ -1,4 +1,4 @@
-import { KindProfile, SnDiagnostic } from './types';
+import { KindProfile, SnDiagnostic, STRICT_RECORD_ACTIONS } from './types';
 import {
   isCleanupAction,
   isPrimaryAction,
@@ -29,7 +29,7 @@ export const scopedAppRecordUpdate: KindProfile = {
     );
   },
 
-  validate(doc) {
+  validate(doc, ctx) {
     const diagnostics: SnDiagnostic[] = [];
 
     if (doc.rootName !== 'record_update' && doc.rootName !== 'unload') {
@@ -71,8 +71,19 @@ export const scopedAppRecordUpdate: KindProfile = {
     }
 
     const fileMeta = parseExportFileName(doc.filePath);
+    const appId = normalizeAppId(ctx?.workspaceAppSysId);
 
     for (const row of primaryRows) {
+      if (!STRICT_RECORD_ACTIONS.has(row.action)) {
+        diagnostics.push({
+          message: `<${row.tableName}> action must be INSERT_OR_UPDATE or DELETE (found "${row.action}").`,
+          severity: 'error',
+          line: row.line,
+          character: row.character,
+          code: 'scoped-bad-action'
+        });
+      }
+
       if (!row.sysId) {
         diagnostics.push({
           message: `<${row.tableName}> is missing <sys_id>.`,
@@ -101,6 +112,27 @@ export const scopedAppRecordUpdate: KindProfile = {
             code: 'scoped-missing-sys-scope'
           });
         }
+      }
+
+      if (appId) {
+        pushAppIdMismatch(
+          diagnostics,
+          row.sysScopeValue,
+          'sys_scope',
+          appId,
+          row.line,
+          row.character,
+          'scoped-sys-scope-mismatch'
+        );
+        pushAppIdMismatch(
+          diagnostics,
+          row.sysPackageValue,
+          'sys_package',
+          appId,
+          row.line,
+          row.character,
+          'scoped-sys-package-mismatch'
+        );
       }
 
       if (fileMeta && primaryRows[0] === row) {
@@ -140,3 +172,32 @@ export const scopedAppRecordUpdate: KindProfile = {
     return diagnostics;
   }
 };
+
+function normalizeAppId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed && trimmed.length > 0 ? trimmed.toLowerCase() : undefined;
+}
+
+function pushAppIdMismatch(
+  diagnostics: SnDiagnostic[],
+  value: string | undefined,
+  fieldLabel: string,
+  appId: string,
+  line: number,
+  character: number,
+  code: string
+): void {
+  if (!value) {
+    return;
+  }
+  if (value.toLowerCase() === appId) {
+    return;
+  }
+  diagnostics.push({
+    message: `<${fieldLabel}> "${value}" does not match workspace application id ${appId}.`,
+    severity: 'warning',
+    line,
+    character,
+    code
+  });
+}

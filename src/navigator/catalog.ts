@@ -77,7 +77,7 @@ export class RecordCatalog implements vscode.Disposable {
             this.loaded &&
             e.affectsConfiguration('servicenowXml.navigator.sortBy') &&
             !e.affectsConfiguration('servicenowXml.navigator.enable') &&
-            !e.affectsConfiguration('servicenowXml.navigator.includeDelete') &&
+            !e.affectsConfiguration('servicenowXml.navigator.excludeDelete') &&
             !e.affectsConfiguration('servicenowXml.ignoreGlobs')
           ) {
             this.rebuildViews();
@@ -137,10 +137,10 @@ export class RecordCatalog implements vscode.Disposable {
       .get<boolean>('navigator.enable', false);
   }
 
-  includeDelete(): boolean {
+  excludeDelete(): boolean {
     return vscode.workspace
       .getConfiguration('servicenowXml')
-      .get<boolean>('navigator.includeDelete', false);
+      .get<boolean>('navigator.excludeDelete', false);
   }
 
   /**
@@ -351,7 +351,7 @@ export class RecordCatalog implements vscode.Disposable {
    */
   private async scanWorkspace(): Promise<CatalogRecord[]> {
     const ignoreGlobs = getIgnoreGlobs();
-    const includeDelete = this.includeDelete();
+    const excludeDelete = this.excludeDelete();
     const uris = await vscode.workspace.findFiles(
       '**/*.xml',
       '**/{node_modules,.git}/**'
@@ -362,7 +362,7 @@ export class RecordCatalog implements vscode.Disposable {
     for (let start = 0; start < uris.length; start += concurrency) {
       const batch = uris.slice(start, start + concurrency);
       const recordGroups = await Promise.all(
-        batch.map((uri) => this.readCatalogRecords(uri, ignoreGlobs, includeDelete))
+        batch.map((uri) => this.readCatalogRecords(uri, ignoreGlobs, excludeDelete))
       );
       for (const records of recordGroups) {
         out.push(...records);
@@ -378,7 +378,7 @@ export class RecordCatalog implements vscode.Disposable {
   private async readCatalogRecords(
     uri: vscode.Uri,
     ignoreGlobs = getIgnoreGlobs(),
-    includeDelete = this.includeDelete()
+    excludeDelete = this.excludeDelete()
   ): Promise<CatalogRecord[]> {
     if (isPathIgnored(uri.fsPath, ignoreGlobs)) {
       return [];
@@ -401,7 +401,7 @@ export class RecordCatalog implements vscode.Disposable {
     );
     const relativePath = vscode.workspace.asRelativePath(uri, false);
     return identities
-      .filter((identity) => includeDelete || identity.action !== 'DELETE')
+      .filter((identity) => !excludeDelete || identity.action !== 'DELETE')
       .map((identity) => {
         const usage = this.usage.get(uri, identity.sysId);
         return {

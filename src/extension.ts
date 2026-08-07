@@ -4,9 +4,12 @@ import { KindStatusBar } from './statusBar';
 import { NavigatorSortBy, RecordCatalog } from './navigator/catalog';
 import {
   getRecordUriFromTreeElement,
-  RecordsTreeProvider
+  RecordsDragAndDropController,
+  RecordsTreeProvider,
+  TreeNode
 } from './navigator/tree';
 import { registerGoToRecord } from './navigator/goToRecord';
+import { SnWorkspaceGate } from './snWorkspaceGate';
 
 const SORT_BY_PICKS: Array<{
   label: string;
@@ -45,15 +48,22 @@ const SORT_BY_PICKS: Array<{
  * Syntax coloring is contributed via TextMate injection (no runtime hook needed).
  * The tree provider is registered first so the Records view never sits without a provider.
  * Catalog indexing stays lazy until the view is used and navigator.enable is true.
+ * Lint and the Records view stay gated until `{sys_id}/sys_app_{sys_id}.xml` is found
+ * (or `enabledForAllWindows` bypasses the gate).
  */
 export function activate(context: vscode.ExtensionContext): void {
+  const gate = new SnWorkspaceGate();
+  context.subscriptions.push(gate);
+
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog(context.workspaceState);
   const treeProvider = new RecordsTreeProvider(catalog);
-  const treeView = vscode.window.createTreeView('servicenowXml.records', {
+  const treeView = vscode.window.createTreeView<TreeNode>('servicenowXml.records', {
     treeDataProvider: treeProvider,
-    showCollapseAll: true
+    showCollapseAll: true,
+    canSelectMany: true,
+    dragAndDropController: new RecordsDragAndDropController(treeProvider)
   });
   context.subscriptions.push(
     catalog,
@@ -66,9 +76,10 @@ export function activate(context: vscode.ExtensionContext): void {
   if (treeView.visible) {
     treeProvider.setViewVisible(true);
   }
+  syncRecordsFilterUi(treeView, treeProvider);
 
   try {
-    activateDiagnosticsAndCommands(context, catalog, treeProvider, treeView);
+    activateDiagnosticsAndCommands(context, catalog, treeProvider, treeView, gate);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[servicenow-xml] activation failed after tree registration:', error);
@@ -85,11 +96,27 @@ function activateDiagnosticsAndCommands(
   context: vscode.ExtensionContext,
   catalog: RecordCatalog,
   treeProvider: RecordsTreeProvider,
-  treeView: vscode.TreeView<unknown>
+  treeView: vscode.TreeView<TreeNode>,
+  gate: SnWorkspaceGate
 ): void {
   const statusBar = new KindStatusBar();
-  const diagnostics = new DiagnosticsController(statusBar);
-  context.subscriptions.push(statusBar, diagnostics);
+  const diagnostics = new DiagnosticsController(
+    statusBar,
+    () => gate.isLintActive(),
+    () => gate.getWorkspaceAppSysId()
+  );
+  context.subscriptions.push(
+    statusBar,
+    diagnostics,
+    gate.onDidChange(() => {
+      for (const doc of vscode.workspace.textDocuments) {
+        if (doc.languageId === 'xml') {
+          diagnostics.schedule(doc);
+        }
+      }
+      diagnostics.refreshActiveEditor();
+    })
+  );
 
   registerGoToRecord(context, catalog);
 
@@ -161,6 +188,29 @@ function activateDiagnosticsAndCommands(
           vscode.ConfigurationTarget.Workspace
         );
     }),
+    vscode.commands.registerCommand('servicenowXml.navigator.filter', async () => {
+      if (!catalog.isEnabled()) {
+        void vscode.window.showInformationMessage(
+          'Enable servicenowXml.navigator.enable to use the Records navigator.'
+        );
+        return;
+      }
+      const value = await vscode.window.showInputBox({
+        title: 'Filter Records',
+        prompt: 'Filter by name, table, api_name, sys_id, or path',
+        value: treeProvider.getFilterQuery(),
+        placeHolder: 'e.g. CompareRowForm or sys_script_include'
+      });
+      if (value === undefined) {
+        return;
+      }
+      treeProvider.setFilterQuery(value);
+      syncRecordsFilterUi(treeView, treeProvider);
+    }),
+    vscode.commands.registerCommand('servicenowXml.navigator.clearFilter', () => {
+      treeProvider.clearFilter();
+      syncRecordsFilterUi(treeView, treeProvider);
+    }),
     vscode.commands.registerCommand(
       'servicenowXml.revealInExplorer',
       async (element?: unknown) => {
@@ -210,6 +260,7 @@ function activateDiagnosticsAndCommands(
     vscode.workspace.onDidChangeConfiguration((e) => {
       const diagnosticsChanged =
         e.affectsConfiguration('servicenowXml.enable') ||
+        e.affectsConfiguration('servicenowXml.enabledForAllWindows') ||
         e.affectsConfiguration('servicenowXml.lintJavaScript') ||
         e.affectsConfiguration('servicenowXml.lintJson') ||
         e.affectsConfiguration('servicenowXml.ignoreGlobs') ||
@@ -240,6 +291,22 @@ function activateDiagnosticsAndCommands(
     }
   }
   diagnostics.refreshActiveEditor();
+}
+
+/**
+ * Sync the Records view filter banner and clear-filter context key.
+ */
+function syncRecordsFilterUi(
+  treeView: vscode.TreeView<TreeNode>,
+  treeProvider: RecordsTreeProvider
+): void {
+  const query = treeProvider.getFilterQuery();
+  treeView.message = query ? `Filter: ${query}` : undefined;
+  void vscode.commands.executeCommand(
+    'setContext',
+    'servicenowXml.recordsFiltered',
+    Boolean(query)
+  );
 }
 
 export function deactivate(): void {
