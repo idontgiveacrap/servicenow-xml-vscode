@@ -358,7 +358,7 @@ export class RecordCatalog implements vscode.Disposable {
     );
     const out: CatalogRecord[] = [];
 
-    const concurrency = 16;
+    const concurrency = 32;
     for (let start = 0; start < uris.length; start += concurrency) {
       const batch = uris.slice(start, start + concurrency);
       const recordGroups = await Promise.all(

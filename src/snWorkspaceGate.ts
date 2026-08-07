@@ -6,10 +6,20 @@ import { getIgnoreGlobs, isPathIgnored } from './ignorePaths';
 export const SN_WORKSPACE_CONTEXT = 'servicenowXml.isSnWorkspace';
 
 const PROBE_DEBOUNCE_MS = 300;
+const STATE_KEY = 'servicenowXml.snWorkspaceGate';
+
+/** 32 single-char wildcards — matches `sys_app_{32-hex}.xml` basename shape. */
+const SYS_APP_FIND_GLOB =
+  '**/sys_app_????????????????????????????????.xml';
 
 export { matchesSnAppMarker };
 
 type GateListener = () => void;
+
+interface GateCache {
+  isSnWorkspace: boolean;
+  appSysId?: string;
+}
 
 /**
  * Detects a ServiceNow app workspace via `{sys_id}/sys_app_{sys_id}.xml`
@@ -20,11 +30,14 @@ export class SnWorkspaceGate implements vscode.Disposable {
   private appSysId: string | undefined;
   private probeTimer: NodeJS.Timeout | undefined;
   private probeGeneration = 0;
+  private readonly workspaceState: vscode.Memento;
   private readonly listeners = new Set<GateListener>();
   private readonly watchers: vscode.FileSystemWatcher[] = [];
   private readonly disposables: vscode.Disposable[] = [];
 
-  constructor() {
+  constructor(workspaceState: vscode.Memento) {
+    this.workspaceState = workspaceState;
+    this.restoreFromCache();
     this.disposables.push(
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         this.restartWatchers();
@@ -94,6 +107,26 @@ export class SnWorkspaceGate implements vscode.Disposable {
     };
   }
 
+  private restoreFromCache(): void {
+    const cached = this.workspaceState.get<GateCache>(STATE_KEY);
+    if (!cached?.isSnWorkspace) {
+      return;
+    }
+    this.snWorkspace = true;
+    this.appSysId = cached.appSysId;
+    // Publish immediately so the Records view `when` clause can show on reload
+    // without waiting for findFiles.
+    void this.publishContext();
+  }
+
+  private persistCache(): void {
+    const value: GateCache = {
+      isSnWorkspace: this.snWorkspace,
+      appSysId: this.appSysId
+    };
+    void this.workspaceState.update(STATE_KEY, value);
+  }
+
   private scheduleProbe(): void {
     if (this.probeTimer) {
       clearTimeout(this.probeTimer);
@@ -114,11 +147,13 @@ export class SnWorkspaceGate implements vscode.Disposable {
     const appSysId = marker?.sysId;
     if (found === this.snWorkspace && appSysId === this.appSysId) {
       await this.publishContext();
+      this.persistCache();
       return;
     }
     this.snWorkspace = found;
     this.appSysId = appSysId;
     await this.publishContext();
+    this.persistCache();
     this.notify();
   }
 
@@ -131,7 +166,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     const ignoreGlobs = getIgnoreGlobs();
     const uris = await vscode.workspace.findFiles(
-      '**/sys_app_*.xml',
+      SYS_APP_FIND_GLOB,
       '**/{node_modules,.git}/**'
     );
     for (const uri of uris) {
@@ -170,7 +205,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
       return;
     }
     for (const folder of folders) {
-      const pattern = new vscode.RelativePattern(folder, '**/sys_app_*.xml');
+      const pattern = new vscode.RelativePattern(folder, SYS_APP_FIND_GLOB);
       const watcher = vscode.workspace.createFileSystemWatcher(pattern);
       watcher.onDidCreate(() => this.scheduleProbe());
       watcher.onDidChange(() => this.scheduleProbe());

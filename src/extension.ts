@@ -47,12 +47,13 @@ const SORT_BY_PICKS: Array<{
  * Activate ServiceNow XML diagnostics and the optional Records navigator.
  * Syntax coloring is contributed via TextMate injection (no runtime hook needed).
  * The tree provider is registered first so the Records view never sits without a provider.
- * Catalog indexing stays lazy until the view is used and navigator.enable is true.
+ * Catalog indexing starts when the gate passes and navigator.enable is true (eager),
+ * and also when the Records view becomes visible.
  * Lint and the Records view stay gated until `{sys_id}/sys_app_{sys_id}.xml` is found
  * (or `enabledForAllWindows` bypasses the gate).
  */
 export function activate(context: vscode.ExtensionContext): void {
-  const gate = new SnWorkspaceGate();
+  const gate = new SnWorkspaceGate(context.workspaceState);
   context.subscriptions.push(gate);
 
   // Register the Records tree before any heavier work so the activity-bar view
@@ -78,6 +79,9 @@ export function activate(context: vscode.ExtensionContext): void {
   }
   syncRecordsFilterUi(treeView, treeProvider);
 
+  // Overlap indexing with view appearance when cache/gate already says SN workspace.
+  maybeStartCatalogIndex(catalog, treeProvider, gate);
+
   try {
     activateDiagnosticsAndCommands(context, catalog, treeProvider, treeView, gate);
   } catch (error) {
@@ -87,6 +91,29 @@ export function activate(context: vscode.ExtensionContext): void {
       `ServiceNow XML activated the Records view, but other features failed: ${message}`
     );
   }
+}
+
+/**
+ * Start catalog indexing when the navigator is enabled and the SN workspace gate
+ * (or enabledForAllWindows) allows it — without waiting for the view to open.
+ */
+function maybeStartCatalogIndex(
+  catalog: RecordCatalog,
+  treeProvider: RecordsTreeProvider,
+  gate: SnWorkspaceGate
+): void {
+  if (!catalog.isEnabled() || !gate.isLintActive()) {
+    return;
+  }
+  void catalog
+    .ensure({ showProgress: true })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      void vscode.window.showErrorMessage(
+        `ServiceNow Records indexing failed: ${message}`
+      );
+    })
+    .finally(() => treeProvider.refreshTree());
 }
 
 /**
@@ -115,6 +142,7 @@ function activateDiagnosticsAndCommands(
         }
       }
       diagnostics.refreshActiveEditor();
+      maybeStartCatalogIndex(catalog, treeProvider, gate);
     })
   );
 
@@ -147,6 +175,7 @@ function activateDiagnosticsAndCommands(
         .getConfiguration('servicenowXml')
         .update('navigator.enable', true, vscode.ConfigurationTarget.Workspace);
       treeProvider.refreshTree();
+      maybeStartCatalogIndex(catalog, treeProvider, gate);
     }),
     vscode.commands.registerCommand('servicenowXml.navigator.refresh', async () => {
       if (!catalog.isEnabled()) {
@@ -274,12 +303,11 @@ function activateDiagnosticsAndCommands(
       }
       if (e.affectsConfiguration('servicenowXml.navigator')) {
         treeProvider.refreshTree();
-        if (
-          e.affectsConfiguration('servicenowXml.navigator.enable') &&
-          treeView.visible &&
-          catalog.isEnabled()
-        ) {
-          treeProvider.setViewVisible(true);
+        if (e.affectsConfiguration('servicenowXml.navigator.enable')) {
+          maybeStartCatalogIndex(catalog, treeProvider, gate);
+          if (treeView.visible && catalog.isEnabled()) {
+            treeProvider.setViewVisible(true);
+          }
         }
       }
     })
