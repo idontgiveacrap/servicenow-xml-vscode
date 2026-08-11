@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.2.3",
+  "version": "2.3.0",
   "publisher": "local",
   "license": "UNLICENSED",
   "engines": {

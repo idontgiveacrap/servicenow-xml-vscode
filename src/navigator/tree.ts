@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog } from './catalog';
 import { matchesQuery } from './goToRecord';
+import { tableDecorationUri } from './gitStatus';
 
 export type TreeNode = TableNode | RecordNode | MessageNode;
 
@@ -207,7 +208,16 @@ export class RecordsTreeProvider
       );
       item.description = String(element.count);
       item.contextValue = 'servicenowXml.table';
-      item.iconPath = new vscode.ThemeIcon('folder');
+      // `symbol-folder` is the same glyph as `folder`, but VS Code treats the
+      // `folder` id as "let the file icon theme draw this" once resourceUri is
+      // set — which leaves no icon at all under themes without folder icons.
+      item.iconPath = new vscode.ThemeIcon('symbol-folder');
+      item.tooltip = `${element.table}\n${element.count} record${
+        element.count === 1 ? '' : 's'
+      }`;
+      // Synthetic URI so the folder picks up the Git state rolled up from its
+      // record files; record leaves get that from their own file URI.
+      item.resourceUri = tableDecorationUri(element.table);
       return item;
     }
 

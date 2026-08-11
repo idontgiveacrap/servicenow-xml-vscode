@@ -70,6 +70,29 @@ Open counts / last-opened times persist in workspace state. Missing metrics sort
 
 `DELETE` rows are shown by default (trash icon, struck-through label, `DELETE · {table}` description). Set `servicenowXml.navigator.excludeDelete` to `true` to hide them. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
+### Git decorations
+
+Records carry the same Git color and badge the Explorer puts on their filename — VS Code applies file decorations to any tree item backed by a file URI, so a modified export shows as `M` in the Records view too.
+
+Table folders group records across directories, so they have no file of their own. Their state is rolled up from the record files underneath, using the built-in Git extension's data (letters, theme colors, and severity ordering copied from it, so themes stay consistent):
+
+| Table folder shows | Meaning |
+|--------------------|---------|
+| Color + letter badge | Highest-severity Git status among its record files (conflict > modified > added / untracked / renamed) |
+| Hover | Per-status counts, e.g. `Git: 3 Modified, 1 Untracked` |
+
+Deletions are not rolled up to table folders, matching how Git decorations propagate in the Explorer.
+
+This follows the standard switches — no extension-specific setting:
+
+| Setting | Effect when off |
+|---------|-----------------|
+| `explorer.decorations.colors` | No Git colors in the Records view |
+| `explorer.decorations.badges` | No Git letter badges in the Records view |
+| `git.decorations.enabled` / `git.enabled` | No Git state at all |
+
+Git is only contacted after the navigator has indexed records; a window that never opens the navigator never touches it. If the built-in Git extension is disabled or absent, the view renders exactly as before.
+
 ## Document kinds
 
 | Kind | Recognition (v1) | Validation |

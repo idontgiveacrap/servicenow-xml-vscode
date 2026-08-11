@@ -19,6 +19,15 @@ const SORT_BY_VALUES: readonly NavigatorSortBy[] = [
   'name'
 ] as const;
 
+/**
+ * Map key for a file URI. Windows paths are compared case-insensitively so URIs
+ * from other sources (the Git extension, editors) match the indexed paths.
+ */
+export function uriKey(uri: vscode.Uri): string {
+  const key = uri.toString();
+  return process.platform === 'win32' ? key.toLowerCase() : key;
+}
+
 /** One indexed ServiceNow record tied to its export file. */
 export interface CatalogRecord {
   table: string;
@@ -178,14 +187,21 @@ export class RecordCatalog implements vscode.Disposable {
    * Whether the URI is indexed in the catalog (any primary row).
    */
   hasUri(uri: vscode.Uri): boolean {
-    return this.recordsByUri.has(uri.toString());
+    return this.recordsByUri.has(uriKey(uri));
+  }
+
+  /**
+   * Catalog rows indexed for a file URI; empty when the file is not indexed.
+   */
+  getRecordsForUri(uri: vscode.Uri): CatalogRecord[] {
+    return this.recordsByUri.get(uriKey(uri)) ?? [];
   }
 
   /**
    * Record an open for every catalog row under this URI, then rebuild sort views.
    */
   recordDocumentOpen(uri: vscode.Uri): void {
-    const records = this.recordsByUri.get(uri.toString());
+    const records = this.recordsByUri.get(uriKey(uri));
     if (!records || records.length === 0) {
       return;
     }
@@ -300,7 +316,7 @@ export class RecordCatalog implements vscode.Disposable {
   private applyRecords(records: CatalogRecord[]): void {
     const recordsByUri = new Map<string, CatalogRecord[]>();
     for (const record of records) {
-      const key = record.uri.toString();
+      const key = uriKey(record.uri);
       const existing = recordsByUri.get(key);
       if (existing) {
         existing.push(record);
@@ -442,7 +458,7 @@ export class RecordCatalog implements vscode.Disposable {
    * Debounce changed paths and update only those catalog entries.
    */
   private scheduleFileChange(uri: vscode.Uri, deleted = false): void {
-    this.pendingFileChanges.set(uri.toString(), deleted ? undefined : uri);
+    this.pendingFileChanges.set(uriKey(uri), deleted ? undefined : uri);
     if (this.watchDebounce) {
       clearTimeout(this.watchDebounce);
     }

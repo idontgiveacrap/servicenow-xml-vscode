@@ -9,6 +9,10 @@ import {
   TreeNode
 } from './navigator/tree';
 import { registerGoToRecord } from './navigator/goToRecord';
+import {
+  GitStatusTracker,
+  RecordsGitDecorationProvider
+} from './navigator/gitStatus';
 import { SnWorkspaceGate } from './snWorkspaceGate';
 
 const SORT_BY_PICKS: Array<{
@@ -78,6 +82,16 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider.setViewVisible(true);
   }
   syncRecordsFilterUi(treeView, treeProvider);
+
+  // Table folders are groupings rather than directories, so their Git state has
+  // to be rolled up from the record files they contain.
+  const gitStatus = new GitStatusTracker();
+  const gitDecorations = new RecordsGitDecorationProvider(catalog, gitStatus);
+  context.subscriptions.push(
+    gitStatus,
+    gitDecorations,
+    vscode.window.registerFileDecorationProvider(gitDecorations)
+  );
 
   // Overlap indexing with view appearance when cache/gate already says SN workspace.
   maybeStartCatalogIndex(catalog, treeProvider, gate);
