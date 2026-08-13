@@ -1,0 +1,43 @@
+---
+description: How ServiceNow scoped-app rows map to Git XML (naming, DELETE, references)
+globs: "**/update/**/*.xml,**/sys_app_*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# ServiceNow ↔ Git (XML exports)
+
+Use this when reading or editing **scoped application** source exported from ServiceNow (e.g. `record_update` XML, package folders).
+
+## Export directories
+
+| Directory | Role |
+|-----------|------|
+| **`update/`** | Primary live application source — scripts, UX, dictionary, choices, etc. **Default place to read and edit.** |
+| **`author_elective_update/`** | Mostly **DELETE** payloads and elective / residual application configuration. **Ignore by default.** |
+
+**`author_elective_update/` policy:** do not search, open, review, or edit files under this directory unless the task specifically requires finding a **deleted record** (`action="DELETE"`) or **application configuration that only lives there**. Prefer `update/` for all normal implementation, debugging, and review work. Repos often `.cursorignore` this tree; still treat it as out of scope even if it is visible.
+
+## File naming
+
+- Most records export to **`{table_name}_{sys_id}.xml`** (table name, underscore, that row’s `sys_id`).
+
+## Deletes
+
+- A deletion is **`action="DELETE"`** on the **top-level element** under `<?xml …?>` — the tag **named after the table** for that row.
+- DELETE payloads often live under **`author_elective_update/`**; open that directory only when tracking deletions or broken references to removed records.
+- **Treat DELETE files as deleted** — do not edit, refactor, or otherwise modify them unless the user **explicitly** asks for changes to that file or record.
+- **Payload data on a DELETE is not live config** in the instance; treat it as **ignored** for current behavior unless the task is **broken references** or **script calls** into removed records.
+- If the same record has both **`INSERT_OR_UPDATE`** and **`DELETE`** anywhere in the tree (**same or different files/directories**), **DELETE wins** — the record is gone.
+
+## Multiple operations per file
+
+- One XML file **may** contain multiple updates; that is **valid** but **uncommon** in ServiceNow exports.
+
+## Reference fields (`display_value` vs `sys_id`)
+
+- **If the reference has no usable `sys_id`** (empty / missing): ServiceNow may resolve via **`display_value`** (lookup).
+- **If `sys_id` is present** (non-empty element text / stored id): the reference is **always** that row; **`display_value` is irrelevant** for resolution (decorative only).
+
+Example: `<sys_scope display_value="Verification"></sys_scope>` → may resolve by display.  
+`<sys_scope display_value="Verification">00000000000000000000000000000000</sys_scope>` → always `00000000000000000000000000000000`.

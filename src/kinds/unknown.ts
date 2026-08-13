@@ -2,6 +2,8 @@ import { KindProfile } from './types';
 
 /**
  * Catch-all for well-formed XML that is not a known ServiceNow kind.
+ * Applied explicitly by `classifyAndValidate` after the ordered profiles;
+ * it is not part of `KIND_PROFILES` because `matches()` always returns true.
  */
 export const unknownSnXml: KindProfile = {
   id: 'unknown_sn_xml',

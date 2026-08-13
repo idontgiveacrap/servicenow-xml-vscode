@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<unload unload_date="2026-08-05 21:12:15">
+<sys_remote_update_set action="INSERT_OR_UPDATE">
+<application display_value="Example">bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</application>
+<application_name>Example</application_name>
+<application_scope>x_example_0</application_scope>
+<application_version>1.0.0</application_version>
+<description>Fixture remote update set</description>
+<name>Example Remote Set</name>
+<remote_sys_id>00000000000000000000000000000000</remote_sys_id>
+<state>loaded</state>
+<sys_class_name>sys_remote_update_set</sys_class_name>
+<sys_id>00000000000000000000000000000000</sys_id>
+</sys_remote_update_set>
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Example">bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</application>
+<category>customer</category>
+<name>sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include"><sys_script_include action="INSERT_OR_UPDATE"><name>SampleUtil</name><sys_id>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</sys_id><sys_scope display_value="Example">bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_scope><sys_update_name>sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</sys_update_name></sys_script_include></record_update>]]></payload>
+<payload_hash>1</payload_hash>
+<remote_update_set display_value="Example Remote Set">00000000000000000000000000000000</remote_update_set>
+<sys_id>00000000000000000000000000000000</sys_id>
+<table>sys_script_include</table>
+<target_name>SampleUtil</target_name>
+<type>Script Include</type>
+</sys_update_xml>
+</unload>

@@ -1,5 +1,11 @@
-import { EmbeddedFieldHit, ParsedDocument } from './kinds/types';
-import { isPrimaryAction } from './parseSnXml';
+import { EmbeddedFieldHit, ParsedDocument, RecordRow } from './kinds/types';
+import {
+  decodeXmlEntities,
+  extractRowElement,
+  isPrimaryAction,
+  offsetToPosition,
+  parseSnXml
+} from './parseSnXml';
 
 export interface ScriptRegion extends EmbeddedFieldHit {
   tableName: string;
@@ -26,6 +32,7 @@ const CLIENT_FIELDS = new Set(['client_script_v2', 'script_true', 'script_false'
 /**
  * Collect lintable script regions from a parsed document.
  * Skips DELETE primary rows by default.
+ * For customer-update files, also walks each <sys_update_xml><payload> one at a time.
  */
 export function extractScriptRegions(
   doc: ParsedDocument,
@@ -55,6 +62,18 @@ export function extractScriptRegions(
         profile: resolveProfile(row.tableName, field.fieldName)
       });
     }
+  }
+
+  // Customer updates keep nested record_update XML inside payload CDATA, which
+  // the outer scanner skips. Parse each payload separately and shift positions.
+  for (const row of doc.rows) {
+    if (row.tableName !== 'sys_update_xml') {
+      continue;
+    }
+    if (row.action === 'DELETE' && !includeDelete) {
+      continue;
+    }
+    regions.push(...extractPayloadScriptRegions(doc, row, includeDelete));
   }
 
   return regions;
@@ -107,6 +126,76 @@ function resolveProfile(tableName: string, fieldName: string): 'server' | 'clien
     return 'client';
   }
   return 'server';
+}
+
+/**
+ * Parse one customer-update payload and return script regions in outer-document coordinates.
+ */
+function extractPayloadScriptRegions(
+  doc: ParsedDocument,
+  row: RecordRow,
+  includeDelete: boolean
+): ScriptRegion[] {
+  const rowXml = doc.text.slice(row.startOffset, row.endOffset);
+  const payloadEl = extractRowElement(rowXml, 'payload');
+  if (!payloadEl) {
+    return [];
+  }
+  const payload = payloadEl.isCdata
+    ? payloadEl.content
+    : decodeXmlEntities(payloadEl.content);
+  if (!payload.trim()) {
+    return [];
+  }
+
+  const cdataToken = '<![CDATA[';
+  const payloadTag = rowXml.indexOf('<payload');
+  let bodyAbs = row.startOffset;
+  if (payloadEl.isCdata) {
+    const cdataAt = rowXml.indexOf(cdataToken, payloadTag >= 0 ? payloadTag : 0);
+    if (cdataAt >= 0) {
+      bodyAbs = row.startOffset + cdataAt + cdataToken.length;
+    }
+  } else if (payloadTag >= 0) {
+    const openEnd = rowXml.indexOf('>', payloadTag);
+    if (openEnd >= 0) {
+      bodyAbs = row.startOffset + openEnd + 1;
+    }
+  }
+
+  const inner = parseSnXml(payload);
+  if (!inner.wellFormed) {
+    return [];
+  }
+
+  const regions: ScriptRegion[] = [];
+  for (const innerRow of inner.rows) {
+    if (!isPrimaryAction(innerRow.action)) {
+      continue;
+    }
+    if (innerRow.action === 'DELETE' && !includeDelete) {
+      continue;
+    }
+    for (const field of innerRow.embeddedFields) {
+      if (field.language !== 'javascript' || !field.content.trim()) {
+        continue;
+      }
+      const absStart = bodyAbs + field.bodyStartOffset;
+      const absEnd = bodyAbs + field.bodyEndOffset;
+      const pos = offsetToPosition(doc.text, absStart);
+      regions.push({
+        ...field,
+        bodyStartOffset: absStart,
+        bodyEndOffset: absEnd,
+        bodyStartLine: pos.line,
+        bodyStartCharacter: pos.character,
+        tableName: innerRow.tableName,
+        action: innerRow.action,
+        profile: resolveProfile(innerRow.tableName, field.fieldName)
+      });
+    }
+  }
+  return regions;
 }
 
 /**

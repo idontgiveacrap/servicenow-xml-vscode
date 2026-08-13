@@ -140,12 +140,59 @@ export function parseSnXml(text: string, filePath?: string): ParsedDocument {
   };
 }
 
+/** Bounds of one action=… row in a ServiceNow export. */
+export interface ActionRowBounds {
+  tableName: string;
+  /** Raw action attribute value (caller normalizes). */
+  rawAction: string;
+  startOffset: number;
+  endOffset: number;
+  rowText: string;
+}
+
 /**
- * Scan for table-named elements that carry an action attribute (SN record rows).
- * Skips matches inside CDATA (e.g. nested record_update inside sys_update_xml payload).
+ * Find the end offset of a balanced element named `tableName` starting after its open tag.
+ * Handles nested same-name children (e.g. a field element named like the table).
+ * Skips content inside CDATA. Close/open matching is case-insensitive.
  */
-function scanRecordRows(text: string): RecordRow[] {
-  const rows: RecordRow[] = [];
+function findBalancedElementEnd(
+  text: string,
+  tableName: string,
+  afterOpenOffset: number,
+  cdataRanges: Array<{ start: number; end: number }>
+): number {
+  const tagRe = new RegExp(
+    `<\\s*(\\/)?\\s*${escapeRegExp(tableName)}\\b[^>]*>`,
+    'gi'
+  );
+  tagRe.lastIndex = afterOpenOffset;
+  let depth = 1;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(text)) !== null) {
+    if (isInsideRanges(match.index, cdataRanges)) {
+      continue;
+    }
+    const isClose = Boolean(match[1]);
+    const selfClosing = !isClose && /\/\s*>$/.test(match[0]);
+    if (isClose) {
+      depth -= 1;
+      if (depth === 0) {
+        return match.index + match[0].length;
+      }
+    } else if (!selfClosing) {
+      depth += 1;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * Find action= rows outside CDATA and isolate each row from its siblings.
+ * Advances the scanner past each row end so nested/sibling opens are not double-scanned.
+ * Nested same-name field elements (no action=) are included via depth-balanced close matching.
+ */
+export function scanActionRowBounds(text: string): ActionRowBounds[] {
+  const rows: ActionRowBounds[] = [];
   const cdataRanges = findCdataRanges(text);
   const openTagRe =
     /<\s*([A-Za-z_][\w.-]*)\b([^>]*?)\baction\s*=\s*["']([^"']+)["']([^>]*)>/g;
@@ -156,44 +203,63 @@ function scanRecordRows(text: string): RecordRow[] {
       continue;
     }
     const tableName = match[1];
-    if (tableName === 'record_update' || tableName === 'unload') {
+    if (
+      tableName === 'record_update' ||
+      tableName === 'unload' ||
+      tableName.toLowerCase() === 'xml'
+    ) {
       continue;
     }
-    const rawAction = match[3];
-    const upperAction = rawAction.toUpperCase();
-    const lowerAction = rawAction.toLowerCase();
+    const startOffset = match.index;
+    let endOffset: number;
+    if (/\/\s*>$/.test(match[0])) {
+      endOffset = startOffset + match[0].length;
+    } else {
+      endOffset = findBalancedElementEnd(
+        text,
+        tableName,
+        startOffset + match[0].length,
+        cdataRanges
+      );
+    }
+    rows.push({
+      tableName,
+      rawAction: match[3],
+      startOffset,
+      endOffset,
+      rowText: text.slice(startOffset, endOffset)
+    });
+    openTagRe.lastIndex = endOffset;
+  }
+  return rows;
+}
+
+/**
+ * Scan for table-named elements that carry an action attribute (SN record rows).
+ * Skips matches inside CDATA (e.g. nested record_update inside sys_update_xml payload).
+ */
+function scanRecordRows(text: string): RecordRow[] {
+  const rows: RecordRow[] = [];
+  for (const bounds of scanActionRowBounds(text)) {
+    const upperAction = bounds.rawAction.toUpperCase();
+    const lowerAction = bounds.rawAction.toLowerCase();
     const action = PRIMARY_ACTIONS.has(upperAction)
       ? upperAction
       : CLEANUP_ACTIONS.has(lowerAction)
         ? lowerAction
-        : rawAction;
-    const startOffset = match.index;
-    const pos = offsetToPosition(text, startOffset);
-
-    const selfClosing = /\/\s*>$/.test(match[0]);
-    let rowEnd: number;
-    if (selfClosing) {
-      rowEnd = startOffset + match[0].length;
-    } else {
-      const closeRe = new RegExp(`</\\s*${escapeRegExp(tableName)}\\s*>`, 'g');
-      closeRe.lastIndex = startOffset + match[0].length;
-      const closeMatch = closeRe.exec(text);
-      rowEnd = closeMatch ? closeMatch.index + closeMatch[0].length : text.length;
-      // Prefer the first close that is not inside a CDATA that started inside this row
-      // (closeRe already finds first close; nested same-name tags are rare in SN exports)
-    }
-
-    const rowXml = text.slice(startOffset, rowEnd);
-    const sysIdInfo = extractSysId(rowXml, startOffset, text);
-    const embeddedFields = extractEmbeddedFields(rowXml, startOffset, text);
+        : bounds.rawAction;
+    const pos = offsetToPosition(text, bounds.startOffset);
+    const rowXml = bounds.rowText;
+    const sysIdInfo = extractSysId(rowXml, bounds.startOffset, text);
+    const embeddedFields = extractEmbeddedFields(rowXml, bounds.startOffset, text);
     const sysScopeValue = extractReferenceFieldValue(rowXml, 'sys_scope');
     const sysPackageValue = extractReferenceFieldValue(rowXml, 'sys_package');
 
     rows.push({
-      tableName,
+      tableName: bounds.tableName,
       action,
-      startOffset,
-      endOffset: rowEnd,
+      startOffset: bounds.startOffset,
+      endOffset: bounds.endOffset,
       line: pos.line,
       character: pos.character,
       sysId: sysIdInfo?.sysId,

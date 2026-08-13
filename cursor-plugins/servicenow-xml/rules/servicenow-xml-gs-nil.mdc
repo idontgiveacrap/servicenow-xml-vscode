@@ -1,0 +1,13 @@
+---
+description: ServiceNow gs.nil semantics for null/empty checks in scripts
+globs: "**/update/**/*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# gs.nil
+
+In ServiceNow server-side JavaScript, `gs.nil(value)` is true when `value` is **null**, **undefined**, or an **empty string** (`''`).
+
+- Do not add redundant `value === ''` checks alongside `gs.nil(value)` unless the value may be a non-string type where empty string is not the concern.
+- `JSONHelper.isEmptyJsonValue` builds on `gs.nil` for column emptiness; it additionally treats literal `'[]'` and `'{}'` as empty JSON column values.

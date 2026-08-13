@@ -10,12 +10,15 @@ import { dataRecordExport } from './dataRecordExport';
 import { customerUpdate } from './customerUpdate';
 import { unknownSnXml } from './unknown';
 
-/** Ordered kind profiles — first match wins. */
+/**
+ * Ordered kind profiles — first match wins. `unknownSnXml` is deliberately
+ * excluded: it matches everything, so it is applied as the explicit fallback
+ * after this list rather than as a list entry that would shadow nothing.
+ */
 export const KIND_PROFILES: KindProfile[] = [
   customerUpdate,
   scopedAppRecordUpdate,
-  dataRecordExport,
-  unknownSnXml
+  dataRecordExport
 ];
 
 /**
@@ -35,44 +38,26 @@ export function classifyAndValidate(
     };
   }
 
-  for (const profile of KIND_PROFILES) {
-    if (profile.matches(doc)) {
-      const diagnostics = profile.validate(doc, ctx);
-      if (profile.pendingRulesNote) {
-        diagnostics.push({
-          message: profile.pendingRulesNote,
-          severity: 'information',
-          line: 0,
-          character: 0,
-          code: `${profile.id}-pending-rules`
-        });
-      }
-      return {
-        kind: profile.id,
-        label: profile.label,
-        diagnostics,
-        lintScripts: profile.lintScripts,
-        lintJson: profile.lintJson === true,
-        pendingRulesNote: profile.pendingRulesNote
-      };
-    }
-  }
+  const profile =
+    KIND_PROFILES.find((candidate) => candidate.matches(doc)) ?? unknownSnXml;
 
+  const diagnostics = profile.validate(doc, ctx);
+  if (profile.pendingRulesNote) {
+    diagnostics.push({
+      message: profile.pendingRulesNote,
+      severity: 'information',
+      line: 0,
+      character: 0,
+      code: `${profile.id}-pending-rules`
+    });
+  }
   return {
-    kind: 'unknown_sn_xml',
-    label: 'Unknown ServiceNow XML',
-    diagnostics: [
-      {
-        message:
-          'XML is well-formed but did not match a known ServiceNow document kind.',
-        severity: 'warning',
-        line: 0,
-        character: 0,
-        code: 'unknown-kind'
-      }
-    ],
-    lintScripts: false,
-    lintJson: false
+    kind: profile.id,
+    label: profile.label,
+    diagnostics,
+    lintScripts: profile.lintScripts,
+    lintJson: profile.lintJson === true,
+    pendingRulesNote: profile.pendingRulesNote
   };
 }
 

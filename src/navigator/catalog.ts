@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { getIgnoreGlobs, isPathIgnored } from '../ignorePaths';
 import { extractRecordIdentities } from './recordName';
-import { RecordUsageStore } from './usage';
+import { RecordUsageStore, uriKey } from './usage';
 
 /** Selectable Records navigator sort modes. */
 export type NavigatorSortBy =
@@ -19,14 +19,7 @@ const SORT_BY_VALUES: readonly NavigatorSortBy[] = [
   'name'
 ] as const;
 
-/**
- * Map key for a file URI. Windows paths are compared case-insensitively so URIs
- * from other sources (the Git extension, editors) match the indexed paths.
- */
-export function uriKey(uri: vscode.Uri): string {
-  const key = uri.toString();
-  return process.platform === 'win32' ? key.toLowerCase() : key;
-}
+export { uriKey } from './usage';
 
 /** One indexed ServiceNow record tied to its export file. */
 export interface CatalogRecord {

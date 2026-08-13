@@ -3,58 +3,48 @@ import * as path from 'path';
 import { parseSnXml } from '../src/parseSnXml';
 import { classifyAndValidate } from '../src/kinds';
 
-const samples: Array<{ label: string; file: string; expect: string }> = [
-  {
-    label: 'Downloads script include unload',
-    file: 'C:/Users/jsmith/Downloads/sys_script_include_c24cb7adc3e8471086f39f3ed40131fd.xml',
-    expect: 'scoped_app_record_update'
-  },
-  {
-    label: 'Downloads remote update set',
-    file: 'C:/Users/jsmith/Downloads/sys_remote_update_set_ae59f0d9c362cf5486f39f3ed40131bf.xml',
-    expect: 'customer_update'
-  },
-  {
-    label: 'Downloads customer update',
-    file: 'C:/Users/jsmith/Downloads/sys_update_xml_6204f7a0c39e8bd086f39f3ed401317e.xml',
-    expect: 'customer_update'
-  },
-  {
-    label: 'Downloads data export',
-    file: 'C:/Users/jsmith/Downloads/x_1900232_eviden_0_famis_validations.xml',
-    expect: 'data_record_export'
-  },
+const samples: Array<{ label: string; file: string; expect: string; required?: boolean }> = [
   {
     label: 'Fixture record_update',
     file: path.join(__dirname, '../fixtures/scoped_app_record_update/sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'),
-    expect: 'scoped_app_record_update'
+    expect: 'scoped_app_record_update',
+    required: true
   },
   {
     label: 'Fixture unload metadata',
     file: path.join(__dirname, '../fixtures/scoped_app_record_update/unload_sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'),
-    expect: 'scoped_app_record_update'
+    expect: 'scoped_app_record_update',
+    required: true
   },
   {
     label: 'Fixture remote update set',
-    file: path.join(__dirname, '../fixtures/customer_update/sys_remote_update_set_ae59f0d9c362cf5486f39f3ed40131bf.xml'),
-    expect: 'customer_update'
+    file: path.join(__dirname, '../fixtures/customer_update/sys_remote_update_set_00000000000000000000000000000000.xml'),
+    expect: 'customer_update',
+    required: true
   },
   {
     label: 'Fixture customer update',
-    file: path.join(__dirname, '../fixtures/customer_update/sys_update_xml_6204f7a0c39e8bd086f39f3ed401317e.xml'),
-    expect: 'customer_update'
+    file: path.join(__dirname, '../fixtures/customer_update/sys_update_xml_00000000000000000000000000000000.xml'),
+    expect: 'customer_update',
+    required: true
   },
   {
     label: 'Fixture data export',
     file: path.join(__dirname, '../fixtures/data_record_export/x_example_0_staging.xml'),
-    expect: 'data_record_export'
+    expect: 'data_record_export',
+    required: true
   }
 ];
 
 let failed = 0;
 for (const s of samples) {
   if (!fs.existsSync(s.file)) {
-    console.log(`SKIP ${s.label} (missing file)`);
+    if (s.required) {
+      console.log(`FAIL ${s.label}: required fixture missing`);
+      failed++;
+    } else {
+      console.log(`SKIP ${s.label} (missing file)`);
+    }
     continue;
   }
   const text = fs.readFileSync(s.file, 'utf8');

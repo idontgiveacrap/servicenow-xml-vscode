@@ -12,12 +12,28 @@ try {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')
   );
-  assert.equal(manifest.version, '2.2.3');
+  assert.match(
+    manifest.version,
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/,
+    'extension version must be a valid SemVer version'
+  );
   assert.ok(
     manifest.contributes.configuration.properties[
       'servicenowXml.enabledForAllWindows'
     ],
     'enabledForAllWindows setting must be registered in the extension manifest'
+  );
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.cursorHelpers.enable'
+    ],
+    'cursorHelpers.enable setting must be registered'
+  );
+  assert.ok(
+    manifest.contributes.commands.some(
+      (c) => c.command === 'servicenowXml.cursor.installHelpers'
+    ),
+    'Install Cursor Helpers command must be registered'
   );
   assert.equal(
     manifest.contributes.views['servicenow-xml'][0].when,
@@ -82,7 +98,7 @@ try {
   const deleteXml = `<record_update table="sys_scoped_cache">
       <sys_scoped_cache action="DELETE">
         <name>Key translations</name>
-        <sys_id>c6e46af2c3c8831086f39f3ed4013126</sys_id>
+        <sys_id>00000000000000000000000000000000</sys_id>
         <sys_mod_count>3</sys_mod_count>
       </sys_scoped_cache>
     </record_update>`;
@@ -135,6 +151,23 @@ try {
   );
   assert.equal(normalized.rows[0].action, 'INSERT_OR_UPDATE');
   assert.equal(normalized.rows[0].sysId, '33333333333333333333333333333333');
+
+  const nestedSameName = parseSnXml(
+    `<record_update table="incident">
+      <incident action="INSERT_OR_UPDATE">
+        <sys_id>55555555555555555555555555555555</sys_id>
+        <incident>child field value</incident>
+        <short_description>Outer row</short_description>
+      </incident>
+    </record_update>`
+  );
+  assert.equal(nestedSameName.rows.length, 1);
+  assert.equal(nestedSameName.rows[0].tableName, 'incident');
+  assert.equal(nestedSameName.rows[0].sysId, '55555555555555555555555555555555');
+  assert.ok(
+    nestedSameName.rows[0].endOffset > nestedSameName.text.indexOf('Outer row'),
+    'row must include content after nested same-name field'
+  );
 
   const fileNameBundlePath = path.join(tempDir, 'fileName.cjs');
   esbuild.buildSync({

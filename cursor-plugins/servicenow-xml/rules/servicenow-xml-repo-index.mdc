@@ -1,0 +1,114 @@
+---
+description: ServiceNow Git export — indexer, split index files, and discovery workflow
+globs: "**/update/**/*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# ServiceNow repo index and discovery
+
+Applies to ServiceNow scoped application exports in Git (`**/update/**/*.xml`, etc.).
+
+**`author_elective_update/`:** ignore for discovery and navigation unless the task is finding a **deleted record** or **application configuration stored only there**. See **`servicenow-xml-git-exports.mdc`**. The indexer still scans that tree (for DELETE / logical-deletion and residual config) and reports separate counts under `summary.by_export_dir`.
+
+For **code review** priorities and review-specific checks (relationships, UX state, ES12/ES5), see **`servicenow-xml-review.mdc`**.
+
+## Indexer (canonical copy)
+
+Always use the **extension-managed indexer** (not a repo-local copy):
+
+`~/.cursor/servicenow-xml/scripts/servicenow_repo_index.py`
+
+On Windows that expands to `%USERPROFILE%\.cursor\servicenow-xml\scripts\servicenow_repo_index.py`. Prefer the Command Palette action **ServiceNow XML: Run Repo Indexer** when available.
+
+### Staleness check (before using any index file)
+
+1. Read **`git_commit`** from **`index.json`** at the repository root.
+2. Run `git rev-parse HEAD` in the repo and compare to **`git_commit`**.
+3. If missing, null, or different, re-run the indexer before navigation or mechanical triage.
+
+### Agent-ideal command (default flags)
+
+Run from the **repository root**:
+
+```bash
+python "$HOME/.cursor/servicenow-xml/scripts/servicenow_repo_index.py" .
+```
+
+Windows PowerShell:
+
+```powershell
+python "$env:USERPROFILE\.cursor\servicenow-xml\scripts\servicenow_repo_index.py" .
+```
+
+If `python` is not on PATH, use `py -3` the same way (keep paths quoted).
+
+Default output: **minified** split index, **slim canonical** map, **`lookup_by_name`**, **`reference_errors`** in `index.json`, **`git_commit`** = current `HEAD`. Warnings and graph are omitted unless flags below are set.
+
+Also read **`INDEX.md`** at the repo root when present.
+
+### Indexer flags
+
+| Flag | Meaning |
+|------|---------|
+| *(default)* | Split index; reference scan runs; **errors only** in `index.json`; warnings/graph **not written**. |
+| `--include-reference-warnings` | Write **`index.issues.json`** (deduped full `reference_issues`). |
+| `--include-reference-graph` | Write **`index.graph.json`**. |
+| `--no-reference-check` | Skip scan entirely (fast navigation-only regen). |
+| `--full-canonical` | Also embed full `canonical_source_path_by_sys_id` in **`index.canonical.json`**. |
+| `--pretty` | Indented JSON. Default is **minified** (token-friendly). |
+| `--reference-external` | Warn when XML ref-like elements point at sys_ids **not in this export** (noisy for OOB). |
+| `--reference-oob-definitions` | Warn when macroponent `definition.id` / `definitionId` **not in this export**. |
+| `--reference-embedded-json` | Parse JSON in selected elements on non–script-heavy tables and flag embedded sys_ids. |
+| `--all-records` | Embed full `records` array in **`index.json`** (large). |
+
+**Source rows:** skipped when `action="DELETE"` or when the row’s `sys_id` is **logically deleted** anywhere in the export.
+
+**Canonical duplicates:** same `sys_id` in multiple **active** files → only the latest **`sys_updated_on`** is canonical; others → `duplicate_active_sys_id` (in **`index.issues.json`** when warnings are included).
+
+**Per-record issue cap:** at most **20** issues per record; extras in **`issues_suppressed_by_per_record_cap`**.
+
+## Split index layout (schema_version 7)
+
+| File | Contents |
+|------|----------|
+| **`index.json`** | Manifest + meta: `git_commit`, `summary`, `app`, `counts_by_table`, `lookup_by_name`, `detail_by_table`, `reference_errors`, `reference_issue_summary`, `files`, `errors` |
+| **`index.canonical.json`** | `canonical_exceptions`, `multi_record_files`, `canonical_convention`; optional full map with `--full-canonical` |
+| **`index.issues.json`** | Deduped `reference_issues` (only with `--include-reference-warnings`) |
+| **`index.graph.json`** | `reference_graph` (only with `--include-reference-graph`) |
+
+### `summary` / `summary.by_export_dir`
+
+Top-level `summary` totals cover the whole export. **`summary.by_export_dir`** splits the same file/row stats by directory kind:
+
+| Key | Meaning |
+|-----|---------|
+| **`update`** | Files under `**/update/**` (primary live source) |
+| **`author_elective_update`** | Files under `**/author_elective_update/**` (DELETEs + elective/residual config) |
+| **`other`** | Export XML outside those dirs (e.g. `sys_app_*.xml`) |
+
+Each bucket has: `xml_files`, `record_rows`, `delete_actions`, `active_record_rows` (non-`DELETE` rows).
+
+## Reference issue types
+
+| Type | Meaning |
+|------|---------|
+| **`xml_reference_deleted`** | Active row points at a **logically deleted** sys_id (**high priority**; also in `reference_errors`). |
+| **`orphan_missing_target`** | Known FK element points at a sys_id **not in this export** (slice gap — not always a bug). |
+| **`duplicate_active_sys_id`** | Superseded file for the same `sys_id`. |
+| **`sys_scope_empty`** / **`sys_scope_non_sys_id`** | Malformed scoped row scope reference. |
+| **`macroponent_state_binding`** | Heuristic: `STATE_BINDING` / `DATA_OUTPUT_BINDING` path has no matching `MACROPONENT_STATE_UPDATE_REQUESTED` writer in the same macroponent JSON. |
+
+Treat **`xml_reference_deleted`** as high priority. Treat **`orphan_missing_target`** as missing-from-slice unless context says otherwise.
+
+## Discovery workflow (implementation, debugging, navigation)
+
+For non-review tasks, prefer the index before broad search:
+
+1. **Staleness check** → re-run indexer if `git_commit` ≠ `git rev-parse HEAD`.
+2. Read **`index.json`** only first (`lookup_by_name`, `detail_by_table`, `files`, `summary.by_export_dir`). Do not load full **`index.canonical.json`**, **`index.issues.json`**, or **`index.graph.json`** unless needed.
+3. Resolve records: **`lookup_by_name`** → **`index.canonical.json`** (`canonical_exceptions`, `multi_record_files`) → filename convention (`{table}_{sys_id}.xml`). Prefer paths under **`update/`**; open **`author_elective_update/`** only for deletes or config that is not in `update/`.
+4. Open targeted XML/script files under **`update/`**; use **`grep`** on specific keys when needed. Do not broad-search **`author_elective_update/`** unless the task is deletes / residual app config.
+5. Use broad content search only when index-guided lookup is insufficient — still scoped to **`update/`** first.
+
+For full mechanical triage, re-run with **`--include-reference-warnings`** (and optionally **`--include-reference-graph`**) or read existing shard files if already generated.
