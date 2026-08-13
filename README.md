@@ -6,6 +6,7 @@ Cursor / VS Code extension that:
 2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022)
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
 4. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
+5. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
 
 ## Install (Cursor)
 
@@ -118,6 +119,42 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.navigator.enable` | `false` | Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used. |
 | `servicenowXml.navigator.excludeDelete` | `false` | Hide `action=DELETE` records from the navigator. |
 | `servicenowXml.navigator.sortBy` | `mostOpened` | Sort order for Records navigator tables and records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name`. |
+| `servicenowXml.cursorHelpers.enable` | `true` | **Cursor only.** On activate, idempotently install ServiceNow MCP servers, user rules, and the Python repo indexer. No-op in VS Code. |
+| `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that refreshes `index.json` when stale for ServiceNow export workspaces. |
+| `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, DB schema MCP, and sessionStart hook. |
+
+## Cursor helpers (Cursor only)
+
+On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the extension installs into `~/.cursor/servicenow-xml/` (`%USERPROFILE%\.cursor\servicenow-xml\` on Windows):
+
+| Piece | Path under `~/.cursor/servicenow-xml/` |
+|-------|----------------------------------------|
+| **Indexer** | `scripts/servicenow_repo_index.py` |
+| **DB schema MCP script** | `scripts/db_schema_mcp_server.py` |
+| **DB schema data** | `data/sys_dictionary.csv.gz` (copied from the VSIX; see refresh URL below) |
+| **sessionStart hook** | `hooks/session_start_index.py` |
+| **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
+| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema` |
+| **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
+| **Cursor plugin** | `plugin/` registered as `servicenow-xml` |
+
+### DB schema CSV refresh URL
+
+The schema MCP is backed by a `sys_dictionary` list CSV export. To refresh the bundled file from an instance:
+
+```text
+/sys_dictionary_list.do?sysparm_query=sys_scope.sys_class_name!=sys_app^ORsys_scopeISEMPTY&CSV&sysparm_default_export_fields=all
+```
+
+Replace `{custom scope names}` with comma-separated scope values to exclude. Keep `ORsys_scopeISEMPTY` so global dictionary rows remain. Gzip the downloaded CSV to `cursor-plugins/servicenow-xml/data/sys_dictionary.csv.gz`, then rebuild/reinstall helpers.
+
+Helpers may be installed with the (Ctrl+Shift+P) command **ServiceNow XML: Install Cursor Helpers**. After install (or when helpers change on activation), the extension suggests **Developer: Reload Window** (Ctrl+Shift+P) so MCP servers and rules take effect.
+
+If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the DB schema MCP / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
+
+A Cursor rule is included which references snc (ServiceNow CLI utility) I recommend installing it and pointing it to a PDI or non-production environment with non-sensitive data so Cursor can learn about ServiceNow the way you would and point you to exact URIs.
+
+VS Code installs ignore this path entirely; lint/navigator behavior is unchanged.
 
 ## Fixtures
 
@@ -142,8 +179,7 @@ Press F5 in VS Code/Cursor against this folder to launch an Extension Developmen
 ## Non-goals (v1)
 
 - Renaming Explorer filenames or editor tabs
-- Per-table dictionary field schemas
-- Live instance schema
+- Live instance schema (use `snc` or refresh the bundled CSV export)
 - Macroponent JSON semantic validation
 - Marketplace publish
 - Depending on repo `index.json` for the navigator

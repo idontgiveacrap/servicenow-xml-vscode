@@ -11,10 +11,20 @@ type UsageMap = Record<string, RecordUsage>;
 const STATE_KEY = 'servicenowXml.navigator.usage';
 
 /**
+ * Map key for a file URI. Windows paths are compared case-insensitively so URIs
+ * from other sources (the Git extension, editors) match the indexed paths.
+ */
+export function uriKey(uri: vscode.Uri): string {
+  const key = uri.toString();
+  return process.platform === 'win32' ? key.toLowerCase() : key;
+}
+
+/**
  * Build a stable usage key for a catalog row (URI + optional sys_id).
+ * Uses {@link uriKey} so Windows drive/path casing matches the catalog.
  */
 export function usageKey(uri: vscode.Uri, sysId?: string): string {
-  return `${uri.toString()}::${sysId ?? ''}`;
+  return `${uriKey(uri)}::${sysId ?? ''}`;
 }
 
 /**

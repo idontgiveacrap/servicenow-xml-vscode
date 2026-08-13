@@ -73,6 +73,7 @@ export class DiagnosticsController implements vscode.Disposable {
 
   /**
    * Parse and lint one XML document synchronously.
+   * Ignores results when the document changed during work (version guard).
    */
   refresh(document: vscode.TextDocument): void {
     const config = vscode.workspace.getConfiguration('servicenowXml');
@@ -92,6 +93,7 @@ export class DiagnosticsController implements vscode.Disposable {
       return;
     }
 
+    const version = document.version;
     const text = document.getText();
     const filePath = document.uri.fsPath;
     const parsed = parseSnXml(text, filePath);
@@ -117,6 +119,10 @@ export class DiagnosticsController implements vscode.Disposable {
     ) {
       const jsonRegions = extractJsonRegions(parsed);
       snDiags.push(...lintJsonRegions(jsonRegions));
+    }
+
+    if (document.version !== version) {
+      return;
     }
 
     const vsDiags = snDiags.map((d) => toVsDiagnostic(d, document));

@@ -1,0 +1,49 @@
+---
+description: ServiceNow export reviews — bugs-first, relationships, UX state, scoped ES12
+globs: "**/update/**/*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# ServiceNow repo reviews
+
+When the user asks for a **review** of this ServiceNow Git export (quality, best practices, bugs). If the task is unrelated to ServiceNow source, ignore this rule.
+
+When **writing or editing** scripts, choose the JavaScript language level from the app's actual setting, not an assumption (see **JavaScript language level by scope** below).
+
+**Indexer and discovery:** run the staleness check and use the split index per **`servicenow-xml-repo-index.mdc`**. Start reviews with **`index.json`** (`reference_errors`, `reference_issue_summary`). Load **`index.issues.json`** only for full mechanical triage (regenerate with `--include-reference-warnings` if absent).
+
+**Scope:** review **`update/`** by default. Skip **`author_elective_update/`** unless checking **deleted records** or **configuration that only exists there** (see **`servicenow-xml-git-exports.mdc`**).
+
+## Records and relationships
+
+Treat the export as **related rows**, not isolated XML files.
+
+- Trace **parent/child, references, and M2M** expectations for the table in question.
+- Flag **missing expected related records**, **orphaned references**, and **inconsistent graphs** (e.g. an `sc_cat_item` without a related `sysrule_assignment` row pointing at it is a best-practice concern unless intentionally excused).
+
+## Review priority
+
+1. **Bugs first** — incorrect logic, unsafe patterns, Glide API misuse, security (ACLs/queries, client exposure, unsafe dynamic execution), and failure paths.
+2. **Best practices and operational hygiene** — including relationship-based checks like the example above.
+3. **Mechanical index findings** — issue types and triage rules are defined in **`servicenow-xml-repo-index.mdc`**; prioritize **`xml_reference_deleted`**. If **`issues_suppressed_by_per_record_cap`** appears in the summary, open the cited XML for additional findings.
+
+## UX / UI Builder (second pass)
+
+For **workspace, modals, lists, and macroponents**, do not stop at server-side processors and script includes.
+
+1. **Client state graph** — For every `STATE_BINDING` / `DATA_OUTPUT_BINDING` / transform that reads `api.state` or declarative `address` paths, confirm something in the same experience **writes** that state before the consumer runs (macroponent `MACROPONENT_STATE_UPDATE_REQUESTED`, data broker outputs, documented client scripts).
+2. **Split state buckets** — If the UI uses parallel keys (e.g. `clickedRow` vs `clickedRowMeta`), verify both are populated for the same user action when the modal or downstream control depends on them.
+3. **Cross-check the indexer** — If `macroponent_state_binding` reports a path, open the cited `sys_ux_macroponent` XML and reconcile with event mappings and processors (string literals, action names, metadata).
+
+## JavaScript language level by scope
+
+Determine ES support from the **indexer**, not by assuming. `index.json` → `app` carries `js_level`, `supportsES12`, and `scope` read from the canonical `sys_app` row.
+
+Decision order:
+
+1. **`index.json` `app.supportsES12 === true`** (indexer sets this when scope is non-global **and** `js_level` is `es_latest`): author/edit with **ES12-era JavaScript** — `const`/`let`, arrow functions where they aid clarity, optional chaining (`?.`), nullish coalescing (`??`), template literals, `for...of`, etc. Match existing file patterns; do not downgrade unless documented.
+2. **`index.json` present but `supportsES12 !== true`** (global scope, or `js_level` not `es_latest`): assume **ES5-only**; do not use features beyond ES5.
+3. **No `index.json` / field missing** (e.g. reviewing a single file outside a repo): fall back to reading `js_level` on the `sys_app` row directly if available; otherwise treat as **ES5-only** and note the assumption. Do not apply ES12 without evidence the app is on `es_latest`.
+
+Never apply ES12 to an app still on ES5 Rhino — it deploys but can fail at runtime.

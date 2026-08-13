@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<unload unload_date="2026-08-05 21:05:51">
+<sys_update_xml action="INSERT_OR_UPDATE">
+<action>INSERT_OR_UPDATE</action>
+<application display_value="Global">global</application>
+<category>customer</category>
+<name>sys_ui_section_00000000000000000000000000000000</name>
+<payload><![CDATA[<?xml version="1.0" encoding="UTF-8"?><record_update><sys_ui_section action="INSERT_OR_UPDATE"><caption/><name>sys_metadata_link</name><sys_id>00000000000000000000000000000000</sys_id><sys_scope display_value="Global">global</sys_scope><sys_update_name>sys_ui_section_00000000000000000000000000000000</sys_update_name></sys_ui_section></record_update>]]></payload>
+<payload_hash>213732561</payload_hash>
+<sys_id>00000000000000000000000000000000</sys_id>
+<table>sys_metadata_link</table>
+<target_name>Metadata Snapshot</target_name>
+<type>Form Layout</type>
+<update_set display_value="Example">00000000000000000000000000000000</update_set>
+</sys_update_xml>
+</unload>

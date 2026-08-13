@@ -2,11 +2,11 @@
 <unload unload_date="2026-08-05 21:07:31">
 <x_example_0_staging action="INSERT_OR_UPDATE">
 <sys_class_name>x_example_0_staging</sys_class_name>
-<sys_id>0cea23dbc31a035486f39f3ed40131f3</sys_id>
+<sys_id>00000000000000000000000000000000</sys_id>
 <sys_created_by>admin</sys_created_by>
 <sys_created_on>2026-07-31 05:00:01</sys_created_on>
 <u_request_id>REQ-001</u_request_id>
-<u_memberlist>{"hhMember":[{"firstName":"JANE","lastName":"DOE","dcn":"12345678"}]}</u_memberlist>
-<u_phonelist>{"phoneNumber":[{"phoneType":"PH3","moPhoneNumber":"5551112222"}]}</u_phonelist>
+<u_memberlist>{"member":[{"firstName":"JANE","lastName":"DOE","dcn":"12345678"}]}</u_memberlist>
+<u_phonelist>{"phoneNumber":[{"phoneType":"3","moPhoneNumber":"5551112222"}]}</u_phonelist>
 </x_example_0_staging>
 </unload>

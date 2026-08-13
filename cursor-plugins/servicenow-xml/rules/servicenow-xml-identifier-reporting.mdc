@@ -1,0 +1,32 @@
+---
+description: Report new ServiceNow identifiers (sys_id, number, targetId) and where they were added
+globs: "**/update/**/*.xml,**/sys_app_*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# ServiceNow identifier reporting
+
+When working on ServiceNow scoped-app Git exports, **any time you create a new unique identifier**, tell the user:
+
+1. **What the id is** — the exact value.
+2. **Where it is** — file path and the field or element that holds it (e.g. row `sys_id`, filename, `targetId`, `definition.id`, `number`).
+
+## Identifiers in scope
+
+- Row **`sys_id`** (including when it drives the export filename `{table}_{sys_id}.xml`)
+- **`number`** and other platform-generated unique fields on a record
+- UX / macroponent ids — e.g. **`targetId`**, **`definition.id`**, **`definitionId`**, event or binding element ids when you assign new values
+
+## When to report
+
+- After creating or assigning a new id in code, XML, or JSON you edit
+- After generating a new sys_id for a new record or artifact
+- In your completion summary when the task introduced one or more new identifiers
+
+Use a short, scannable list — one line per id — for example:
+
+- `sys_id` `a1b2c3…` — `update/sys_script_include_a1b2c3….xml`, `<sys_script_include><sys_id>`
+- `targetId` `d4e5f6…` — `update/sys_ux_macroponent_….xml`, event mapping `MACROPONENT_STATE_UPDATE_REQUESTED`
+
+Do not skip this when ids are easy to miss (embedded JSON, multiple records in one file, or ids only in attributes).

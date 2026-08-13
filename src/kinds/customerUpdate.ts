@@ -17,7 +17,7 @@ import {
 export const customerUpdate: KindProfile = {
   id: 'customer_update',
   label: 'Customer / update-set',
-  lintScripts: false,
+  lintScripts: true,
   lintJson: false,
 
   matches(doc) {

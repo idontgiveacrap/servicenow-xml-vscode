@@ -1,0 +1,16 @@
+---
+description: Use descriptive GlideRecord variable names in ServiceNow scripts
+globs: "**/update/**/*.xml"
+alwaysApply: false
+---
+<!-- managed-by: servicenow-xml -->
+
+# GlideRecord variable naming
+
+In server-side and client-callable ServiceNow scripts, name each `GlideRecord` after what it represents — not after the API type.
+
+- **Do not** use `gr`, `GR`, or other generic placeholders.
+- **Do** use names that identify the table or role: `incidentGr`, `taskRecord`, `requestGr`, `assignmentRuleGr`.
+- When several records appear in one function, each name must be distinguishable at a glance.
+
+This applies to new and edited script blocks in scoped application exports under **`update/`**. Do not edit **`author_elective_update/`** unless the task specifically requires a deleted record or config stored only there.

@@ -77,15 +77,28 @@ export function registerGoToRecord(
       ): Promise<vscode.SymbolInformation[]> {
         // Do not index merely because the workspace-symbol picker opened.
         const q = query.trim().toLowerCase();
-        if (!q || token.isCancellationRequested || !catalog.isEnabled()) {
+        if (
+          q.length < 3 ||
+          token.isCancellationRequested ||
+          !catalog.isEnabled()
+        ) {
           return [];
         }
         await catalog.ensure({ showProgress: false });
         if (token.isCancellationRequested) {
           return [];
         }
+        const resultLimit = 200;
         const records = catalog.getAllRecords();
-        const matched = records.filter((r) => matchesQuery(r, q));
+        const matched: CatalogRecord[] = [];
+        for (const r of records) {
+          if (matchesQuery(r, q)) {
+            matched.push(r);
+            if (matched.length >= resultLimit) {
+              break;
+            }
+          }
+        }
 
         return matched.map(
           (r) =>

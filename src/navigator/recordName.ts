@@ -1,5 +1,5 @@
 import { parseExportFileName } from '../fileName';
-import { decodeXmlEntities, findCdataRanges } from '../parseSnXml';
+import { decodeXmlEntities, scanActionRowBounds } from '../parseSnXml';
 
 /** Lightweight record identity extracted from a ServiceNow export XML. */
 export interface RecordIdentity {
@@ -120,46 +120,24 @@ interface PrimaryRowHit {
  */
 function findPrimaryRows(text: string): PrimaryRowHit[] {
   const rows: PrimaryRowHit[] = [];
-  const cdataRanges = findCdataRanges(text);
-  const openTagRe =
-    /<\s*([A-Za-z_][\w.-]*)\b([^>]*?)\baction\s*=\s*["']([^"']+)["']([^>]*)>/g;
-  let match: RegExpExecArray | null;
-  while ((match = openTagRe.exec(text)) !== null) {
+  for (const bounds of scanActionRowBounds(text)) {
+    if (META_ROOTS.has(bounds.tableName.toLowerCase())) {
+      continue;
+    }
+    const action = bounds.rawAction.toUpperCase();
     if (
-      cdataRanges.some(
-        (range) => match!.index >= range.start && match!.index < range.end
-      )
+      action !== 'INSERT_OR_UPDATE' &&
+      action !== 'DELETE' &&
+      action !== 'INSERT' &&
+      action !== 'UPDATE'
     ) {
       continue;
     }
-    const tableName = match[1];
-    if (META_ROOTS.has(tableName.toLowerCase())) {
-      continue;
-    }
-    const action = match[3].toUpperCase();
-    if (
-      action === 'INSERT_OR_UPDATE' ||
-      action === 'DELETE' ||
-      action === 'INSERT' ||
-      action === 'UPDATE'
-    ) {
-      if (/\/\s*>$/.test(match[0])) {
-        rows.push({ tableName, action, rowText: match[0] });
-        continue;
-      }
-      const closeRe = new RegExp(`</\\s*${escapeRegExp(tableName)}\\s*>`, 'i');
-      const remainder = text.slice(match.index + match[0].length);
-      const closeMatch = closeRe.exec(remainder);
-      const rowEnd = closeMatch
-        ? match.index + match[0].length + closeMatch.index + closeMatch[0].length
-        : text.length;
-      rows.push({
-        tableName,
-        action,
-        rowText: text.slice(match.index, rowEnd)
-      });
-      openTagRe.lastIndex = rowEnd;
-    }
+    rows.push({
+      tableName: bounds.tableName,
+      action,
+      rowText: bounds.rowText
+    });
   }
   return rows;
 }

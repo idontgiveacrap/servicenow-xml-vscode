@@ -48,6 +48,9 @@ const CLIENT_GLOBALS: Record<string, 'readonly' | 'writable'> = {
   api: 'readonly'
 };
 
+/** Characters that force entity encoding (or break CDATA) in XML text nodes. */
+const XML_TEXT_ESCAPE_RE = /[&<]|[^\t\n\r\x20-\x7E]/;
+
 let linter: LinterType | undefined;
 
 /**
@@ -102,21 +105,157 @@ function configFor(profile: 'server' | 'client'): LinterType.Config {
 }
 
 /**
+ * Map a 0-based offset in entity-decoded script text back into the raw XML body.
+ */
+function decodedOffsetToRawOffset(encoded: string, decodedOffset: number): number {
+  if (decodedOffset <= 0) {
+    return 0;
+  }
+  let decodedIndex = 0;
+  let encodedIndex = 0;
+  while (encodedIndex < encoded.length && decodedIndex < decodedOffset) {
+    if (encoded.charCodeAt(encodedIndex) === 38 /* & */) {
+      const semi = encoded.indexOf(';', encodedIndex + 1);
+      if (semi === -1) {
+        encodedIndex += 1;
+        decodedIndex += 1;
+        continue;
+      }
+      // One entity → one (or rarely more) decoded code unit(s); treat as one step for BMP entities.
+      const entity = encoded.slice(encodedIndex, semi + 1);
+      const piece = entity.replace(
+        /&(?:#(\d+)|#x([0-9a-f]+)|amp|lt|gt|quot|apos);/i,
+        (match, decimal: string | undefined, hex: string | undefined) => {
+          if (decimal || hex) {
+            const codePoint = Number.parseInt(decimal ?? hex ?? '', decimal ? 10 : 16);
+            return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
+          }
+          switch (match.toLowerCase()) {
+            case '&amp;':
+              return '&';
+            case '&lt;':
+              return '<';
+            case '&gt;':
+              return '>';
+            case '&quot;':
+              return '"';
+            case '&apos;':
+              return "'";
+            default:
+              return match;
+          }
+        }
+      );
+      decodedIndex += piece.length;
+      encodedIndex = semi + 1;
+    } else {
+      encodedIndex += 1;
+      decodedIndex += 1;
+    }
+  }
+  return encodedIndex;
+}
+
+/**
+ * Map ESLint line/column (in decoded script space) to host XML coordinates.
+ */
+function mapDecodedLintPosToXml(
+  region: ScriptRegion,
+  lineInDecoded: number,
+  columnInDecoded: number
+): { line: number; character: number } {
+  const decoded = region.decodedContent;
+  let offsetInDecoded = 0;
+  let line = 0;
+  while (line < lineInDecoded && offsetInDecoded < decoded.length) {
+    const nl = decoded.indexOf('\n', offsetInDecoded);
+    if (nl === -1) {
+      offsetInDecoded = decoded.length;
+      break;
+    }
+    offsetInDecoded = nl + 1;
+    line++;
+  }
+  offsetInDecoded += columnInDecoded;
+
+  if (region.content === decoded) {
+    return mapScriptOffsetToXml(region, lineInDecoded, columnInDecoded);
+  }
+
+  const rawOffset = decodedOffsetToRawOffset(region.content, offsetInDecoded);
+  let xmlLine = region.bodyStartLine;
+  let xmlChar = region.bodyStartCharacter;
+  for (let i = 0; i < rawOffset && i < region.content.length; i++) {
+    if (region.content.charCodeAt(i) === 10) {
+      xmlLine++;
+      xmlChar = 0;
+    } else {
+      xmlChar++;
+    }
+  }
+  return { line: xmlLine, character: xmlChar };
+}
+
+/**
+ * Warn when script text contains characters that force XML escaping, or break CDATA.
+ */
+function encodingDiagnostics(region: ScriptRegion): SnDiagnostic[] {
+  const decoded = region.decodedContent;
+  if (!decoded.trim()) {
+    return [];
+  }
+  const start = mapDecodedLintPosToXml(region, 0, 0);
+
+  if (region.isCdata) {
+    if (decoded.includes(']]>')) {
+      return [
+        {
+          message: `<${region.fieldName}> CDATA body contains "]]>", which terminates CDATA early.`,
+          severity: 'error',
+          line: start.line,
+          character: start.character,
+          code: 'script-cdata-terminator'
+        }
+      ];
+    }
+    return [];
+  }
+
+  if (!XML_TEXT_ESCAPE_RE.test(decoded)) {
+    return [];
+  }
+
+  return [
+    {
+      message: `<${region.fieldName}> contains characters that require XML entity encoding outside CDATA (&, <, or non-ASCII such as emoji). Prefer wrapping the field in CDATA.`,
+      severity: 'warning',
+      line: start.line,
+      character: start.character,
+      code: 'script-needs-xml-encoding'
+    }
+  ];
+}
+
+/**
  * Lint extracted script regions and return diagnostics in host XML coordinates.
+ * Always lints entity-decoded text; maps positions back through entity spans when needed.
  */
 export function lintScriptRegions(regions: ScriptRegion[]): SnDiagnostic[] {
   const out: SnDiagnostic[] = [];
   const engine = getLinter();
 
   for (const region of regions) {
+    out.push(...encodingDiagnostics(region));
+
     const config = configFor(region.profile);
+    const source = region.decodedContent;
     let messages: LinterType.LintMessage[];
     try {
-      messages = engine.verify(region.content, config, {
+      messages = engine.verify(source, config, {
         filename: `${region.tableName}.${region.fieldName}.js`
       });
     } catch (err) {
-      const pos = mapScriptOffsetToXml(region, 0, 0);
+      const pos = mapDecodedLintPosToXml(region, 0, 0);
       out.push({
         message: `ESLint failed on <${region.fieldName}>: ${
           err instanceof Error ? err.message : String(err)
@@ -133,12 +272,12 @@ export function lintScriptRegions(regions: ScriptRegion[]): SnDiagnostic[] {
       // ESLint lines/columns are 1-based
       const lineInScript = Math.max(0, (msg.line ?? 1) - 1);
       const colInScript = Math.max(0, (msg.column ?? 1) - 1);
-      const start = mapScriptOffsetToXml(region, lineInScript, colInScript);
+      const start = mapDecodedLintPosToXml(region, lineInScript, colInScript);
 
       let endLine = start.line;
       let endCharacter = start.character + 1;
       if (msg.endLine != null && msg.endColumn != null) {
-        const end = mapScriptOffsetToXml(
+        const end = mapDecodedLintPosToXml(
           region,
           Math.max(0, msg.endLine - 1),
           Math.max(0, msg.endColumn - 1)

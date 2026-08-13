@@ -14,6 +14,14 @@ import {
   RecordsGitDecorationProvider
 } from './navigator/gitStatus';
 import { SnWorkspaceGate } from './snWorkspaceGate';
+import {
+  cursorHelpersNeedReload,
+  installCursorHelpers,
+  isCursorHost,
+  registerCursorHelpersDisposal,
+  runRepoIndexer,
+  suggestReloadAfterCursorHelpers
+} from './cursorHelpers';
 
 const SORT_BY_PICKS: Array<{
   label: string;
@@ -104,6 +112,28 @@ export function activate(context: vscode.ExtensionContext): void {
     void vscode.window.showErrorMessage(
       `ServiceNow XML activated the Records view, but other features failed: ${message}`
     );
+  }
+
+  // Cursor-only helpers: fire-and-forget after core features. Missing Python must
+  // not delay or break lint/navigator (installCursorHelpers never throws).
+  if (isCursorHost()) {
+    void installCursorHelpers(context)
+      .then((result) => {
+        registerCursorHelpersDisposal(context, result.pluginPath);
+        if (result.messages.length > 0) {
+          console.log(
+            '[servicenow-xml] cursor helpers:',
+            result.messages.join(' | ')
+          );
+        }
+        if (cursorHelpersNeedReload(result)) {
+          void suggestReloadAfterCursorHelpers('Cursor helpers installed.');
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[servicenow-xml] cursor helpers failed (non-fatal):', message);
+      });
   }
 }
 
@@ -273,7 +303,29 @@ function activateDiagnosticsAndCommands(
         }
         await vscode.commands.executeCommand('revealFileInOS', uri);
       }
-    )
+    ),
+    vscode.commands.registerCommand('servicenowXml.cursor.installHelpers', async () => {
+      const result = await installCursorHelpers(context, { force: true });
+      registerCursorHelpersDisposal(context, result.pluginPath);
+      if (result.skippedReason === 'not-cursor') {
+        void vscode.window.showInformationMessage(
+          'Cursor helpers only apply in Cursor (VS Code is unchanged).'
+        );
+        return;
+      }
+      if (!result.installed) {
+        void vscode.window.showInformationMessage(
+          result.messages.join(' ') || 'Cursor helpers did not install.'
+        );
+        return;
+      }
+      await suggestReloadAfterCursorHelpers(
+        `Cursor helpers installed. MCP: ${result.mcpRegistered.join(', ') || 'none'}.`
+      );
+    }),
+    vscode.commands.registerCommand('servicenowXml.cursor.runIndexer', async () => {
+      await runRepoIndexer(context);
+    })
   );
 
   context.subscriptions.push(
@@ -323,6 +375,19 @@ function activateDiagnosticsAndCommands(
             treeProvider.setViewVisible(true);
           }
         }
+      }
+      if (
+        isCursorHost() &&
+        (e.affectsConfiguration('servicenowXml.cursorHelpers.enable') ||
+          e.affectsConfiguration('servicenowXml.cursorHelpers.installIndexHook') ||
+          e.affectsConfiguration('servicenowXml.cursorHelpers.pythonPath'))
+      ) {
+        void installCursorHelpers(context).then((result) => {
+          registerCursorHelpersDisposal(context, result.pluginPath);
+          if (cursorHelpersNeedReload(result)) {
+            void suggestReloadAfterCursorHelpers('Cursor helpers updated.');
+          }
+        });
       }
     })
   );

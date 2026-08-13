@@ -2,9 +2,9 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.3.0",
+  "version": "2.4.4",
   "publisher": "local",
-  "license": "UNLICENSED",
+  "license": "GPL-3.0-only",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -15,16 +15,7 @@
   ],
   "activationEvents": [
     "onStartupFinished",
-    "onLanguage:xml",
-    "onView:servicenowXml.records",
-    "onCommand:servicenowXml.goToRecord",
-    "onCommand:servicenowXml.navigator.enable",
-    "onCommand:servicenowXml.navigator.refresh",
-    "onCommand:servicenowXml.navigator.sortBy",
-    "onCommand:servicenowXml.navigator.filter",
-    "onCommand:servicenowXml.navigator.clearFilter",
-    "onCommand:servicenowXml.revealInExplorer",
-    "onCommand:servicenowXml.revealInFileExplorer"
+    "onLanguage:xml"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -72,6 +63,14 @@
       {
         "command": "servicenowXml.revealInFileExplorer",
         "title": "Reveal in File Explorer"
+      },
+      {
+        "command": "servicenowXml.cursor.installHelpers",
+        "title": "ServiceNow XML: Install Cursor Helpers"
+      },
+      {
+        "command": "servicenowXml.cursor.runIndexer",
+        "title": "ServiceNow XML: Run Repo Indexer"
       }
     ],
     "viewsContainers": {
@@ -203,6 +202,21 @@
             "Alphabetical by table then display name"
           ],
           "description": "Sort order for Records navigator tables and records."
+        },
+        "servicenowXml.cursorHelpers.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "In Cursor only: install ServiceNow MCP servers, user rules, and the repo indexer on activation. No-op in VS Code."
+        },
+        "servicenowXml.cursorHelpers.installIndexHook": {
+          "type": "boolean",
+          "default": true,
+          "description": "In Cursor only: idempotently add a user sessionStart hook that refreshes index.json when stale for ServiceNow export workspaces."
+        },
+        "servicenowXml.cursorHelpers.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Python executable used for the repo indexer, DB schema MCP server, and sessionStart hook."
         }
       }
     },
@@ -226,7 +240,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-classify.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",
