@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { CatalogRecord, RecordCatalog } from './catalog';
+import { CatalogRecord, RecordCatalog, uriKey } from './catalog';
 import { matchesQuery } from './goToRecord';
 import { tableDecorationUri } from './gitStatus';
 
@@ -103,6 +103,8 @@ export class RecordsTreeProvider
   private loadError = '';
   /** Lowercased filter text; empty means show all. */
   private filterQuery = '';
+  /** URI key of the file in the active editor; empty means no record is marked. */
+  private activeUriKey = '';
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly catalog: RecordCatalog) {
@@ -142,6 +144,65 @@ export class RecordsTreeProvider
     }
     this.filterQuery = '';
     this._onDidChangeTreeData.fire();
+  }
+
+  /**
+   * Mark every record from `uri` as belonging to the active editor; pass undefined
+   * to clear the marker. Returns true when the marker changed (tree refreshed).
+   */
+  setActiveUri(uri: vscode.Uri | undefined): boolean {
+    const key = uri ? uriKey(uri) : '';
+    if (key === this.activeUriKey) {
+      return false;
+    }
+    this.activeUriKey = key;
+    this._onDidChangeTreeData.fire();
+    return true;
+  }
+
+  /**
+   * First node for `uri` in current sort/filter order, or undefined when the file
+   * has no node the tree would render (navigator off, catalog cold, file not
+   * indexed, or every row hidden by the active filter).
+   */
+  findFirstVisibleRecordNode(uri: vscode.Uri): TreeNode | undefined {
+    if (!this.catalog.isEnabled() || !this.catalog.isLoaded() || this.loadError) {
+      return undefined;
+    }
+    const key = uriKey(uri);
+    const tables = new Set(
+      this.catalog.getRecordsForUri(uri).map((record) => record.table)
+    );
+    if (tables.size === 0) {
+      return undefined;
+    }
+    // Walk in tree order so "first" matches what the user sees top-down.
+    for (const table of this.catalog.getTables()) {
+      if (!tables.has(table)) {
+        continue;
+      }
+      for (const record of this.filteredRecordsForTable(table)) {
+        if (uriKey(record.uri) === key) {
+          return { kind: 'record', record };
+        }
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Parent lookup that `TreeView.reveal` requires; only records have a parent.
+   */
+  getParent(element: TreeNode): TreeNode | undefined {
+    if (element.kind !== 'record') {
+      return undefined;
+    }
+    const table = element.record.table;
+    return {
+      kind: 'table',
+      table,
+      count: this.filteredRecordsForTable(table).length
+    };
   }
 
   /**
@@ -207,6 +268,9 @@ export class RecordsTreeProvider
           : vscode.TreeItemCollapsibleState.Collapsed
       );
       item.description = String(element.count);
+      // Stable ids keep expansion state across refreshes and let reveal resolve
+      // the table → record chain. Filter count stays out of the id on purpose.
+      item.id = `table:${element.table}`;
       item.contextValue = 'servicenowXml.table';
       // `symbol-folder` is the same glyph as `folder`, but VS Code treats the
       // `folder` id as "let the file icon theme draw this" once resourceUri is
@@ -223,30 +287,86 @@ export class RecordsTreeProvider
 
     const r = element.record;
     const isDelete = r.action === 'DELETE';
+    const isActive = this.activeUriKey !== '' && uriKey(r.uri) === this.activeUriKey;
     const item = new vscode.TreeItem(
       isDelete ? strikeThroughText(r.displayName) : r.displayName,
       vscode.TreeItemCollapsibleState.None
     );
     item.description = isDelete ? `DELETE · ${r.table}` : r.table;
-    const tipLines = [
+    item.id = `record:${r.table}|${uriKey(r.uri)}|${r.sysId ?? r.displayName}`;
+    // Tooltip is filled in by resolveTreeItem; see the note there.
+    item.resourceUri = r.uri;
+    // Routed through our own command so a click from this view can suppress the
+    // scroll-into-view that follows an editor change from elsewhere.
+    item.command = {
+      command: 'servicenowXml.navigator.openRecord',
+      title: 'Open',
+      arguments: [r]
+    };
+    item.contextValue = 'servicenowXml.record';
+    // Tree selection can only hold one item, so every row from the active file
+    // gets an accented icon; the first one also gets selected via reveal.
+    item.iconPath = new vscode.ThemeIcon(
+      isDelete ? 'trash' : 'file-code',
+      isActive
+        ? new vscode.ThemeColor('list.highlightForeground')
+        : isDelete
+          ? new vscode.ThemeColor('errorForeground')
+          : undefined
+    );
+    return item;
+  }
+
+  /**
+   * Build the record tooltip on hover, including the file's diagnostic counts.
+   *
+   * Counts are resolved here rather than in {@link getTreeItem} because they
+   * would otherwise need a tree refresh on every diagnostics change, and each
+   * refresh re-reveals the active record — distracting while editing. The cost
+   * is a tooltip that can miss diagnostics published after the first hover.
+   *
+   * The counts are spelled out because VS Code colors a row amber once the file
+   * has warnings, which reads like a Git/unsaved-change decoration.
+   */
+  resolveTreeItem(
+    item: vscode.TreeItem,
+    element: TreeNode,
+    _token: vscode.CancellationToken
+  ): vscode.TreeItem {
+    if (element.kind !== 'record' || item.tooltip !== undefined) {
+      return item;
+    }
+    const r = element.record;
+    let errors = 0;
+    let warnings = 0;
+    for (const d of vscode.languages.getDiagnostics(r.uri)) {
+      if (d.severity === vscode.DiagnosticSeverity.Error) {
+        errors++;
+      } else if (d.severity === vscode.DiagnosticSeverity.Warning) {
+        warnings++;
+      }
+    }
+    const problems = [
+      errors ? `${errors} error${errors === 1 ? '' : 's'}` : undefined,
+      warnings ? `${warnings} warning${warnings === 1 ? '' : 's'}` : undefined
+    ].filter(Boolean);
+
+    item.tooltip = [
       r.displayName,
       `Table: ${r.table}`,
       r.sysId ? `sys_id: ${r.sysId}` : undefined,
       r.apiName ? `api_name: ${r.apiName}` : undefined,
-      isDelete ? 'Action: DELETE' : undefined,
-      `File: ${r.relativePath}`
-    ].filter(Boolean);
-    item.tooltip = tipLines.join('\n');
-    item.resourceUri = r.uri;
-    item.command = {
-      command: 'vscode.open',
-      title: 'Open',
-      arguments: [r.uri]
-    };
-    item.contextValue = 'servicenowXml.record';
-    item.iconPath = isDelete
-      ? new vscode.ThemeIcon('trash', new vscode.ThemeColor('errorForeground'))
-      : new vscode.ThemeIcon('file-code');
+      r.action === 'DELETE' ? 'Action: DELETE' : undefined,
+      this.activeUriKey !== '' && uriKey(r.uri) === this.activeUriKey
+        ? 'In the active editor'
+        : undefined,
+      `File: ${r.relativePath}`,
+      problems.length
+        ? `Problems in this file: ${problems.join(', ')} — the colored name is from these, not from an unsaved or Git change`
+        : undefined
+    ]
+      .filter(Boolean)
+      .join('\n');
     return item;
   }
 

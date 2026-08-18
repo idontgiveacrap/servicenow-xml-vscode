@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.4.4",
+  "version": "2.5.2",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -71,6 +71,14 @@
       {
         "command": "servicenowXml.cursor.runIndexer",
         "title": "ServiceNow XML: Run Repo Indexer"
+      },
+      {
+        "command": "servicenowXml.editJsonStringCode",
+        "title": "ServiceNow XML: Edit Embedded JSON Script…"
+      },
+      {
+        "command": "servicenowXml.loadJsonStringDraft",
+        "title": "ServiceNow XML: Load Draft for Embedded JSON Script…"
       }
     ],
     "viewsContainers": {
@@ -133,6 +141,13 @@
           "command": "servicenowXml.revealInFileExplorer",
           "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
           "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "servicenowXml.editJsonStringCode",
+          "when": "editorLangId == xml",
+          "group": "1_modification@50"
         }
       ]
     },
@@ -216,7 +231,7 @@
         "servicenowXml.cursorHelpers.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Python executable used for the repo indexer, DB schema MCP server, and sessionStart hook."
+          "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference), and sessionStart hook."
         }
       }
     },
@@ -240,7 +255,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-classify.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-lint-bundle.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",
@@ -253,6 +268,7 @@
   "dependencies": {
     "eslint": "^8.57.1",
     "fast-xml-parser": "^5.10.1",
+    "jsonc-parser": "^3.3.1",
     "minimatch": "^9.0.5"
   }
 }

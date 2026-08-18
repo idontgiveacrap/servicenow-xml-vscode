@@ -101,8 +101,18 @@ class SchemaIndex:
                     data={k: (row.get(k) or "") for k in row},
                 )
 
-    def list_tables(self) -> list[str]:
-        return sorted({info.name for info in self.tables.values()}, key=str.lower)
+    def list_tables(self, query: str | None = None) -> list[str]:
+        needle = (query or "").strip().lower()
+        names = {info.name for info in self.tables.values()}
+        if needle:
+            filtered: set[str] = set()
+            for info in self.tables.values():
+                hay = info.name.lower()
+                label = (info.collection.get("column_label") or "").strip().lower()
+                if needle in hay or (label and needle in label):
+                    filtered.add(info.name)
+            names = filtered
+        return sorted(names, key=str.lower)
 
     def get_table(self, table_name: str) -> dict[str, Any] | None:
         info = self.tables.get(table_name.lower())
@@ -280,9 +290,14 @@ def _build_server() -> FastMCP:
         return "\n".join(index.list_tables())
 
     @mcp.tool()
-    def list_tables() -> list[str]:
-        """List table names from the bundled sys_dictionary CSV."""
-        return index.list_tables()
+    def list_tables(query: str = "") -> list[str]:
+        """
+        List table names from the bundled sys_dictionary CSV.
+
+        Optional query filters by substring match on table name or collection label
+        (case-insensitive). Empty query returns all tables.
+        """
+        return index.list_tables(query.strip() or None)
 
     @mcp.tool()
     def get_table(table_name: str) -> str:

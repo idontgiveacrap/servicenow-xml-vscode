@@ -64,6 +64,18 @@ export function decodeXmlEntities(raw: string): string {
 }
 
 /**
+ * Encode characters that must be escaped in non-CDATA XML text nodes.
+ * Non-ASCII is left as-is (ServiceNow exports often keep them; CDATA is preferred for scripts).
+ */
+export function encodeXmlEntities(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
  * Find [start, end) ranges of CDATA sections so scanners can ignore nested markup.
  */
 export function findCdataRanges(text: string): Array<{ start: number; end: number }> {

@@ -2,6 +2,23 @@ import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog } from './catalog';
 
 /**
+ * Open a catalog record URI, falling back when the file exceeds extension sync limits.
+ */
+async function openCatalogRecordUri(uri: vscode.Uri): Promise<void> {
+  try {
+    await vscode.window.showTextDocument(uri);
+  } catch (error) {
+    await vscode.commands.executeCommand('vscode.open', uri);
+    const detail = error instanceof Error ? error.message : String(error);
+    if (/size limit|synchronized with extensions/i.test(detail)) {
+      void vscode.window.showWarningMessage(
+        'This record XML is too large for extension sync (Cursor/VS Code ~50MB limit). Opened without lint.'
+      );
+    }
+  }
+}
+
+/**
  * Register Go-to-record QuickPick and a lazy workspace-symbol provider.
  */
 export function registerGoToRecord(
@@ -55,7 +72,7 @@ export function registerGoToRecord(
         picker.onDidAccept(() => {
           const selected = picker.selectedItems[0];
           if (selected) {
-            void vscode.window.showTextDocument(selected.record.uri);
+            void openCatalogRecordUri(selected.record.uri);
             picker.hide();
           }
         }),

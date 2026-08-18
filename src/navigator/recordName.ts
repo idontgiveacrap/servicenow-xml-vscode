@@ -10,6 +10,8 @@ export interface RecordIdentity {
   apiName?: string;
   /** ServiceNow update counter from `<sys_mod_count>`, when present. */
   sysModCount?: number;
+  /** Zero-based UTF-16 offset of the record row's opening tag. */
+  startOffset: number;
 }
 
 const META_ROOTS = new Set(['record_update', 'unload', 'xml', '?xml']);
@@ -36,7 +38,13 @@ export function extractRecordIdentities(
   const fileMeta = parseExportFileName(filePath);
   const primaryRows = findPrimaryRows(text);
   if (primaryRows.length === 0) {
-    const fallback = buildIdentity(text, fileMeta?.table, undefined, fileMeta?.sysId);
+    const fallback = buildIdentity(
+      text,
+      fileMeta?.table,
+      undefined,
+      fileMeta?.sysId,
+      0
+    );
     return fallback ? [fallback] : [];
   }
 
@@ -46,7 +54,8 @@ export function extractRecordIdentities(
         row.rowText,
         row.tableName,
         row.action,
-        index === 0 && row.tableName === fileMeta?.table ? fileMeta.sysId : undefined
+        index === 0 && row.tableName === fileMeta?.table ? fileMeta.sysId : undefined,
+        row.startOffset
       )
     )
     .filter((identity): identity is RecordIdentity => identity !== undefined);
@@ -59,7 +68,8 @@ function buildIdentity(
   recordText: string,
   table: string | undefined,
   action: string | undefined,
-  fallbackSysId?: string
+  fallbackSysId: string | undefined,
+  startOffset: number
 ): RecordIdentity | undefined {
   if (!table) {
     return undefined;
@@ -94,7 +104,8 @@ function buildIdentity(
     sysId,
     action,
     apiName: apiName || undefined,
-    sysModCount
+    sysModCount,
+    startOffset
   };
 }
 
@@ -113,6 +124,7 @@ interface PrimaryRowHit {
   tableName: string;
   action: string;
   rowText: string;
+  startOffset: number;
 }
 
 /**
@@ -136,7 +148,8 @@ function findPrimaryRows(text: string): PrimaryRowHit[] {
     rows.push({
       tableName: bounds.tableName,
       action,
-      rowText: bounds.rowText
+      rowText: bounds.rowText,
+      startOffset: bounds.startOffset
     });
   }
   return rows;

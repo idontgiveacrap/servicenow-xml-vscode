@@ -82,10 +82,19 @@ function configFor(profile: 'server' | 'client'): LinterType.Config {
     globals,
     rules: {
       'no-undef': 'error',
+      // ServiceNow invokes script fields through platform entry points, so the
+      // declarations the platform calls look unused inside the field body:
+      // `handler` in a UX client script, `onBefore` in a business rule, the
+      // `var X = Class.create()` a Script Include exports. Those are top-level,
+      // so `vars: 'local'` keeps them quiet while still flagging dead locals.
+      // Parameter lists are platform-dictated too (`handler({api, event,
+      // helpers, imports})`), hence `args: 'none'`.
       'no-unused-vars': [
         'warn',
         {
-          argsIgnorePattern: '^_',
+          vars: 'local',
+          args: 'none',
+          ignoreRestSiblings: true,
           varsIgnorePattern: '^_'
         }
       ],

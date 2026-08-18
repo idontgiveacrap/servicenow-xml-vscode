@@ -48,7 +48,8 @@ export const HELPERS_HOME = path.join(os.homedir(), '.cursor', PLUGIN_ID);
 export const MCP_SERVERS = {
   docs: `${PLUGIN_ID}-docs`,
   uiExamples: `${PLUGIN_ID}-ui-examples`,
-  dbSchema: `${PLUGIN_ID}-db-schema`
+  dbSchema: `${PLUGIN_ID}-db-schema`,
+  scripting: `${PLUGIN_ID}-scripting`
 } as const;
 
 /** Prior MCP ids / display names — unregistered and removed from mcp.json on install. */
@@ -255,6 +256,10 @@ async function installCursorHelpersCore(
     path.join(scriptsDest, 'db_schema_mcp_server.py')
   );
   syncedFiles += syncFile(
+    path.join(bundleRoot, 'scripts', 'scripting_mcp_server.py'),
+    path.join(scriptsDest, 'scripting_mcp_server.py')
+  );
+  syncedFiles += syncFile(
     path.join(bundleRoot, 'hooks', 'session_start_index.py'),
     path.join(hooksDest, 'session_start_index.py')
   );
@@ -266,6 +271,16 @@ async function installCursorHelpersCore(
   } else {
     messages.push(
       'Bundled schema CSV gzip missing; DB schema MCP needs SCHEMA_CSV_PATH.'
+    );
+  }
+
+  const scriptingGz = path.join(bundleRoot, 'data', 'scripting_reference.json.gz');
+  const scriptingRefGz = path.join(dataDest, 'scripting_reference.json.gz');
+  if (fs.existsSync(scriptingGz)) {
+    syncedFiles += syncFile(scriptingGz, scriptingRefGz);
+  } else {
+    messages.push(
+      'Bundled scripting reference gzip missing; scripting MCP needs SCRIPTING_REF_PATH.'
     );
   }
 
@@ -290,11 +305,11 @@ async function installCursorHelpersCore(
 
   if (!pythonOk) {
     messages.push(
-      `Python not available (${pythonPath}); skipping db-schema MCP, pip install, and index hook. Lint/navigator unaffected.`
+      `Python not available (${pythonPath}); skipping local MCP servers, pip install, and index hook. Lint/navigator unaffected.`
     );
     if (options?.force) {
       void vscode.window.showWarningMessage(
-        `ServiceNow Cursor helpers: Python not found (${pythonPath}). Indexer and DB schema MCP were skipped; other features still work.`
+        `ServiceNow Cursor helpers: Python not found (${pythonPath}). Indexer and local MCP servers were skipped; other features still work.`
       );
     }
   } else {
@@ -319,13 +334,17 @@ async function installCursorHelpersCore(
     pythonPath,
     schemaServerScript: path.join(scriptsDest, 'db_schema_mcp_server.py'),
     schemaCsvPath: schemaCsvGz,
-    includeDbSchema: pythonOk && mcpPkgOk && fs.existsSync(schemaCsvGz)
+    includeDbSchema: pythonOk && mcpPkgOk && fs.existsSync(schemaCsvGz),
+    scriptingServerScript: path.join(scriptsDest, 'scripting_mcp_server.py'),
+    scriptingRefPath: scriptingRefGz,
+    includeScripting: pythonOk && mcpPkgOk && fs.existsSync(scriptingRefGz)
   });
 
   const pluginPath = registerPluginPath(pluginDest);
 
   writeManifest(context, {
     schemaCsvGz,
+    scriptingRefGz,
     scriptsDest,
     hooksDest,
     pluginDest
@@ -455,7 +474,7 @@ async function ensurePythonMcpPackage(
 
   if (options.interactive) {
     const choice = await vscode.window.showInformationMessage(
-      `Python package "mcp" is required for ${MCP_SERVERS.dbSchema}. Install with ${pythonPath} -m pip install mcp?`,
+      `Python package "mcp" is required for local MCP servers (${MCP_SERVERS.dbSchema}, ${MCP_SERVERS.scripting}). Install with ${pythonPath} -m pip install mcp?`,
       'Install',
       'Skip'
     );
@@ -538,6 +557,9 @@ function registerMcpServers(args: {
   schemaServerScript: string;
   schemaCsvPath: string;
   includeDbSchema: boolean;
+  scriptingServerScript: string;
+  scriptingRefPath: string;
+  includeScripting: boolean;
 }): { registered: string[]; unregistered: string[] } {
   const cursor = getCursorApi();
   const registered: string[] = [];
@@ -598,6 +620,27 @@ function registerMcpServers(args: {
     }
   }
 
+  if (args.includeScripting) {
+    try {
+      cursor.mcp.registerServer({
+        name: MCP_SERVERS.scripting,
+        server: {
+          command: args.pythonPath,
+          args: [args.scriptingServerScript],
+          env: {
+            SCRIPTING_REF_PATH: args.scriptingRefPath
+          }
+        }
+      });
+      registered.push(MCP_SERVERS.scripting);
+    } catch (error) {
+      console.warn(
+        '[servicenow-xml] Scripting MCP register failed (non-fatal):',
+        error
+      );
+    }
+  }
+
   return { registered, unregistered };
 }
 
@@ -611,9 +654,12 @@ function registerPluginPath(pluginDest: string): string | undefined {
 }
 
 /**
- * Full delete-and-replace of extension-managed user rules under ~/.cursor/rules.
+ * Sync extension-managed user rules under ~/.cursor/rules to the bundled set.
  * Only touches files that carry the managed marker (or the current prefix + marker
  * after write). Unrelated and unmarked user rules are left alone.
+ *
+ * Returns only the files that actually changed on disk: callers use a non-empty
+ * result to prompt for a window reload, so an unchanged install must report none.
  */
 function syncUserRules(rulesSrc: string): string[] {
   if (!fs.existsSync(rulesSrc)) {
@@ -621,10 +667,23 @@ function syncUserRules(rulesSrc: string): string[] {
   }
   const userRulesDir = path.join(os.homedir(), '.cursor', 'rules');
   ensureDir(userRulesDir);
-  const synced: string[] = [];
+  const changed: string[] = [];
 
+  const desired = new Map<string, string>();
+  for (const name of fs.readdirSync(rulesSrc)) {
+    if (!name.endsWith('.mdc') || !name.startsWith(USER_RULES_PREFIX)) {
+      continue;
+    }
+    let body = fs.readFileSync(path.join(rulesSrc, name), 'utf8');
+    if (!body.includes(USER_RULES_MARKER)) {
+      body = `<!-- ${USER_RULES_MARKER} -->\n${body}`;
+    }
+    desired.set(name, body);
+  }
+
+  // Drop managed rules that are no longer bundled (e.g. renamed rule files).
   for (const name of fs.readdirSync(userRulesDir)) {
-    if (!name.endsWith('.mdc')) {
+    if (!name.endsWith('.mdc') || desired.has(name)) {
       continue;
     }
     const destPath = path.join(userRulesDir, name);
@@ -642,26 +701,27 @@ function syncUserRules(rulesSrc: string): string[] {
     }
     try {
       fs.unlinkSync(destPath);
-      synced.push(`removed:${name}`);
+      changed.push(`removed:${name}`);
     } catch {
       // Leave the file if locked.
     }
   }
 
-  for (const name of fs.readdirSync(rulesSrc)) {
-    if (!name.endsWith('.mdc') || !name.startsWith(USER_RULES_PREFIX)) {
+  for (const [name, body] of desired) {
+    const destPath = path.join(userRulesDir, name);
+    let existing: string | undefined;
+    try {
+      existing = fs.readFileSync(destPath, 'utf8');
+    } catch {
+      existing = undefined;
+    }
+    if (existing === body) {
       continue;
     }
-    const srcPath = path.join(rulesSrc, name);
-    const destPath = path.join(userRulesDir, name);
-    let body = fs.readFileSync(srcPath, 'utf8');
-    if (!body.includes(USER_RULES_MARKER)) {
-      body = `<!-- ${USER_RULES_MARKER} -->\n${body}`;
-    }
     fs.writeFileSync(destPath, body, 'utf8');
-    synced.push(name);
+    changed.push(name);
   }
-  return synced;
+  return changed;
 }
 
 /**
@@ -724,6 +784,7 @@ function writeManifest(
   context: vscode.ExtensionContext,
   paths: {
     schemaCsvGz: string;
+    scriptingRefGz: string;
     scriptsDest: string;
     hooksDest: string;
     pluginDest: string;
@@ -733,8 +794,10 @@ function writeManifest(
   for (const file of [
     path.join(paths.scriptsDest, 'servicenow_repo_index.py'),
     path.join(paths.scriptsDest, 'db_schema_mcp_server.py'),
+    path.join(paths.scriptsDest, 'scripting_mcp_server.py'),
     path.join(paths.hooksDest, 'session_start_index.py'),
-    paths.schemaCsvGz
+    paths.schemaCsvGz,
+    paths.scriptingRefGz
   ]) {
     if (fs.existsSync(file)) {
       files[file] = sha256File(file);

@@ -5,8 +5,9 @@ Cursor / VS Code extension that:
 1. **Colorizes** JavaScript inside ServiceNow script CDATA fields (`script`, `client_script_v2`, `script_true`, `script_false`)
 2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022)
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
-4. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
-5. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
+4. **Edits JSON-embedded scripts** — open `javascript(…)` / `*Script` string values from composition JSON in a temp JS editor, then write back with JSON + XML-safe encoding
+5. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
+6. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
 
 ## Install (Cursor)
 
@@ -31,6 +32,16 @@ Diagnostics/lint and the ServiceNow activity-bar Records view stay inactive unti
 Set `servicenowXml.enabledForAllWindows` to `true` to bypass that gate — useful for single-file windows (e.g. a one-off under Downloads) where there is no project folder layout. With the bypass on, open XML is still considered for linting, and the Records view remains available.
 
 `servicenowXml.enable` still toggles diagnostics after the gate (or bypass) passes.
+
+## Embedded JSON script editor
+
+Right-click a JSON string value inside a known JSON XML field (`composition`, `props`, …) — or run **ServiceNow XML: Edit Embedded JSON Script…** with the caret on that string — when the value is `javascript(…)` or the property name ends with `Script`.
+
+1. The script opens in a side JS tab (wrapper stripped)
+2. Save the temp tab to splice the re-escaped string back into the XML (CDATA or entity-encoded plain fields)
+3. Save the XML file to clear the write-back draft
+
+If write-back fails (stale host, encoding, etc.), the edited script is stored under `.servicenow-xml/json-string-drafts/` (the extension ensures `.gitignore` includes `.servicenow-xml/`). Re-opening the same string prompts **Use Draft** / **Reset to XML** / **Cancel**.
 
 ## Records navigator (optional, lazy)
 
@@ -71,6 +82,16 @@ Open counts / last-opened times persist in workspace state. Missing metrics sort
 
 `DELETE` rows are shown by default (trash icon, struck-through label, `DELETE · {table}` description). Set `servicenowXml.navigator.excludeDelete` to `true` to hide them. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
+### Active editor tracking
+
+Switching tabs marks the records that came from the active file: every matching row gets an accented icon and an `In the active editor` hover line, and the first one is selected with its table folder expanded and scrolled into view.
+
+Only one row can be *selected* — VS Code has no API to set a multi-item tree selection — so files that export several records rely on the icon accent for the rest.
+
+Clicking a record opens the XML at that record row. The row is resolved again from the current editor text, so unsaved edits above it do not shift the destination.
+
+Nothing is revealed when there is no visible target: navigator disabled, catalog still indexing, file not indexed, or all of its rows hidden by the active filter. Reveal is also skipped while the Records view is hidden (revealing would force the view open) and right after clicking a record in the view; the tree re-syncs when it becomes visible again.
+
 ### Git decorations
 
 Records carry the same Git color and badge the Explorer puts on their filename — VS Code applies file decorations to any tree item backed by a file URI, so a modified export shows as `M` in the Records view too.
@@ -93,6 +114,22 @@ This follows the standard switches — no extension-specific setting:
 | `git.decorations.enabled` / `git.enabled` | No Git state at all |
 
 Git is only contacted after the navigator has indexed records; a window that never opens the navigator never touches it. If the built-in Git extension is disabled or absent, the view renders exactly as before.
+
+### Problem decorations (amber names are not edits)
+
+VS Code also decorates file-backed rows from the Problems panel, and its warning color is close to the Git "modified" color. A record name turning amber with a count badge after you click it means **the file now has warnings** — diagnostics are computed lazily when a file is first opened, so they appear on first click, not because anything was written. Nothing in this extension modifies an XML file on click; the only write-back path is saving an embedded JSON script temp tab.
+
+Telling the two apart:
+
+| Badge | Source | Meaning |
+|-------|--------|---------|
+| Number | Problems panel | Error / warning count for the file |
+| Letter (`M`, `U`, `A`, …) | Git | File differs from the index / HEAD |
+| Dot on the editor tab | VS Code | Unsaved buffer |
+
+Hovering a record spells the counts out (`Problems in this file: 2 warnings — …`). Counts are per **file**, so an export holding several records attributes them to every row from that file. Set `problems.decorations.enabled` to `false` to drop the coloring everywhere, or narrow what gets linted with `servicenowXml.lintJavaScript`, `servicenowXml.lintJson`, and `servicenowXml.ignoreGlobs`.
+
+Embedded-JS lint does not flag platform entry points as unused: script fields are called by ServiceNow, not from inside the field, so top-level declarations (`handler` in a UX client script, `onBefore` in a business rule, the `var X = Class.create()` a Script Include exports) and platform-supplied parameters are exempt from `no-unused-vars`. Unused locals inside functions are still reported.
 
 ## Document kinds
 
@@ -121,7 +158,7 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.navigator.sortBy` | `mostOpened` | Sort order for Records navigator tables and records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name`. |
 | `servicenowXml.cursorHelpers.enable` | `true` | **Cursor only.** On activate, idempotently install ServiceNow MCP servers, user rules, and the Python repo indexer. No-op in VS Code. |
 | `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that refreshes `index.json` when stale for ServiceNow export workspaces. |
-| `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, DB schema MCP, and sessionStart hook. |
+| `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, local MCP servers, and sessionStart hook. |
 
 ## Cursor helpers (Cursor only)
 
@@ -131,10 +168,12 @@ On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the
 |-------|----------------------------------------|
 | **Indexer** | `scripts/servicenow_repo_index.py` |
 | **DB schema MCP script** | `scripts/db_schema_mcp_server.py` |
+| **Scripting MCP script** | `scripts/scripting_mcp_server.py` |
 | **DB schema data** | `data/sys_dictionary.csv.gz` (copied from the VSIX; see refresh URL below) |
+| **Scripting reference data** | `data/scripting_reference.json.gz` (packed from the scripting workbook) |
 | **sessionStart hook** | `hooks/session_start_index.py` |
 | **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
-| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema` |
+| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting` |
 | **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
 | **Cursor plugin** | `plugin/` registered as `servicenow-xml` |
 
@@ -148,9 +187,17 @@ The schema MCP is backed by a `sys_dictionary` list CSV export. To refresh the b
 
 Replace `{custom scope names}` with comma-separated scope values to exclude. Keep `ORsys_scopeISEMPTY` so global dictionary rows remain. Gzip the downloaded CSV to `cursor-plugins/servicenow-xml/data/sys_dictionary.csv.gz`, then rebuild/reinstall helpers.
 
+### Scripting reference pack
+
+```bash
+python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting reference.xlsx"
+```
+
+Writes `cursor-plugins/servicenow-xml/data/scripting_reference.json.gz`. Rebuild/reinstall helpers afterward.
+
 Helpers may be installed with the (Ctrl+Shift+P) command **ServiceNow XML: Install Cursor Helpers**. After install (or when helpers change on activation), the extension suggests **Developer: Reload Window** (Ctrl+Shift+P) so MCP servers and rules take effect.
 
-If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the DB schema MCP / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
+If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the local MCP servers / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
 
 A Cursor rule is included which references snc (ServiceNow CLI utility) I recommend installing it and pointing it to a PDI or non-production environment with non-sensitive data so Cursor can learn about ServiceNow the way you would and point you to exact URIs.
 

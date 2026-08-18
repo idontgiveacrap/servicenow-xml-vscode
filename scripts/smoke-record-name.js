@@ -82,17 +82,16 @@ try {
     'scoped_app_record_update',
     'sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
   );
-  const fixture = extractRecordIdentity(
-    fs.readFileSync(fixturePath, 'utf8'),
-    fixturePath
-  );
+  const fixtureText = fs.readFileSync(fixturePath, 'utf8');
+  const fixture = extractRecordIdentity(fixtureText, fixturePath);
   assert.deepStrictEqual(fixture, {
     table: 'sys_script_include',
     displayName: 'HelloWorld',
     sysId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     action: 'INSERT_OR_UPDATE',
     apiName: 'x_example.HelloWorld',
-    sysModCount: 1
+    sysModCount: 1,
+    startOffset: fixtureText.indexOf('<sys_script_include action=')
   });
 
   const deleteXml = `<record_update table="sys_scoped_cache">
@@ -129,6 +128,14 @@ try {
   );
   assert.equal(allRecords.length, 2);
   assert.equal(allRecords[1].displayName, 'Wrong sibling');
+  assert.equal(
+    allRecords[0].startOffset,
+    multiRecordXml.indexOf('<sys_script_include action=')
+  );
+  assert.equal(
+    allRecords[1].startOffset,
+    multiRecordXml.indexOf('<sys_translated_text action=')
+  );
   const customerUpdate = extractRecordIdentity(
     '<unload><sys_update_xml action="INSERT_OR_UPDATE"><name>sys_ui_section_abc</name><target_name>Metadata Snapshot</target_name><sys_id>44444444444444444444444444444444</sys_id></sys_update_xml></unload>'
   );

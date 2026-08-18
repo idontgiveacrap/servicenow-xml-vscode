@@ -29,6 +29,8 @@ export interface CatalogRecord {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** Indexed row offset, used to disambiguate records when opening at their line. */
+  startOffset: number;
   /** File modification time in ms (shared across rows in the same file). */
   mtimeMs?: number;
   openCount: number;
@@ -420,6 +422,7 @@ export class RecordCatalog implements vscode.Disposable {
           action: identity.action,
           apiName: identity.apiName,
           sysModCount: identity.sysModCount,
+          startOffset: identity.startOffset,
           mtimeMs,
           openCount: usage?.openCount ?? 0,
           lastOpenedAt: usage?.lastOpenedAt,

@@ -1,7 +1,11 @@
 import * as vscode from 'vscode';
 import { DiagnosticsController } from './diagnostics';
 import { KindStatusBar } from './statusBar';
-import { NavigatorSortBy, RecordCatalog } from './navigator/catalog';
+import {
+  CatalogRecord,
+  NavigatorSortBy,
+  RecordCatalog
+} from './navigator/catalog';
 import {
   getRecordUriFromTreeElement,
   RecordsDragAndDropController,
@@ -9,6 +13,7 @@ import {
   TreeNode
 } from './navigator/tree';
 import { registerGoToRecord } from './navigator/goToRecord';
+import { ActiveRecordSync } from './navigator/activeRecord';
 import {
   GitStatusTracker,
   RecordsGitDecorationProvider
@@ -22,6 +27,8 @@ import {
   runRepoIndexer,
   suggestReloadAfterCursorHelpers
 } from './cursorHelpers';
+import { registerJsonStringEditor } from './jsonStringEditor';
+import { extractRecordIdentities } from './navigator/recordName';
 
 const SORT_BY_PICKS: Array<{
   label: string;
@@ -68,6 +75,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const gate = new SnWorkspaceGate(context.workspaceState);
   context.subscriptions.push(gate);
 
+  registerJsonStringEditor(context);
+
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog(context.workspaceState);
@@ -90,6 +99,66 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider.setViewVisible(true);
   }
   syncRecordsFilterUi(treeView, treeProvider);
+
+  // Follows the active editor. Registered here (not with the other commands) so
+  // clicking a record still opens it even if later activation steps fail.
+  const activeRecordSync = new ActiveRecordSync(treeView, treeProvider, catalog);
+  context.subscriptions.push(
+    activeRecordSync,
+    vscode.commands.registerCommand(
+      'servicenowXml.navigator.openRecord',
+      /**
+       * Open a navigator record at its row. Re-extract from the current document
+       * so unsaved edits above the row do not make the indexed offset stale.
+       */
+      async (record: CatalogRecord) => {
+        activeRecordSync.suppressNextReveal();
+        try {
+          const document = await vscode.workspace.openTextDocument(record.uri);
+          const candidates = extractRecordIdentities(
+            document.getText(),
+            record.uri.fsPath
+          ).filter((identity) => {
+            if (identity.table !== record.table) {
+              return false;
+            }
+            if (record.sysId) {
+              return identity.sysId === record.sysId;
+            }
+            return (
+              identity.displayName === record.displayName &&
+              identity.apiName === record.apiName &&
+              identity.action === record.action
+            );
+          });
+          candidates.sort(
+            (a, b) =>
+              Math.abs(a.startOffset - record.startOffset) -
+              Math.abs(b.startOffset - record.startOffset)
+          );
+          const offset = candidates[0]?.startOffset ?? record.startOffset;
+          const position = document.positionAt(offset);
+          await vscode.window.showTextDocument(document, {
+            selection: new vscode.Range(position, position)
+          });
+        } catch (error) {
+          // Cursor/VS Code refuse to sync documents above ~50MB to the extension
+          // host. Open via the built-in command so the editor still appears.
+          await vscode.commands.executeCommand('vscode.open', record.uri);
+          const detail = error instanceof Error ? error.message : String(error);
+          if (/size limit|synchronized with extensions/i.test(detail)) {
+            void vscode.window.showWarningMessage(
+              'This record XML is too large for extension sync (Cursor/VS Code ~50MB limit). Opened without jump-to-row or lint.'
+            );
+          } else {
+            void vscode.window.showErrorMessage(
+              `Failed to open record: ${detail}`
+            );
+          }
+        }
+      }
+    )
+  );
 
   // Table folders are groupings rather than directories, so their Git state has
   // to be rolled up from the record files they contain.
