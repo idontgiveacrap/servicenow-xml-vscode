@@ -9,6 +9,7 @@ import {
   parseSnXml
 } from '../parseSnXml';
 import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from '../kinds/types';
+import type { EncodingLayer } from '../embedded/layers';
 import { buildDecodedToRawMap, stripJavascriptWrapper } from './escape';
 
 export interface JsonStringHit {
@@ -17,19 +18,27 @@ export interface JsonStringHit {
   fieldName: string;
   keyPath: string;
   draftKey: string;
-  /** Absolute offsets of the JSON string token (including quotes) in the host document. */
+  /** Absolute offsets of the replaced region (JSON string token including quotes). */
   absoluteStart: number;
   absoluteEnd: number;
   /** Offsets of the token within the field body in *raw* (on-disk) field content. */
-  rawStartInField: number;
-  rawEndInField: number;
-  field: EmbeddedFieldHit;
+  rawStartInField?: number;
+  rawEndInField?: number;
+  /** Absent for layered hits, which carry their encoding in `layers` instead. */
+  field?: EmbeddedFieldHit;
   unescapedValue: string;
   /** Source shown in the temp editor (wrapper stripped when present). */
   editorCode: string;
   hadJavascriptWrapper: boolean;
   hostVersion: number;
   tableName: string;
+  /**
+   * Encoding stack from the generalized detector, outermost first. When set,
+   * write-back re-encodes through these instead of the single-level CDATA /
+   * entity branch, which is the only way a script nested inside an
+   * entity-encoded <payload> can round-trip.
+   */
+  layers?: EncodingLayer[];
 }
 
 interface JsonFieldRegion {
@@ -228,6 +237,21 @@ function collectPayloadJsonFields(
     }
   }
 
+  // Inner-parse offsets are in decoded space; an entity-encoded payload is
+  // longer in the file, so they must be mapped before being added to bodyAbs.
+  // Getting this wrong points write-back at the wrong bytes, not just a bad
+  // squiggle.
+  let toRawInPayload = (offset: number): number => offset;
+  if (!payloadEl.isCdata) {
+    const decodedToRaw = buildDecodedToRawMap(payloadEl.content, decodeXmlEntities);
+    if (!decodedToRaw) {
+      return [];
+    }
+    const rawLength = payloadEl.content.length;
+    toRawInPayload = (offset) =>
+      offset < decodedToRaw.length ? decodedToRaw[offset] : rawLength;
+  }
+
   const inner = parseSnXml(payload);
   if (!inner.wellFormed) {
     return [];
@@ -246,8 +270,8 @@ function collectPayloadJsonFields(
       if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) {
         continue;
       }
-      const absStart = bodyAbs + field.bodyStartOffset;
-      const absEnd = bodyAbs + field.bodyEndOffset;
+      const absStart = bodyAbs + toRawInPayload(field.bodyStartOffset);
+      const absEnd = bodyAbs + toRawInPayload(field.bodyEndOffset);
       const pos = offsetToPosition(doc.text, absStart);
       out.push({
         field: {

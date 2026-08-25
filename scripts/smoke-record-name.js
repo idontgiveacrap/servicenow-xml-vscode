@@ -37,8 +37,8 @@ try {
   );
   assert.equal(
     manifest.contributes.views['servicenow-xml'][0].when,
-    'servicenowXml.isSnWorkspace || config.servicenowXml.enabledForAllWindows',
-    'Records view must be gated by SN workspace context or enabledForAllWindows'
+    'servicenowXml.isSnWorkspace || servicenowXml.hasSnDocument || config.servicenowXml.enabledForAllWindows',
+    'Records view must be gated by SN workspace context, an open SN-shaped document, or enabledForAllWindows'
   );
   assert.ok(
     manifest.contributes.configuration.properties[

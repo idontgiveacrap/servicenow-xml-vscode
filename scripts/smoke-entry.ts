@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseSnXml } from '../src/parseSnXml';
 import { classifyAndValidate } from '../src/kinds';
+import { detectJavaScriptSupport } from '../src/javascriptSupport';
 
 const samples: Array<{ label: string; file: string; expect: string; required?: boolean }> = [
   {
@@ -37,6 +38,39 @@ const samples: Array<{ label: string; file: string; expect: string; required?: b
 ];
 
 let failed = 0;
+
+const supportSamples: Array<[string, string, 'ES5' | 'ES12']> = [
+  [
+    'ES latest scoped app',
+    '<sys_app><scope>x_example_app</scope><js_level>es_latest</js_level></sys_app>',
+    'ES12'
+  ],
+  [
+    'ES latest global app',
+    '<sys_app><scope>global</scope><js_level>es_latest</js_level></sys_app>',
+    'ES5'
+  ],
+  [
+    'ES latest app without scope',
+    '<sys_app><js_level>es_latest</js_level></sys_app>',
+    'ES5'
+  ],
+  ['ES5 app', '<sys_app><js_level>helsinki_es5</js_level></sys_app>', 'ES5'],
+  ['missing metadata', '<sys_script><script>var x = 1;</script></sys_script>', 'ES5'],
+  [
+    'js_level text outside sys_app',
+    '<sys_script><script><![CDATA[var x = "<js_level>es_latest</js_level>";]]></script></sys_script>',
+    'ES5'
+  ]
+];
+for (const [label, xml, expected] of supportSamples) {
+  const actual = detectJavaScriptSupport(xml);
+  if (actual !== expected) {
+    console.log(`FAIL ${label}: JavaScript support=${actual}, expected ${expected}`);
+    failed++;
+  }
+}
+
 for (const s of samples) {
   if (!fs.existsSync(s.file)) {
     if (s.required) {

@@ -1,5 +1,12 @@
+import * as fs from 'fs/promises';
 import * as vscode from 'vscode';
 import { getIgnoreGlobs, isPathIgnored } from '../ignorePaths';
+import {
+  CATALOG_CACHE_STATE_KEY,
+  createCatalogCache,
+  PersistedCatalogRecord,
+  readCatalogCache
+} from './catalogCache';
 import { extractRecordIdentities } from './recordName';
 import { RecordUsageStore, uriKey } from './usage';
 
@@ -21,6 +28,18 @@ const SORT_BY_VALUES: readonly NavigatorSortBy[] = [
 
 export { uriKey } from './usage';
 
+/**
+ * Directories never worth walking for exports. Spelled out because passing any
+ * explicit exclude to `findFiles` drops the `files.exclude` defaults.
+ */
+const SCAN_EXCLUDE_BASE = ['**/node_modules/**', '**/.git/**'];
+
+/**
+ * Files read in parallel during a scan. Reads are I/O bound rather than CPU
+ * bound, so this sits well above core count.
+ */
+const SCAN_CONCURRENCY = 64;
+
 /** One indexed ServiceNow record tied to its export file. */
 export interface CatalogRecord {
   table: string;
@@ -31,7 +50,11 @@ export interface CatalogRecord {
   sysModCount?: number;
   /** Indexed row offset, used to disambiguate records when opening at their line. */
   startOffset: number;
-  /** File modification time in ms (shared across rows in the same file). */
+  /**
+   * File modification time in ms (shared across rows in the same file).
+   * Filled in lazily by the catalog, and only for the `recentlyUpdated` sort;
+   * undefined otherwise, which that sort treats as "unknown, order last".
+   */
   mtimeMs?: number;
   openCount: number;
   lastOpenedAt?: number;
@@ -42,8 +65,9 @@ export interface CatalogRecord {
 type CatalogListener = () => void;
 
 /**
- * Lazy in-memory catalog of ServiceNow export records.
- * Performs no I/O until {@link ensure} or {@link refresh} is called while enabled.
+ * Lazy catalog of ServiceNow export records with a persisted metadata snapshot.
+ * Performs no file I/O until {@link ensure} or {@link refresh} is called while
+ * enabled; ensure can render a compatible snapshot before revalidating it.
  */
 export class RecordCatalog implements vscode.Disposable {
   private byTable = new Map<string, CatalogRecord[]>();
@@ -57,12 +81,17 @@ export class RecordCatalog implements vscode.Disposable {
   private watchers: vscode.FileSystemWatcher[] = [];
   private watchDebounce: NodeJS.Timeout | undefined;
   private usageRebuildDebounce: NodeJS.Timeout | undefined;
+  private cacheRestoreAttempted = false;
+  private restoredFromCache = false;
+  private cacheRevalidationStarted = false;
   private readonly pendingFileChanges = new Map<string, vscode.Uri | undefined>();
   private readonly listeners = new Set<CatalogListener>();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly usage: RecordUsageStore;
+  private readonly workspaceState: vscode.Memento;
 
   constructor(workspaceState: vscode.Memento) {
+    this.workspaceState = workspaceState;
     this.usage = new RecordUsageStore(workspaceState);
     this.disposables.push(
       this.usage,
@@ -84,6 +113,18 @@ export class RecordCatalog implements vscode.Disposable {
             !e.affectsConfiguration('servicenowXml.navigator.excludeDelete') &&
             !e.affectsConfiguration('servicenowXml.ignoreGlobs')
           ) {
+            // Switching into recentlyUpdated is the first time mtimes are needed.
+            if (this.sortBy() === 'recentlyUpdated') {
+              void this.ensureMtimes().then(async () => {
+                if (!this.loaded || !this.isEnabled()) {
+                  return;
+                }
+                this.rebuildViews();
+                this.notify();
+                await this.persistCache();
+              });
+              return;
+            }
             this.rebuildViews();
             this.notify();
             return;
@@ -223,7 +264,16 @@ export class RecordCatalog implements vscode.Disposable {
     if (!this.isEnabled()) {
       return false;
     }
+    if (!this.loaded && this.restoreCache()) {
+      this.startWatching();
+      this.notify();
+      this.startCacheRevalidation();
+      return true;
+    }
     if (this.loaded) {
+      if (this.restoredFromCache) {
+        this.startCacheRevalidation();
+      }
       return true;
     }
     if (this.loading) {
@@ -232,6 +282,65 @@ export class RecordCatalog implements vscode.Disposable {
     }
     await this.refresh(options);
     return this.loaded;
+  }
+
+  /**
+   * Restore a compatible workspace-state snapshot into the in-memory catalog.
+   * Usage metrics remain authoritative in RecordUsageStore and are merged while
+   * views rebuild, so cached open counts cannot overwrite newer usage state.
+   */
+  private restoreCache(): boolean {
+    if (this.cacheRestoreAttempted) {
+      return false;
+    }
+    this.cacheRestoreAttempted = true;
+    const records = readCatalogCache(
+      this.workspaceState.get<unknown>(CATALOG_CACHE_STATE_KEY),
+      this.workspaceCacheKey(),
+      this.configCacheKey()
+    );
+    if (!records) {
+      return false;
+    }
+    const restored: CatalogRecord[] = [];
+    try {
+      for (const record of records) {
+        restored.push({
+          ...record,
+          uri: vscode.Uri.parse(record.uri),
+          openCount: 0
+        });
+      }
+    } catch (error) {
+      console.warn('[servicenow-xml] navigator cache is malformed:', error);
+      void this.workspaceState.update(CATALOG_CACHE_STATE_KEY, undefined);
+      return false;
+    }
+    this.applyRecords(restored);
+    this.restoredFromCache = true;
+    return true;
+  }
+
+  /**
+   * Revalidate a restored snapshot once per activation without delaying its
+   * first render. Failure leaves the cached catalog usable for manual refresh.
+   */
+  private startCacheRevalidation(): void {
+    if (this.cacheRevalidationStarted || !this.restoredFromCache) {
+      return;
+    }
+    this.cacheRevalidationStarted = true;
+    void this.refresh({ showProgress: false }).catch((error: unknown) => {
+      this.cacheRevalidationStarted = false;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        '[servicenow-xml] cached navigator background refresh failed:',
+        message
+      );
+      void vscode.window.showWarningMessage(
+        `ServiceNow Records is showing its cached index because background refresh failed: ${message}`
+      );
+    });
   }
 
   /**
@@ -289,10 +398,28 @@ export class RecordCatalog implements vscode.Disposable {
       if (!this.isEnabled() || generation !== this.scanGeneration) {
         return;
       }
+      // applyRecords marks the catalog loaded; remember whether the tree was
+      // already showing rows so a recentlyUpdated refresh does not notify once
+      // with empty mtimes (name-order fallback) before stats finish.
+      const alreadyVisible = this.loaded;
       this.applyRecords(records);
+      this.restoredFromCache = false;
       this.startWatching();
-      this.notify();
       progress?.report({ message: `Indexed ${records.length} records` });
+      const needsMtimes = this.sortBy() === 'recentlyUpdated';
+      // Cold start: paint before statting so the tree is usable. A catalog that
+      // is already on screen keeps its current order until mtimes are back.
+      if (!alreadyVisible || !needsMtimes) {
+        this.notify();
+      }
+      if (needsMtimes) {
+        await this.ensureMtimes();
+        if (this.isEnabled() && generation === this.scanGeneration) {
+          this.rebuildViews();
+          this.notify();
+        }
+      }
+      await this.persistCache();
     };
 
     if (showProgress) {
@@ -322,6 +449,61 @@ export class RecordCatalog implements vscode.Disposable {
     this.recordsByUri = recordsByUri;
     this.rebuildViews();
     this.loaded = true;
+  }
+
+  /**
+   * Persist identity metadata only; usage remains in its existing dedicated
+   * store and XML/script bodies never enter workspaceState.
+   */
+  private async persistCache(): Promise<void> {
+    if (!this.loaded || !this.isEnabled()) {
+      return;
+    }
+    const records: PersistedCatalogRecord[] = [
+      ...this.recordsByUri.values()
+    ].flatMap((rows) =>
+      rows.map((record) => ({
+        table: record.table,
+        displayName: record.displayName,
+        sysId: record.sysId,
+        action: record.action,
+        apiName: record.apiName,
+        sysModCount: record.sysModCount,
+        startOffset: record.startOffset,
+        mtimeMs: record.mtimeMs,
+        uri: record.uri.toString(),
+        relativePath: record.relativePath
+      }))
+    );
+    try {
+      await this.workspaceState.update(
+        CATALOG_CACHE_STATE_KEY,
+        createCatalogCache(this.workspaceCacheKey(), this.configCacheKey(), records)
+      );
+    } catch (error) {
+      console.warn('[servicenow-xml] navigator cache write failed:', error);
+    }
+  }
+
+  /**
+   * Stable identity for the folders whose XML records make up this catalog.
+   */
+  private workspaceCacheKey(): string {
+    return JSON.stringify(
+      (vscode.workspace.workspaceFolders ?? [])
+        .map((folder) => folder.uri.toString())
+        .sort()
+    );
+  }
+
+  /**
+   * Index-affecting settings; sort and usage do not change catalog membership.
+   */
+  private configCacheKey(): string {
+    return JSON.stringify({
+      excludeDelete: this.excludeDelete(),
+      ignoreGlobs: [...getIgnoreGlobs()].sort()
+    });
   }
 
   /**
@@ -363,22 +545,31 @@ export class RecordCatalog implements vscode.Disposable {
   private async scanWorkspace(): Promise<CatalogRecord[]> {
     const ignoreGlobs = getIgnoreGlobs();
     const excludeDelete = this.excludeDelete();
+    // Ignored paths are dropped during the walk rather than after it, so the
+    // search never reports files the catalog would discard anyway.
     const uris = await vscode.workspace.findFiles(
       '**/*.xml',
-      '**/{node_modules,.git}/**'
+      `{${[...SCAN_EXCLUDE_BASE, ...ignoreGlobs].join(',')}}`
     );
     const out: CatalogRecord[] = [];
 
-    const concurrency = 32;
-    for (let start = 0; start < uris.length; start += concurrency) {
-      const batch = uris.slice(start, start + concurrency);
-      const recordGroups = await Promise.all(
-        batch.map((uri) => this.readCatalogRecords(uri, ignoreGlobs, excludeDelete))
-      );
-      for (const records of recordGroups) {
-        out.push(...records);
-      }
-    }
+    // Workers pull the next file as they finish rather than advancing in fixed
+    // batches, so one multi-megabyte export cannot idle the other slots.
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(SCAN_CONCURRENCY, uris.length) }, async () => {
+        while (next < uris.length) {
+          const records = await this.readCatalogRecords(
+            uris[next++],
+            ignoreGlobs,
+            excludeDelete
+          );
+          for (const record of records) {
+            out.push(record);
+          }
+        }
+      })
+    );
 
     return out;
   }
@@ -394,22 +585,19 @@ export class RecordCatalog implements vscode.Disposable {
     if (isPathIgnored(uri.fsPath, ignoreGlobs)) {
       return [];
     }
-    let bytes: Uint8Array;
-    let mtimeMs: number | undefined;
+    let text: string;
     try {
-      const [fileBytes, stat] = await Promise.all([
-        vscode.workspace.fs.readFile(uri),
-        vscode.workspace.fs.stat(uri)
-      ]);
-      bytes = fileBytes;
-      mtimeMs = stat.mtime;
+      // Local files skip `workspace.fs`, whose calls round-trip to the main
+      // process. A scan reads every export in the workspace, so that per-call
+      // overhead outweighed the parsing. Virtual schemes keep the provider API.
+      text =
+        uri.scheme === 'file'
+          ? await fs.readFile(uri.fsPath, 'utf8')
+          : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
     } catch {
       return [];
     }
-    const identities = extractRecordIdentities(
-      Buffer.from(bytes).toString('utf8'),
-      uri.fsPath
-    );
+    const identities = extractRecordIdentities(text, uri.fsPath);
     const relativePath = vscode.workspace.asRelativePath(uri, false);
     return identities
       .filter((identity) => !excludeDelete || identity.action !== 'DELETE')
@@ -423,13 +611,52 @@ export class RecordCatalog implements vscode.Disposable {
           apiName: identity.apiName,
           sysModCount: identity.sysModCount,
           startOffset: identity.startOffset,
-          mtimeMs,
           openCount: usage?.openCount ?? 0,
           lastOpenedAt: usage?.lastOpenedAt,
           uri,
           relativePath
         };
       });
+  }
+
+  /**
+   * Fill in file modification times for indexed files that still lack them.
+   *
+   * Only the `recentlyUpdated` sort reads mtimes, so a scan skips the stat call
+   * entirely — it would double the I/O calls per file for a value the other four
+   * sort modes never touch. Callers invoke this when that sort is active: after a
+   * scan, when the user switches to it, and after watcher updates replace rows.
+   * Files that already carry an mtime are skipped, so repeat calls are cheap.
+   */
+  private async ensureMtimes(): Promise<void> {
+    const pending = [...this.recordsByUri.values()].filter(
+      (records) => records.length > 0 && records[0].mtimeMs === undefined
+    );
+    if (pending.length === 0) {
+      return;
+    }
+    let next = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(SCAN_CONCURRENCY, pending.length) }, async () => {
+        while (next < pending.length) {
+          const records = pending[next++];
+          const uri = records[0].uri;
+          let mtimeMs: number;
+          try {
+            mtimeMs =
+              uri.scheme === 'file'
+                ? (await fs.stat(uri.fsPath)).mtimeMs
+                : (await vscode.workspace.fs.stat(uri)).mtime;
+          } catch {
+            // Deleted between the scan and now; leave the rows unranked.
+            continue;
+          }
+          for (const record of records) {
+            record.mtimeMs = mtimeMs;
+          }
+        }
+      })
+    );
   }
 
   private startWatching(): void {
@@ -507,6 +734,17 @@ export class RecordCatalog implements vscode.Disposable {
     }
     this.rebuildViews();
     this.notify();
+
+    // Replacement rows carry no mtime, and a changed file is exactly the one
+    // this sort is meant to surface first.
+    if (this.sortBy() === 'recentlyUpdated') {
+      await this.ensureMtimes();
+      if (this.isEnabled() && this.loaded) {
+        this.rebuildViews();
+        this.notify();
+      }
+    }
+    await this.persistCache();
   }
 
   private stopWatching(): void {
@@ -530,6 +768,9 @@ export class RecordCatalog implements vscode.Disposable {
     this.recordsByUri = new Map();
     this.tableOrder = [];
     this.loaded = false;
+    this.cacheRestoreAttempted = false;
+    this.restoredFromCache = false;
+    this.cacheRevalidationStarted = false;
   }
 
   private notify(): void {

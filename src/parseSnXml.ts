@@ -13,6 +13,7 @@ import {
   SnDiagnostic,
   SYS_ID_RE
 } from './kinds/types';
+import { SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
 
 /**
  * Convert a 0-based absolute offset into line/character using the source text.
@@ -92,8 +93,19 @@ function isInsideRanges(
   offset: number,
   ranges: Array<{ start: number; end: number }>
 ): boolean {
-  for (const r of ranges) {
-    if (offset >= r.start && offset < r.end) {
+  // findCdataRanges emits ascending, non-overlapping ranges, so the containing
+  // range can be bisected. A linear scan here made row scanning quadratic in
+  // record count, since exports carry roughly one CDATA per record.
+  let low = 0;
+  let high = ranges.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const range = ranges[mid];
+    if (offset < range.start) {
+      high = mid - 1;
+    } else if (offset >= range.end) {
+      low = mid + 1;
+    } else {
       return true;
     }
   }
@@ -163,6 +175,14 @@ export interface ActionRowBounds {
 }
 
 /**
+ * Open/close tag scanners keyed by element name. Reused across rows because a
+ * multi-row export re-scans the same element name once per row, and compiling
+ * the pattern each time dominated the scan for large unloads. Safe to share:
+ * `lastIndex` is assigned before every use and scanning is synchronous.
+ */
+const balancedTagScanners = new Map<string, RegExp>();
+
+/**
  * Find the end offset of a balanced element named `tableName` starting after its open tag.
  * Handles nested same-name children (e.g. a field element named like the table).
  * Skips content inside CDATA. Close/open matching is case-insensitive.
@@ -173,10 +193,14 @@ function findBalancedElementEnd(
   afterOpenOffset: number,
   cdataRanges: Array<{ start: number; end: number }>
 ): number {
-  const tagRe = new RegExp(
-    `<\\s*(\\/)?\\s*${escapeRegExp(tableName)}\\b[^>]*>`,
-    'gi'
-  );
+  let tagRe = balancedTagScanners.get(tableName);
+  if (!tagRe) {
+    tagRe = new RegExp(
+      `<\\s*(\\/)?\\s*${escapeRegExp(tableName)}\\b[^>]*>`,
+      'gi'
+    );
+    balancedTagScanners.set(tableName, tagRe);
+  }
   tagRe.lastIndex = afterOpenOffset;
   let depth = 1;
   let match: RegExpExecArray | null;
@@ -263,7 +287,12 @@ function scanRecordRows(text: string): RecordRow[] {
     const pos = offsetToPosition(text, bounds.startOffset);
     const rowXml = bounds.rowText;
     const sysIdInfo = extractSysId(rowXml, bounds.startOffset, text);
-    const embeddedFields = extractEmbeddedFields(rowXml, bounds.startOffset, text);
+    const embeddedFields = extractEmbeddedFields(
+      rowXml,
+      bounds.startOffset,
+      text,
+      bounds.tableName
+    );
     const sysScopeValue = extractReferenceFieldValue(rowXml, 'sys_scope');
     const sysPackageValue = extractReferenceFieldValue(rowXml, 'sys_package');
 
@@ -334,12 +363,13 @@ function extractSysId(
 function extractEmbeddedFields(
   rowXml: string,
   rowStart: number,
-  fullText: string
+  fullText: string,
+  tableName?: string
 ): EmbeddedFieldHit[] {
   const hits: EmbeddedFieldHit[] = [];
   const seen = new Set<string>();
 
-  for (const fieldName of SCRIPT_FIELD_NAMES) {
+  for (const fieldName of scriptFieldNamesFor(rowXml, tableName)) {
     for (const hit of extractNamedField(rowXml, rowStart, fullText, fieldName, 'javascript')) {
       const key = `${hit.fieldName}:${hit.bodyStartOffset}`;
       if (!seen.has(key)) {
@@ -378,6 +408,7 @@ function extractEmbeddedFields(
       (SCRIPT_FIELD_NAMES as readonly string[]).includes(fieldName) ||
       (JSON_FIELD_NAMES as readonly string[]).includes(fieldName) ||
       (CSS_FIELD_NAMES as readonly string[]).includes(fieldName) ||
+      (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) ||
       fieldName === 'sys_id' ||
       fieldName.startsWith('sys_') ||
       fieldName === 'payload'
@@ -412,6 +443,32 @@ function extractEmbeddedFields(
   }
 
   return hits;
+}
+
+/**
+ * Script field names to look for in one row: the always-on base names plus any
+ * dictionary-typed script field for this table.
+ *
+ * Only names that actually appear in the row are returned, so cost tracks the
+ * size of the record rather than the size of the dictionary table.
+ */
+function scriptFieldNamesFor(
+  rowXml: string,
+  tableName: string | undefined
+): string[] {
+  const names = new Set<string>(SCRIPT_FIELD_NAMES);
+  if (!tableName) {
+    return [...names];
+  }
+  const elementRe = /<\s*([A-Za-z_][\w.-]*)\b/g;
+  let m: RegExpExecArray | null;
+  while ((m = elementRe.exec(rowXml)) !== null) {
+    const element = m[1];
+    if (!names.has(element) && SCRIPT_FIELD_PAIRS.has(`${tableName}.${element}`)) {
+      names.add(element);
+    }
+  }
+  return [...names];
 }
 
 function extractNamedField(

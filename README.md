@@ -3,9 +3,9 @@
 Cursor / VS Code extension that:
 
 1. **Colorizes** JavaScript inside ServiceNow script CDATA fields (`script`, `client_script_v2`, `script_true`, `script_false`)
-2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022)
+2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022), across every script-typed field in the bundled dictionary table
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
-4. **Edits JSON-embedded scripts** — open `javascript(…)` / `*Script` string values from composition JSON in a temp JS editor, then write back with JSON + XML-safe encoding
+4. **Edits embedded scripts** — right-click any script, however it is encoded (CDATA, entity-escaped, nested inside an update-set `<payload>`, or inside a JSON string), edit it in a temp JS tab, and save to write it back through the same encodings
 5. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
 6. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
 
@@ -21,31 +21,72 @@ npm run package
 2. In Cursor: **Extensions** → `…` → **Install from VSIX…** → select the generated `.vsix`
 3. Open a ServiceNow app workspace (see below); open a `*.xml` export and check the status bar for `SN XML: …` and the Problems panel for diagnostics
 
-## Workspace gate
+## Gates
 
-Diagnostics/lint and the ServiceNow activity-bar Records view stay inactive until the workspace contains a marker file:
+Two gates decide what runs. Workspace-wide features need the **workspace gate**; per-file features also accept the **document gate**.
+
+### Workspace gate
+
+The ServiceNow activity-bar Records view and navigator indexing stay inactive until the workspace contains a marker file:
 
 `{sys_id}/sys_app_{sys_id}.xml`
 
 (same 32-hex id in the folder name and filename; may appear anywhere under the workspace, not only at the root). Paths matching `ignoreGlobs` do not count.
 
-Set `servicenowXml.enabledForAllWindows` to `true` to bypass that gate — useful for single-file windows (e.g. a one-off under Downloads) where there is no project folder layout. With the bypass on, open XML is still considered for linting, and the Records view remains available.
+Set `servicenowXml.enabledForAllWindows` to `true` to bypass it — this makes **every** open XML file in scope, whether or not it looks like a ServiceNow export.
 
-`servicenowXml.enable` still toggles diagnostics after the gate (or bypass) passes.
+### Document gate
 
-## Embedded JSON script editor
+Classification, structure diagnostics, and embedded JS/JSON lint also run for any single document that looks like a ServiceNow export, with no marker and no folder required. That covers the common one-off: open a retrieved update set straight from Downloads in a window with no project.
 
-Right-click a JSON string value inside a known JSON XML field (`composition`, `props`, …) — or run **ServiceNow XML: Edit Embedded JSON Script…** with the caret on that string — when the value is `javascript(…)` or the property name ends with `Script`.
+A document passes when its language is XML and either:
+
+- the basename follows the export convention `{table}_{32-hex}.xml`, or
+- an export root or record table (`<unload>`, `<record_update>`, `<sys_update_xml>`, `<sys_remote_update_set>`, `<sys_update_set>`) appears near the top of the buffer
+
+Matching is on file shape rather than on a successful classification, so a truncated or malformed export still reaches the parser and reports its well-formedness and structure errors instead of going silent.
+
+`ignoreGlobs` still applies, and `servicenowXml.enable` still toggles diagnostics after either gate passes.
+
+Two things are weaker in a folderless window: the `{sys_id}/sys_app_{sys_id}.xml` marker cannot be found, so cross-checks that compare a payload's `sys_scope` / `sys_package` against the workspace application are skipped. Update sets are unaffected, because they use their own `<application>` value as the container id.
+
+### What the document gate does not enable
+
+Navigator indexing, Go to Record, workspace symbols, and the Cursor helpers all need a folder to scan and stay workspace-gated. The Records view becomes *visible* when an export-shaped file is open, but it can only list records the workspace scan found — see [Records navigator](#records-navigator-optional-lazy).
+
+## Embedded script editor
+
+Right-click anywhere inside a script — or run **ServiceNow XML: Edit Embedded Script…** with the caret there.
 
 1. The script opens in a side JS tab (wrapper stripped)
-2. Save the temp tab to splice the re-escaped string back into the XML (CDATA or entity-encoded plain fields)
+2. Save the temp tab to splice the re-encoded script back into the XML
 3. Save the XML file to clear the write-back draft
+
+### What it finds
+
+Detection is by content, not by field name. The command walks inward from the click position, peeling one encoding at a time — CDATA, XML entity escaping, a nested `record_update` document inside a `<payload>`, a JSON string value, a `javascript(…)` wrapper — and stops when what is left reads as code. Write-back re-applies the same stack in reverse, so a script buried in an entity-encoded payload round-trips without hand-written cases for each combination.
+
+"Reads as code" means the text parses as JavaScript **and** contains a function, class, variable declaration, assignment, call, or control-flow statement. Parsing alone is not enough: `general`, `true`, `300000`, and sys_ids starting with a letter are all valid JavaScript programs, and are ordinary values of non-script fields. A lone call still counts, because `response.sendRedirect(…)` is the entire body of a real `sys_ui_page` processing script.
+
+Consequences worth knowing:
+
+| Situation | Behavior |
+|-----------|----------|
+| Caret on markup between fields | Nothing opens — the offset is on structure, not a value |
+| Caret in a scalar field (`<category>general</category>`) | Nothing opens |
+| Script field that is empty or a single literal | Nothing opens |
+| CDATA script that builds HTML strings | Opens; CDATA is exempt from the markup check |
+| Encoding differs from ServiceNow's own | Write-back is not byte-identical, only equivalent — entity style may change (`&#39;` becomes `'`) |
+
+If write-back cannot re-encode (for example the edit introduces `]]>` inside CDATA), it refuses and saves a draft rather than writing. After a successful splice it re-reads the result through the same layer walk and fails to a draft if what comes back is not what was typed.
 
 If write-back fails (stale host, encoding, etc.), the edited script is stored under `.servicenow-xml/json-string-drafts/` (the extension ensures `.gitignore` includes `.servicenow-xml/`). Re-opening the same string prompts **Use Draft** / **Reset to XML** / **Cancel**.
 
 ## Records navigator (optional, lazy)
 
-Hidden until the workspace gate passes (or `enabledForAllWindows` is on). Disabled by default even then. **No workspace scan, watchers, or index memory until you enable it and open the view (or run Go to Record).**
+Hidden until the workspace gate passes, an export-shaped XML file is open, or `enabledForAllWindows` is on. Disabled by default even then. **No workspace scan, watchers, or index memory until you enable it and open the view (or run Go to Record).**
+
+Records come from a scan of workspace XML files, so a window with no folder open shows the view with a welcome message rather than a tree — the open file itself is not indexed. Indexing open documents as a second catalog source is planned but not implemented; see [Deferred](#deferred).
 
 1. Set `servicenowXml.navigator.enable` to `true` (or click **Enable ServiceNow Records navigator…** in the ServiceNow activity bar view)
 2. Open the **ServiceNow** activity icon → **Records**
@@ -129,7 +170,91 @@ Telling the two apart:
 
 Hovering a record spells the counts out (`Problems in this file: 2 warnings — …`). Counts are per **file**, so an export holding several records attributes them to every row from that file. Set `problems.decorations.enabled` to `false` to drop the coloring everywhere, or narrow what gets linted with `servicenowXml.lintJavaScript`, `servicenowXml.lintJson`, and `servicenowXml.ignoreGlobs`.
 
+### Which fields get linted
+
+Background lint covers the four always-on names (`script`, `client_script_v2`, `script_true`, `script_false`) plus every script-typed field in `src/kinds/scriptFields.generated.ts` — 441 `table.field` pairs over 207 distinct field names, derived from a `sys_dictionary` export.
+
+The table is keyed by `table.field` rather than by field name because the same name is code on one table and data on another: `value` is a script on some tables and an integer on `sys_properties`, and `layout` is a script on some tables and JSON on the `sys_ux_*` ones.
+
+Regenerate it after re-exporting the dictionary:
+
+```bash
+node scripts/pack-script-fields.js "path/to/sys_dictionary.csv"
+```
+
+Export with `internal_typeSTARTSWITHscript`; the script needs the `name`, `element`, and `internal_type` columns. Syntax colorizing is unaffected — the TextMate injection still keys off the four base names, since a grammar has no table context and would light up unrelated `<value>` fields.
+
 Embedded-JS lint does not flag platform entry points as unused: script fields are called by ServiceNow, not from inside the field, so top-level declarations (`handler` in a UX client script, `onBefore` in a business rule, the `var X = Class.create()` a Script Include exports) and platform-supplied parameters are exempt from `no-unused-vars`. Unused locals inside functions are still reported.
+
+Lint also includes the MIT `eslint-plugin-servicenow` platform rules for unsupported engine features and ServiceNow-specific hazards. The extension reads `<scope>` and `<js_level>` from the workspace `sys_app` export (non-global `es_latest` → ES12; `helsinki_es5` / `traditional` → ES5), uses that level for parsing and rule selection, and defaults to ES5 for global scope or when metadata is missing or unknown. Every ESLint problem includes the selected `[ES5]` or `[ES12]` level. Rules for features supported in ES12—such as Promise, typed arrays, BigInt, `.at()`, and `Object.setPrototypeOf`—only run for ES5; rules for features disallowed in both modes remain active in both.
+
+Individual-script ES12 overrides are stored by ServiceNow in separate `sys_es_latest_script` records and are not included in normal record XML exports. Without that accompanying metadata, lint therefore follows the application mode or the ES5 fallback.
+
+## Embedded JS globals
+
+`no-undef` needs to know every identifier the platform supplies, or ordinary ServiceNow code lights up with errors. Three sources feed the ESLint `globals` map in `src/jsLint.ts`:
+
+| Source | Contributes | Profile |
+|--------|-------------|---------|
+| `SERVER_GLOBALS` | Glide server classes, `sn_*` namespaces, `Packages` / `java`, and platform entry-point variables (`current`, `action`, `event`, `request`, …) | server |
+| `CLIENT_GLOBALS` | `g_*` variables, client Glide classes (`GlideAjax`, `GlideModal`, …), Service Portal (`spModal`, `spUtil`), browser APIs | client, and merged into server |
+| `src/data/scriptIncludes.json` | Script Include names from an instance export, grouped by scope | server |
+
+### Script Include whitelist
+
+`src/data/scriptIncludes.json` is generated from a `sys_script_include` list export and bundled into `dist/extension.js` by esbuild — no separate packaging step, and `.vscodeignore` needs no change.
+
+How scope is applied matters, because ServiceNow does not resolve every Script Include as a bare identifier:
+
+| Entry | Whitelisted as | Why |
+|-------|----------------|-----|
+| `global.ArrayUtil` | `ArrayUtil` | Global-scope Script Includes resolve by bare name from any scope |
+| `sn_hr_core.HRUtil` | `sn_hr_core` | Cross-scope access is `sn_hr_core.HRUtil`, so an undefined-variable error lands on the namespace, not the class |
+
+Scoped class names are still recorded under their scope in the JSON so a future cross-scope access check can tell whether `sn_hr_core.HRUtil` names a real record. They are deliberately **not** emitted as bare globals — doing so would hide genuine typos.
+
+Client-callable Script Includes get no client-side global. Client code reaches them through `new GlideAjax('HelloWorld')`, where the name is a string literal `no-undef` never inspects.
+
+Inactive Script Includes and rows whose `name` is not a valid JavaScript identifier (some `sys_script_include` records hold display text such as `Render All Table`) are dropped by the generator.
+
+### Data shape
+
+```json
+{
+  "version": 2,
+  "sourceColumns": ["name", "api_name", "active", "access", "client_callable"],
+  "scopes": {
+    "global": {
+      "names": ["ArrayUtil", "JSUtil"],
+      "packagePrivate": ["JSUtil"],
+      "clientCallable": []
+    }
+  }
+}
+```
+
+`names` always exists. `packagePrivate` and `clientCallable` appear **only** when the source export carried the matching column, so a consumer can distinguish "not package-private" from "unknown" rather than treating a missing column as a negative. `sourceColumns` records what the export actually supplied.
+
+`packagePrivate` matters for cross-scope validation: a Script Include with `access = package_private` is callable only from its own scope, and that applies to global-scope records too. Without the column the whitelist is more permissive than the platform.
+
+### Regenerating
+
+Export the list from an instance. `name`, `api_name`, and `active` are required; include `access` and `client_callable` so cross-scope checks have something to work with:
+
+```text
+/sys_script_include_list.do?CSV&sysparm_fields=name,sys_scope,api_name,active,access,client_callable
+```
+
+Then:
+
+```bash
+node scripts/pack-script-includes.js "path/to/sys_script_include.csv"
+npm run build
+```
+
+The generator prints scope, record, and skip counts, and warns for each optional column the export omitted.
+
+The list only covers the instance it came from. Script Includes in your own application scope are not in an out-of-box export, so re-export from an instance where the app is installed.
 
 ## Document kinds
 
@@ -147,8 +272,8 @@ Status bar shows the active kind so misclassification is obvious.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `servicenowXml.enable` | `true` | Enable ServiceNow XML validation and JS linting when the workspace gate passes (or `enabledForAllWindows` is on). |
-| `servicenowXml.enabledForAllWindows` | `false` | Bypass the ServiceNow app workspace gate so diagnostics run in any window (including single-file / non-project windows) and the Records navigator stays visible. |
+| `servicenowXml.enable` | `true` | Enable ServiceNow XML validation and JS linting once a gate passes. |
+| `servicenowXml.enabledForAllWindows` | `false` | Bypass the workspace gate so diagnostics run for **every** XML file in the window, not just export-shaped ones, and the Records view stays visible. Export-shaped single files already work without this via the document gate. |
 | `servicenowXml.lintJavaScript` | `true` | Lint embedded JavaScript in script CDATA regions. |
 | `servicenowXml.lintJson` | `true` | Lint JSON embedded in known ServiceNow XML fields. |
 | `servicenowXml.ignoreGlobs` | `["**/author_elective_update/**"]` | Glob patterns for XML paths to skip (validation, lint, navigator, and gate marker). |
@@ -222,6 +347,24 @@ npm run build
 ```
 
 Press F5 in VS Code/Cursor against this folder to launch an Extension Development Host, or package a VSIX as above.
+
+## Deferred
+
+### Index open documents into the navigator
+
+The document gate covers diagnostics for one-off exports, but the Records tree is still built only from a workspace scan, so a folderless window shows an empty view. Intended follow-up: a second catalog source built from open documents.
+
+Sketch:
+
+- Build rows with `extractRecordIdentities(document.getText(), fsPath)` — the same function `RecordCatalog.readCatalogRecords` uses, so tree rendering, sorting, reveal, and `servicenowXml.navigator.openRecord` need no changes
+- Keep them in a map separate from `recordsByUri` and merge in `rebuildViews()`, skipping URIs the workspace scan already covers, so a full rescan does not drop them
+- Invalidate on document open/close and debounced change instead of the file watchers, which need a workspace folder
+- Untitled buffers have no `mtimeMs`; missing metrics already sort last
+
+Known limitations to accept or solve first:
+
+- **Usage sorting degrades.** `RecordUsageStore` persists to `workspaceState`, which is per-window when no folder is open, so open counts do not carry over and the default `mostOpened` order is effectively arbitrary there.
+- **Value is uneven.** A retrieved update set has many `sys_update_xml` rows and makes a genuinely useful member browser; a single-record export produces a one-leaf tree that adds nothing over the status bar and Problems panel.
 
 ## Non-goals (v1)
 

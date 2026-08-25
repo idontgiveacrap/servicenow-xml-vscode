@@ -6,12 +6,17 @@ import {
   offsetToPosition,
   parseSnXml
 } from './parseSnXml';
+import { buildDecodedToRawMap } from './jsonStringEditor/escape';
+import { CLIENT_SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
+import { JavaScriptSupport } from './javascriptSupport';
 
 export interface ScriptRegion extends EmbeddedFieldHit {
   tableName: string;
   action: string;
   /** server vs client profile for ESLint globals */
   profile: 'server' | 'client';
+  /** ServiceNow JavaScript mode used to select parser and platform rules. */
+  javascriptSupport: JavaScriptSupport;
 }
 
 export interface JsonRegion extends EmbeddedFieldHit {
@@ -27,7 +32,12 @@ const CLIENT_TABLES = new Set([
   'sys_ui_policy'
 ]);
 
-const CLIENT_FIELDS = new Set(['client_script_v2', 'script_true', 'script_false']);
+const CLIENT_FIELDS = new Set([
+  'client_script',
+  'client_script_v2',
+  'script_true',
+  'script_false'
+]);
 
 /**
  * Collect lintable script regions from a parsed document.
@@ -36,9 +46,13 @@ const CLIENT_FIELDS = new Set(['client_script_v2', 'script_true', 'script_false'
  */
 export function extractScriptRegions(
   doc: ParsedDocument,
-  options?: { includeDelete?: boolean }
+  options?: {
+    includeDelete?: boolean;
+    javascriptSupport?: JavaScriptSupport;
+  }
 ): ScriptRegion[] {
   const includeDelete = options?.includeDelete === true;
+  const javascriptSupport = options?.javascriptSupport ?? 'ES5';
   const regions: ScriptRegion[] = [];
 
   for (const row of doc.rows) {
@@ -59,7 +73,8 @@ export function extractScriptRegions(
         ...field,
         tableName: row.tableName,
         action: row.action,
-        profile: resolveProfile(row.tableName, field.fieldName)
+        profile: resolveScriptProfile(row.tableName, field.fieldName),
+        javascriptSupport
       });
     }
   }
@@ -73,7 +88,9 @@ export function extractScriptRegions(
     if (row.action === 'DELETE' && !includeDelete) {
       continue;
     }
-    regions.push(...extractPayloadScriptRegions(doc, row, includeDelete));
+    regions.push(
+      ...extractPayloadScriptRegions(doc, row, includeDelete, javascriptSupport)
+    );
   }
 
   return regions;
@@ -118,7 +135,18 @@ export function extractJsonRegions(
   return regions;
 }
 
-function resolveProfile(tableName: string, fieldName: string): 'server' | 'client' {
+/**
+ * Pick the ESLint global set for a script body. Field name wins over table
+ * because a single table can hold both sides: sys_ui_page carries browser code
+ * in client_script and server code in processing_script.
+ */
+export function resolveScriptProfile(
+  tableName: string,
+  fieldName: string
+): 'server' | 'client' {
+  if (CLIENT_SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) {
+    return 'client';
+  }
   if (CLIENT_FIELDS.has(fieldName)) {
     return 'client';
   }
@@ -134,7 +162,8 @@ function resolveProfile(tableName: string, fieldName: string): 'server' | 'clien
 function extractPayloadScriptRegions(
   doc: ParsedDocument,
   row: RecordRow,
-  includeDelete: boolean
+  includeDelete: boolean,
+  javascriptSupport: JavaScriptSupport
 ): ScriptRegion[] {
   const rowXml = doc.text.slice(row.startOffset, row.endOffset);
   const payloadEl = extractRowElement(rowXml, 'payload');
@@ -163,6 +192,21 @@ function extractPayloadScriptRegions(
     }
   }
 
+  // Offsets from the inner parse are in decoded space. For an entity-encoded
+  // payload the raw text is longer (&lt; is 4 characters, < is 1), so they must
+  // be mapped before being added to a raw-document base or every region lands
+  // hundreds of characters early.
+  let toRawInPayload = (offset: number): number => offset;
+  if (!payloadEl.isCdata) {
+    const decodedToRaw = buildDecodedToRawMap(payloadEl.content, decodeXmlEntities);
+    if (!decodedToRaw) {
+      return [];
+    }
+    const rawLength = payloadEl.content.length;
+    toRawInPayload = (offset) =>
+      offset < decodedToRaw.length ? decodedToRaw[offset] : rawLength;
+  }
+
   const inner = parseSnXml(payload);
   if (!inner.wellFormed) {
     return [];
@@ -180,8 +224,8 @@ function extractPayloadScriptRegions(
       if (field.language !== 'javascript' || !field.content.trim()) {
         continue;
       }
-      const absStart = bodyAbs + field.bodyStartOffset;
-      const absEnd = bodyAbs + field.bodyEndOffset;
+      const absStart = bodyAbs + toRawInPayload(field.bodyStartOffset);
+      const absEnd = bodyAbs + toRawInPayload(field.bodyEndOffset);
       const pos = offsetToPosition(doc.text, absStart);
       regions.push({
         ...field,
@@ -191,7 +235,8 @@ function extractPayloadScriptRegions(
         bodyStartCharacter: pos.character,
         tableName: innerRow.tableName,
         action: innerRow.action,
-        profile: resolveProfile(innerRow.tableName, field.fieldName)
+        profile: resolveScriptProfile(innerRow.tableName, field.fieldName),
+        javascriptSupport
       });
     }
   }

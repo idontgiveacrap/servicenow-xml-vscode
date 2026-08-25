@@ -7,6 +7,10 @@ import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
 import { KindStatusBar } from './statusBar';
 import { isPathIgnored } from './ignorePaths';
+import {
+  detectJavaScriptSupport,
+  JavaScriptSupport
+} from './javascriptSupport';
 
 const COLLECTION_NAME = 'servicenowXml';
 
@@ -17,18 +21,25 @@ export class DiagnosticsController implements vscode.Disposable {
   private readonly collection: vscode.DiagnosticCollection;
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private readonly statusBar: KindStatusBar;
-  private readonly isLintActive: () => boolean;
+  private readonly isValidationAllowed: (document: vscode.TextDocument) => boolean;
   private readonly getWorkspaceAppSysId: () => string | undefined;
+  private readonly getWorkspaceJavaScriptSupport: () =>
+    | JavaScriptSupport
+    | undefined;
 
   constructor(
     statusBar: KindStatusBar,
-    isLintActive: () => boolean,
-    getWorkspaceAppSysId: () => string | undefined = () => undefined
+    isValidationAllowed: (document: vscode.TextDocument) => boolean,
+    getWorkspaceAppSysId: () => string | undefined = () => undefined,
+    getWorkspaceJavaScriptSupport: () =>
+      | JavaScriptSupport
+      | undefined = () => undefined
   ) {
     this.collection = vscode.languages.createDiagnosticCollection(COLLECTION_NAME);
     this.statusBar = statusBar;
-    this.isLintActive = isLintActive;
+    this.isValidationAllowed = isValidationAllowed;
     this.getWorkspaceAppSysId = getWorkspaceAppSysId;
+    this.getWorkspaceJavaScriptSupport = getWorkspaceJavaScriptSupport;
   }
 
   dispose(): void {
@@ -77,7 +88,7 @@ export class DiagnosticsController implements vscode.Disposable {
    */
   refresh(document: vscode.TextDocument): void {
     const config = vscode.workspace.getConfiguration('servicenowXml');
-    if (!this.isLintActive() || !config.get<boolean>('enable', true)) {
+    if (!this.isValidationAllowed(document) || !config.get<boolean>('enable', true)) {
       this.collection.delete(document.uri);
       if (vscode.window.activeTextEditor?.document === document) {
         this.statusBar.clear();
@@ -108,7 +119,11 @@ export class DiagnosticsController implements vscode.Disposable {
       classification.lintScripts &&
       parsed.wellFormed
     ) {
-      const regions = extractScriptRegions(parsed);
+      const javascriptSupport = detectJavaScriptSupport(
+        text,
+        this.getWorkspaceJavaScriptSupport() ?? 'ES5'
+      );
+      const regions = extractScriptRegions(parsed, { javascriptSupport });
       snDiags.push(...lintScriptRegions(regions));
     }
 

@@ -28,6 +28,7 @@ import {
   suggestReloadAfterCursorHelpers
 } from './cursorHelpers';
 import { registerJsonStringEditor } from './jsonStringEditor';
+import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
 
 const SORT_BY_PICKS: Array<{
@@ -242,8 +243,9 @@ function activateDiagnosticsAndCommands(
   const statusBar = new KindStatusBar();
   const diagnostics = new DiagnosticsController(
     statusBar,
-    () => gate.isLintActive(),
-    () => gate.getWorkspaceAppSysId()
+    (document) => gate.isValidationAllowed(document),
+    () => gate.getWorkspaceAppSysId(),
+    () => gate.getWorkspaceJavaScriptSupport()
   );
   context.subscriptions.push(
     statusBar,
@@ -255,6 +257,7 @@ function activateDiagnosticsAndCommands(
         }
       }
       diagnostics.refreshActiveEditor();
+      publishSnDocumentContext();
       maybeStartCatalogIndex(catalog, treeProvider, gate);
     })
   );
@@ -284,9 +287,17 @@ function activateDiagnosticsAndCommands(
       diagnostics.refresh(editor.document);
     }),
     vscode.commands.registerCommand('servicenowXml.navigator.enable', async () => {
+      // A folderless window has no workspace settings file, so a Workspace write
+      // throws; fall back to User so the view's enable button still works there.
       await vscode.workspace
         .getConfiguration('servicenowXml')
-        .update('navigator.enable', true, vscode.ConfigurationTarget.Workspace);
+        .update(
+          'navigator.enable',
+          true,
+          vscode.workspace.workspaceFolders?.length
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global
+        );
       treeProvider.refreshTree();
       maybeStartCatalogIndex(catalog, treeProvider, gate);
     }),
@@ -322,12 +333,15 @@ function activateDiagnosticsAndCommands(
       if (!picked) {
         return;
       }
+      // Same folderless-window fallback as navigator.enable.
       await vscode.workspace
         .getConfiguration('servicenowXml')
         .update(
           'navigator.sortBy',
           picked.value,
-          vscode.ConfigurationTarget.Workspace
+          vscode.workspace.workspaceFolders?.length
+            ? vscode.ConfigurationTarget.Workspace
+            : vscode.ConfigurationTarget.Global
         );
     }),
     vscode.commands.registerCommand('servicenowXml.navigator.filter', async () => {
@@ -401,6 +415,7 @@ function activateDiagnosticsAndCommands(
     vscode.workspace.onDidOpenTextDocument((doc) => {
       if (doc.languageId === 'xml') {
         diagnostics.schedule(doc);
+        publishSnDocumentContext();
         if (
           catalog.isEnabled() &&
           catalog.isLoaded() &&
@@ -417,9 +432,13 @@ function activateDiagnosticsAndCommands(
     }),
     vscode.workspace.onDidCloseTextDocument((doc) => {
       diagnostics.close(doc);
+      if (doc.languageId === 'xml') {
+        publishSnDocumentContext();
+      }
     }),
     vscode.window.onDidChangeActiveTextEditor(() => {
       diagnostics.refreshActiveEditor();
+      publishSnDocumentContext();
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
       const diagnosticsChanged =
@@ -467,6 +486,27 @@ function activateDiagnosticsAndCommands(
     }
   }
   diagnostics.refreshActiveEditor();
+  publishSnDocumentContext();
+}
+
+/**
+ * Publish `servicenowXml.hasSnDocument` for the Records view `when` clause, true
+ * when any open XML document looks like a ServiceNow export. Keeps the navigator
+ * reachable for one-off exports in windows with no app marker.
+ *
+ * Not refreshed on every keystroke: `onDidChangeTextDocument` would rescan every
+ * open document per edit, and a buffer that becomes export-shaped mid-typing is
+ * picked up on the next open or editor switch.
+ */
+function publishSnDocumentContext(): void {
+  const hasSnDocument = vscode.workspace.textDocuments.some(
+    (doc) => doc.languageId === 'xml' && looksLikeSnExportDocument(doc)
+  );
+  void vscode.commands.executeCommand(
+    'setContext',
+    'servicenowXml.hasSnDocument',
+    hasSnDocument
+  );
 }
 
 /**

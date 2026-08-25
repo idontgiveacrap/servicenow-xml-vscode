@@ -1,6 +1,11 @@
 import * as vscode from 'vscode';
 import { matchesSnAppMarker, parseExportFileName } from './fileName';
 import { getIgnoreGlobs, isPathIgnored } from './ignorePaths';
+import { looksLikeSnExportDocument } from './snDocumentShape';
+import {
+  detectJavaScriptSupport,
+  JavaScriptSupport
+} from './javascriptSupport';
 
 /** Context key used by package.json `when` clauses for the Records view. */
 export const SN_WORKSPACE_CONTEXT = 'servicenowXml.isSnWorkspace';
@@ -19,6 +24,7 @@ type GateListener = () => void;
 interface GateCache {
   isSnWorkspace: boolean;
   appSysId?: string;
+  appJavaScriptSupport?: JavaScriptSupport;
 }
 
 /**
@@ -28,6 +34,7 @@ interface GateCache {
 export class SnWorkspaceGate implements vscode.Disposable {
   private snWorkspace = false;
   private appSysId: string | undefined;
+  private appJavaScriptSupport: JavaScriptSupport | undefined;
   private probeTimer: NodeJS.Timeout | undefined;
   private probeGeneration = 0;
   private readonly workspaceState: vscode.Memento;
@@ -84,8 +91,20 @@ export class SnWorkspaceGate implements vscode.Disposable {
   }
 
   /**
-   * Diagnostics/lint may run when an SN app marker exists or
-   * `enabledForAllWindows` bypasses the gate (including single-file windows).
+   * JavaScript mode read from the workspace `sys_app` marker.
+   * Undefined when no marker has been found; callers must default to ES5.
+   */
+  getWorkspaceJavaScriptSupport(): JavaScriptSupport | undefined {
+    return this.appJavaScriptSupport;
+  }
+
+  /**
+   * Window-level gate: an SN app marker exists, or `enabledForAllWindows`
+   * bypasses it so every XML document in the window is in scope.
+   *
+   * This is the gate for workspace-wide features (navigator indexing). Per-document
+   * features should use {@link isValidationAllowed} so they also cover one-off
+   * exports opened outside an app workspace.
    */
   isLintActive(): boolean {
     if (
@@ -96,6 +115,16 @@ export class SnWorkspaceGate implements vscode.Disposable {
       return true;
     }
     return this.snWorkspace;
+  }
+
+  /**
+   * Whether classification, structure diagnostics, and embedded lint may run for
+   * one document: the window gate passes, or the document itself looks like a
+   * ServiceNow export. The second path is what makes a one-off update set opened
+   * in a folderless window work, where no marker can ever be found.
+   */
+  isValidationAllowed(document: vscode.TextDocument): boolean {
+    return this.isLintActive() || looksLikeSnExportDocument(document);
   }
 
   onDidChange(listener: GateListener): vscode.Disposable {
@@ -114,6 +143,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     this.snWorkspace = true;
     this.appSysId = cached.appSysId;
+    this.appJavaScriptSupport = cached.appJavaScriptSupport;
     // Publish immediately so the Records view `when` clause can show on reload
     // without waiting for findFiles.
     void this.publishContext();
@@ -122,7 +152,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
   private persistCache(): void {
     const value: GateCache = {
       isSnWorkspace: this.snWorkspace,
-      appSysId: this.appSysId
+      appSysId: this.appSysId,
+      appJavaScriptSupport: this.appJavaScriptSupport
     };
     void this.workspaceState.update(STATE_KEY, value);
   }
@@ -145,13 +176,21 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     const found = marker !== undefined;
     const appSysId = marker?.sysId;
-    if (found === this.snWorkspace && appSysId === this.appSysId) {
+    const appJavaScriptSupport = marker
+      ? await this.readMarkerJavaScriptSupport(marker.uri)
+      : undefined;
+    if (
+      found === this.snWorkspace &&
+      appSysId === this.appSysId &&
+      appJavaScriptSupport === this.appJavaScriptSupport
+    ) {
       await this.publishContext();
       this.persistCache();
       return;
     }
     this.snWorkspace = found;
     this.appSysId = appSysId;
+    this.appJavaScriptSupport = appJavaScriptSupport;
     await this.publishContext();
     this.persistCache();
     this.notify();
@@ -182,6 +221,20 @@ export class SnWorkspaceGate implements vscode.Disposable {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Read `sys_app.js_level`; malformed or missing metadata is conservatively ES5.
+   */
+  private async readMarkerJavaScriptSupport(
+    uri: vscode.Uri
+  ): Promise<JavaScriptSupport> {
+    try {
+      const bytes = await vscode.workspace.fs.readFile(uri);
+      return detectJavaScriptSupport(Buffer.from(bytes).toString('utf8'));
+    } catch {
+      return 'ES5';
+    }
   }
 
   private async publishContext(): Promise<void> {

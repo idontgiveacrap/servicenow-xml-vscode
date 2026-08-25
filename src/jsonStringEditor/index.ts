@@ -2,8 +2,13 @@ import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   detectJsonStringAtOffset,
+  makeDraftKey,
   type JsonStringHit
 } from './detect';
+import {
+  detectEmbeddedScriptAtOffset,
+  type EmbeddedScriptHit
+} from '../embedded/layers';
 import {
   deleteDraft,
   ensureDraftsDir,
@@ -59,7 +64,7 @@ async function openFromActiveEditor(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'xml') {
     void vscode.window.showInformationMessage(
-      'Open a ServiceNow XML file and place the caret in an embedded JSON script string.'
+      'Open a ServiceNow XML file and place the caret in an embedded script.'
     );
     return;
   }
@@ -67,7 +72,7 @@ async function openFromActiveEditor(
   const hit = detectAtCaret(editor);
   if (!hit) {
     void vscode.window.showInformationMessage(
-      'No eligible JSON script string at the caret (javascript(…) or *Script keys in JSON fields).'
+      'No script found at the caret. The value there does not read as JavaScript.'
     );
     return;
   }
@@ -138,13 +143,53 @@ function detectAtCaret(editor: vscode.TextEditor): JsonStringHit | null {
   if (!editor.selection.isEmpty) {
     offset = doc.offsetAt(editor.selection.start);
   }
+  const text = doc.getText();
+  const stableId = stableIdForUri(doc.uri);
+
+  // The layer walk handles every encoding stack, including scripts nested in an
+  // entity-encoded <payload>, so it goes first. The original JSON-string
+  // detector stays as a fallback for values that are JSON but do not read as
+  // code, which it still opens on the javascript(…) / *Script name rule.
+  const layered = detectEmbeddedScriptAtOffset(text, offset);
+  if (layered) {
+    return toJsonStringHit(layered, doc.uri.fsPath, doc.version, stableId);
+  }
+
   return detectJsonStringAtOffset(
-    doc.getText(),
+    text,
     offset,
     doc.uri.fsPath,
     doc.version,
-    stableIdForUri(doc.uri)
+    stableId
   );
+}
+
+/**
+ * Adapt a layered hit to the shape the session, draft, and write-back code
+ * already speak.
+ */
+function toJsonStringHit(
+  hit: EmbeddedScriptHit,
+  hostPath: string,
+  hostVersion: number,
+  stableHostId: string
+): JsonStringHit {
+  const keyPath = hit.keyPath || `${hit.tableName}.${hit.fieldName}`;
+  return {
+    hostPath,
+    stableHostId,
+    fieldName: hit.fieldName,
+    keyPath,
+    draftKey: makeDraftKey(stableHostId, hit.fieldName, keyPath),
+    absoluteStart: hit.absoluteStart,
+    absoluteEnd: hit.absoluteEnd,
+    unescapedValue: hit.code,
+    editorCode: hit.code,
+    hadJavascriptWrapper: hit.layers.some((l) => l.kind === 'jsWrapper'),
+    hostVersion,
+    tableName: hit.tableName,
+    layers: hit.layers
+  };
 }
 
 function stableIdForUri(uri: vscode.Uri): string {

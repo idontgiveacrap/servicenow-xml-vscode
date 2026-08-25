@@ -9,6 +9,10 @@ import {
 } from './escape';
 import { detectJsonStringByKeyPath, type JsonStringHit } from './detect';
 import {
+  detectEmbeddedScriptAtOffset,
+  encodeThroughLayers
+} from '../embedded/layers';
+import {
   deleteDraft,
   ensureDraftsDir,
   loadDraft,
@@ -75,17 +79,19 @@ export async function writeBackJsonString(
   let absEnd = binding.absoluteEnd;
 
   if (hostDoc.version !== binding.hostVersion) {
-    const rediscovered = detectJsonStringByKeyPath(
-      hostDoc.getText(),
-      binding.hit.hostPath,
-      hostDoc.version,
-      binding.hit.fieldName,
-      binding.hit.keyPath,
-      binding.hit.stableHostId
-    );
+    const rediscovered = hit.layers
+      ? relocateLayeredHit(hostDoc.getText(), hit, hostDoc.version, absStart)
+      : detectJsonStringByKeyPath(
+          hostDoc.getText(),
+          binding.hit.hostPath,
+          hostDoc.version,
+          binding.hit.fieldName,
+          binding.hit.keyPath,
+          binding.hit.stableHostId
+        );
     if (!rediscovered) {
       return fail(
-        'Host changed and the JSON string could not be re-located; draft saved.'
+        'Host changed and the embedded script could not be re-located; draft saved.'
       );
     }
     hit = rediscovered;
@@ -93,27 +99,40 @@ export async function writeBackJsonString(
     absEnd = rediscovered.absoluteEnd;
   }
 
-  const payload = restoreJavascriptWrapper(
-    editedCode,
-    hit.hadJavascriptWrapper
-  );
-  const token = toJsonStringToken(payload);
-  const field = hit.field;
-
   let replacement: string;
-  if (field.isCdata) {
-    if (wouldBreakCdata(token)) {
-      return fail('Replacement would terminate CDATA (contains ]]>).');
+  if (hit.layers) {
+    // The layer stack already contains the javascript() wrapper (when the
+    // original had one) and every enclosing encoding, so the edited source goes
+    // in raw and comes out ready to splice.
+    const encoded = encodeThroughLayers(editedCode, hit.layers);
+    if (!encoded.ok) {
+      return fail(encoded.error);
     }
-    replacement = token;
-  } else if (field.content !== field.decodedContent) {
-    replacement = encodeXmlEntities(token);
+    replacement = encoded.text;
   } else {
-    replacement = token;
-  }
+    const field = hit.field;
+    if (!field) {
+      return fail('Hit is missing both encoding layers and a field body.');
+    }
+    const payload = restoreJavascriptWrapper(
+      editedCode,
+      hit.hadJavascriptWrapper
+    );
+    const token = toJsonStringToken(payload);
+    if (field.isCdata) {
+      if (wouldBreakCdata(token)) {
+        return fail('Replacement would terminate CDATA (contains ]]>).');
+      }
+      replacement = token;
+    } else if (field.content !== field.decodedContent) {
+      replacement = encodeXmlEntities(token);
+    } else {
+      replacement = token;
+    }
 
-  if (absStart < field.bodyStartOffset || absEnd > field.bodyEndOffset) {
-    return fail('String range is outside the JSON field body.');
+    if (absStart < field.bodyStartOffset || absEnd > field.bodyEndOffset) {
+      return fail('String range is outside the JSON field body.');
+    }
   }
 
   const edit = new vscode.WorkspaceEdit();
@@ -128,19 +147,29 @@ export async function writeBackJsonString(
     return fail('Workspace edit was rejected.');
   }
 
-  const delta = replacement.length - (absEnd - absStart);
-  const fieldStart = field.bodyStartOffset;
-  const fieldEnd = field.bodyEndOffset + delta;
-  const rawFieldBody = hostDoc.getText().slice(fieldStart, fieldEnd);
-  const decodedBody = field.isCdata
-    ? rawFieldBody
-    : decodeXmlEntities(rawFieldBody);
-  try {
-    JSON.parse(decodedBody.trim());
-  } catch (err) {
-    const message =
-      err instanceof Error ? err.message : 'JSON parse failed after write-back';
-    return fail(`Write-back left invalid JSON: ${message}`);
+  if (hit.layers) {
+    // Read the splice back through the same descent. If the layers re-decode to
+    // what was typed, every encoding in the stack was applied correctly.
+    const roundTrip = detectEmbeddedScriptAtOffset(hostDoc.getText(), absStart);
+    if (!roundTrip || roundTrip.code !== editedCode) {
+      return fail('Write-back did not round-trip through the encoding layers.');
+    }
+  } else if (hit.field) {
+    const field = hit.field;
+    const delta = replacement.length - (absEnd - absStart);
+    const fieldStart = field.bodyStartOffset;
+    const fieldEnd = field.bodyEndOffset + delta;
+    const rawFieldBody = hostDoc.getText().slice(fieldStart, fieldEnd);
+    const decodedBody = field.isCdata
+      ? rawFieldBody
+      : decodeXmlEntities(rawFieldBody);
+    try {
+      JSON.parse(decodedBody.trim());
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'JSON parse failed after write-back';
+      return fail(`Write-back left invalid JSON: ${message}`);
+    }
   }
 
   const newEnd = absStart + replacement.length;
@@ -162,6 +191,36 @@ export async function writeBackJsonString(
   rememberPendingHostSave(binding.hostUri, hit.draftKey, absStart, newEnd);
 
   return { ok: true, pendingHostSave: true };
+}
+
+/**
+ * Re-find a layered hit after the host document changed.
+ *
+ * Deliberately conservative: it only re-descends at the remembered offset and
+ * requires the script found there to still be the one that was opened. Anything
+ * else fails into a draft, because guessing at a new location risks splicing
+ * over unrelated XML.
+ */
+function relocateLayeredHit(
+  text: string,
+  hit: JsonStringHit,
+  hostVersion: number,
+  absoluteStart: number
+): JsonStringHit | null {
+  const found = detectEmbeddedScriptAtOffset(text, absoluteStart);
+  if (!found || found.fieldName !== hit.fieldName) {
+    return null;
+  }
+  if (found.code !== hit.editorCode) {
+    return null;
+  }
+  return {
+    ...hit,
+    hostVersion,
+    absoluteStart: found.absoluteStart,
+    absoluteEnd: found.absoluteEnd,
+    layers: found.layers
+  };
 }
 
 function rememberPendingHostSave(
