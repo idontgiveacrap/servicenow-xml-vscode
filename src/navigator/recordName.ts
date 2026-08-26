@@ -38,9 +38,13 @@ export function extractRecordIdentities(
   const fileMeta = parseExportFileName(filePath);
   const primaryRows = findPrimaryRows(text);
   if (primaryRows.length === 0) {
+    const dictionary = extractDictionaryIdentity(text);
+    if (dictionary) {
+      return [dictionary];
+    }
     const fallback = buildIdentity(
       text,
-      fileMeta?.table,
+      extractRootTableAttribute(text) || fileMeta?.table,
       undefined,
       fileMeta?.sysId,
       0
@@ -79,6 +83,8 @@ function buildIdentity(
     extractElementText(recordText, 'sys_id') || fallbackSysId || undefined;
 
   const name = extractElementText(recordText, 'name');
+  const label = extractElementText(recordText, 'label');
+  const displayValue = extractElementText(recordText, 'display_value');
   const sysName = extractElementText(recordText, 'sys_name');
   const apiName = extractElementText(recordText, 'api_name');
   const targetName =
@@ -89,7 +95,8 @@ function buildIdentity(
     extractElementText(recordText, 'sys_mod_count')
   );
 
-  let displayName = targetName || name || sysName;
+  // Prefer the human-facing fields; `sys_name` is export-derived and stays last.
+  let displayName = targetName || displayValue || label || name || sysName;
   if (!displayName && apiName) {
     const dot = apiName.lastIndexOf('.');
     displayName = dot >= 0 ? apiName.slice(dot + 1) : apiName;
@@ -118,6 +125,76 @@ function parseSysModCount(raw: string | undefined): number | undefined {
   }
   const value = Number.parseInt(raw, 10);
   return Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+/** Attribute text of an open tag: quoted values may contain `>`. */
+const OPEN_TAG_ATTRS = '((?:"[^"]*"|\'[^\']*\'|[^>"\'])*)';
+
+/**
+ * Identity for a Studio `<database>` dictionary export, as one record per file.
+ *
+ * These files describe a table's schema instead of exporting a platform record:
+ * they carry no `action=` row and no `sys_id`, and the table name and its label
+ * are attributes on the root's `type="collection"` element. Nested `<element>`
+ * children are that table's columns and stay folded into this single record.
+ * `db_object_id` is deliberately not used as `sysId` — it identifies the
+ * `sys_db_object` row for the table, not a record in this file.
+ */
+function extractDictionaryIdentity(text: string): RecordIdentity | undefined {
+  const rootName = text.match(/<\s*([A-Za-z_][\w.-]*)\b/)?.[1];
+  if (rootName?.toLowerCase() !== 'database') {
+    return undefined;
+  }
+  const collection = new RegExp(`<\\s*element\\b${OPEN_TAG_ATTRS}>`, 'i').exec(text);
+  if (!collection) {
+    return undefined;
+  }
+  const table = extractAttribute(collection[1], 'name');
+  if (!table) {
+    return undefined;
+  }
+  return {
+    table,
+    displayName:
+      extractAttribute(collection[1], 'display_value') ||
+      extractAttribute(collection[1], 'label') ||
+      table,
+    startOffset: collection.index
+  };
+}
+
+/**
+ * Table declared on a rowless export root, e.g. `<record_update table="sys_choice">`.
+ * Preferred over the basename, which only follows the `{table}_{sys_id}.xml`
+ * convention by default and can be renamed while staying a valid export.
+ */
+function extractRootTableAttribute(text: string): string | undefined {
+  const root = new RegExp(
+    `<\\s*(?:record_update|unload)\\b${OPEN_TAG_ATTRS}>`,
+    'i'
+  ).exec(text);
+  return root ? extractAttribute(root[1], 'table') : undefined;
+}
+
+/**
+ * Read one attribute value out of an open tag's attribute text, entity-decoded.
+ * Returns undefined when the attribute is absent or empty after trimming.
+ */
+function extractAttribute(
+  attrText: string,
+  attrName: string
+): string | undefined {
+  const m = attrText.match(
+    new RegExp(
+      `\\b${escapeRegExp(attrName)}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`,
+      'i'
+    )
+  );
+  if (!m) {
+    return undefined;
+  }
+  const value = decodeXmlEntities(m[1] ?? m[2] ?? '').trim();
+  return value || undefined;
 }
 
 interface PrimaryRowHit {

@@ -73,7 +73,8 @@ section('CDATA / XML entities');
   const raw = 'a&amp;b&lt;c&quot;d';
   const decoded = decodeXmlEntities(raw);
   assert.equal(decoded, 'a&b<c"d');
-  assert.equal(encodeXmlEntities(decoded), 'a&amp;b&lt;c&quot;d');
+  // Quotes decode but are not re-encoded: text nodes only need & < > escaped.
+  assert.equal(encodeXmlEntities(decoded), 'a&amp;b&lt;c"d');
   const map = buildDecodedToRawMap(raw, decodeXmlEntities);
   assert.ok(map);
   assert.equal(map!.length, decoded.length);

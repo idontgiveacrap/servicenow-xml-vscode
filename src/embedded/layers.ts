@@ -18,7 +18,7 @@ import { visit } from 'jsonc-parser/lib/esm/main.js';
 import { decodeXmlEntities, encodeXmlEntities } from '../parseSnXml';
 import { buildDecodedToRawMap } from '../jsonStringEditor/escape';
 import { stripJavascriptWrapper } from '../jsonStringEditor/escape';
-import { resolveScriptProfile } from '../scriptRegions';
+import { resolveScriptProfile } from '../scriptProfile';
 import { looksLikeJavaScript } from './jsLikeness';
 
 /** How many nested documents to follow before giving up. */

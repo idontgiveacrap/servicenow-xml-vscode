@@ -284,6 +284,16 @@ async function installCursorHelpersCore(
     );
   }
 
+  const jsPerformance = path.join(bundleRoot, 'data', 'js_performance.json');
+  const jsPerformanceRef = path.join(dataDest, 'js_performance.json');
+  if (fs.existsSync(jsPerformance)) {
+    syncedFiles += syncFile(jsPerformance, jsPerformanceRef);
+  } else {
+    messages.push(
+      'Bundled JavaScript performance data missing; scripting MCP performance tools will be unavailable.'
+    );
+  }
+
   syncedFiles += syncDir(
     path.join(bundleRoot, 'rules'),
     path.join(pluginDest, 'rules')
@@ -337,6 +347,7 @@ async function installCursorHelpersCore(
     includeDbSchema: pythonOk && mcpPkgOk && fs.existsSync(schemaCsvGz),
     scriptingServerScript: path.join(scriptsDest, 'scripting_mcp_server.py'),
     scriptingRefPath: scriptingRefGz,
+    jsPerformancePath: fs.existsSync(jsPerformanceRef) ? jsPerformanceRef : '',
     includeScripting: pythonOk && mcpPkgOk && fs.existsSync(scriptingRefGz)
   });
 
@@ -345,6 +356,7 @@ async function installCursorHelpersCore(
   writeManifest(context, {
     schemaCsvGz,
     scriptingRefGz,
+    jsPerformanceRef,
     scriptsDest,
     hooksDest,
     pluginDest
@@ -559,6 +571,7 @@ function registerMcpServers(args: {
   includeDbSchema: boolean;
   scriptingServerScript: string;
   scriptingRefPath: string;
+  jsPerformancePath: string;
   includeScripting: boolean;
 }): { registered: string[]; unregistered: string[] } {
   const cursor = getCursorApi();
@@ -628,7 +641,8 @@ function registerMcpServers(args: {
           command: args.pythonPath,
           args: [args.scriptingServerScript],
           env: {
-            SCRIPTING_REF_PATH: args.scriptingRefPath
+            SCRIPTING_REF_PATH: args.scriptingRefPath,
+            JS_PERFORMANCE_PATH: args.jsPerformancePath
           }
         }
       });
@@ -785,6 +799,7 @@ function writeManifest(
   paths: {
     schemaCsvGz: string;
     scriptingRefGz: string;
+    jsPerformanceRef: string;
     scriptsDest: string;
     hooksDest: string;
     pluginDest: string;
@@ -797,7 +812,8 @@ function writeManifest(
     path.join(paths.scriptsDest, 'scripting_mcp_server.py'),
     path.join(paths.hooksDest, 'session_start_index.py'),
     paths.schemaCsvGz,
-    paths.scriptingRefGz
+    paths.scriptingRefGz,
+    paths.jsPerformanceRef
   ]) {
     if (fs.existsSync(file)) {
       files[file] = sha256File(file);

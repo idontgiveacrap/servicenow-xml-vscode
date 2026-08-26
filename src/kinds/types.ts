@@ -6,6 +6,7 @@ export type DocumentKindId =
   | 'scoped_app_record_update'
   | 'data_record_export'
   | 'customer_update'
+  | 'dictionary_export'
   | 'unknown_sn_xml'
   | 'not_xml';
 

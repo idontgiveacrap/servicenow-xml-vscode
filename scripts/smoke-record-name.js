@@ -94,6 +94,37 @@ try {
     startOffset: fixtureText.indexOf('<sys_script_include action=')
   });
 
+  const dictionaryPath = path.join(
+    __dirname,
+    '..',
+    'fixtures',
+    'dictionary_export',
+    'x_example_0_compare_row.xml'
+  );
+  const dictionaryText = fs.readFileSync(dictionaryPath, 'utf8');
+  const dictionaryRecords = extractRecordIdentities(dictionaryText, dictionaryPath);
+  assert.equal(
+    dictionaryRecords.length,
+    1,
+    'a <database> dictionary export is one navigator record, not one per column'
+  );
+  assert.deepStrictEqual(dictionaryRecords[0], {
+    table: 'x_example_0_compare_row',
+    displayName: 'Compare row',
+    startOffset: dictionaryText.indexOf('<element audit=')
+  });
+  // Basename is conventional only, so table and label must come from the content.
+  assert.deepStrictEqual(
+    extractRecordIdentity(dictionaryText, 'renamed_by_hand.xml'),
+    dictionaryRecords[0]
+  );
+
+  const rowlessRootTable = extractRecordIdentity(
+    '<record_update table="sys_choice"/>',
+    'unconventional_name.xml'
+  );
+  assert.equal(rowlessRootTable?.table, 'sys_choice');
+
   const deleteXml = `<record_update table="sys_scoped_cache">
       <sys_scoped_cache action="DELETE">
         <name>Key translations</name>
@@ -105,6 +136,29 @@ try {
   assert.equal(deleted?.action, 'DELETE');
   assert.equal(deleted?.displayName, 'Key translations');
   assert.equal(deleted?.sysModCount, 3);
+
+  const displayValueWins = extractRecordIdentity(
+    `<record_update table="sys_choice">
+      <sys_choice action="INSERT_OR_UPDATE">
+        <name>internal_name</name>
+        <label>Awaiting Evidence</label>
+        <display_value>Closed Complete</display_value>
+        <sys_id>66666666666666666666666666666666</sys_id>
+      </sys_choice>
+    </record_update>`
+  );
+  assert.equal(displayValueWins?.displayName, 'Closed Complete');
+
+  const labelBeforeName = extractRecordIdentity(
+    `<record_update table="sys_choice">
+      <sys_choice action="INSERT_OR_UPDATE">
+        <name>internal_name</name>
+        <label>Awaiting Evidence</label>
+        <sys_id>77777777777777777777777777777777</sys_id>
+      </sys_choice>
+    </record_update>`
+  );
+  assert.equal(labelBeforeName?.displayName, 'Awaiting Evidence');
 
   const multiRecordXml = `<record_update table="sys_script_include">
       <sys_script_include action="INSERT_OR_UPDATE">

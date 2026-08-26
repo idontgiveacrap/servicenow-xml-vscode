@@ -7,10 +7,16 @@ import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
 import { KindStatusBar } from './statusBar';
 import { isPathIgnored } from './ignorePaths';
+import { isEditableDocument } from './snDocumentShape';
 import {
   detectJavaScriptSupport,
   JavaScriptSupport
 } from './javascriptSupport';
+import {
+  extractScriptDeclarations,
+  mergeScriptDeclarations,
+  ScriptDeclaration
+} from './scriptDeclarations';
 
 const COLLECTION_NAME = 'servicenowXml';
 
@@ -23,8 +29,12 @@ export class DiagnosticsController implements vscode.Disposable {
   private readonly statusBar: KindStatusBar;
   private readonly isValidationAllowed: (document: vscode.TextDocument) => boolean;
   private readonly getWorkspaceAppSysId: () => string | undefined;
+  private readonly getWorkspaceAppScope: () => string | undefined;
   private readonly getWorkspaceJavaScriptSupport: () =>
     | JavaScriptSupport
+    | undefined;
+  private readonly getWorkspaceDeclarations: () =>
+    | ScriptDeclaration[]
     | undefined;
 
   constructor(
@@ -33,13 +43,19 @@ export class DiagnosticsController implements vscode.Disposable {
     getWorkspaceAppSysId: () => string | undefined = () => undefined,
     getWorkspaceJavaScriptSupport: () =>
       | JavaScriptSupport
+      | undefined = () => undefined,
+    getWorkspaceAppScope: () => string | undefined = () => undefined,
+    getWorkspaceDeclarations: () =>
+      | ScriptDeclaration[]
       | undefined = () => undefined
   ) {
     this.collection = vscode.languages.createDiagnosticCollection(COLLECTION_NAME);
     this.statusBar = statusBar;
     this.isValidationAllowed = isValidationAllowed;
     this.getWorkspaceAppSysId = getWorkspaceAppSysId;
+    this.getWorkspaceAppScope = getWorkspaceAppScope;
     this.getWorkspaceJavaScriptSupport = getWorkspaceJavaScriptSupport;
+    this.getWorkspaceDeclarations = getWorkspaceDeclarations;
   }
 
   dispose(): void {
@@ -51,7 +67,7 @@ export class DiagnosticsController implements vscode.Disposable {
   }
 
   schedule(document: vscode.TextDocument): void {
-    if (document.languageId !== 'xml') {
+    if (document.languageId !== 'xml' || !isEditableDocument(document)) {
       return;
     }
     const key = document.uri.toString();
@@ -107,9 +123,11 @@ export class DiagnosticsController implements vscode.Disposable {
     const version = document.version;
     const text = document.getText();
     const filePath = document.uri.fsPath;
+    const workspaceAppSysId = this.getWorkspaceAppSysId();
+    const workspaceAppScope = this.getWorkspaceAppScope();
     const parsed = parseSnXml(text, filePath);
     const classification = classifyAndValidate(parsed, {
-      workspaceAppSysId: this.getWorkspaceAppSysId()
+      workspaceAppSysId
     });
 
     const snDiags: SnDiagnostic[] = [...classification.diagnostics];
@@ -123,8 +141,22 @@ export class DiagnosticsController implements vscode.Disposable {
         text,
         this.getWorkspaceJavaScriptSupport() ?? 'ES5'
       );
-      const regions = extractScriptRegions(parsed, { javascriptSupport });
-      snDiags.push(...lintScriptRegions(regions));
+      const regions = extractScriptRegions(parsed, {
+        javascriptSupport,
+        workspaceAppSysId,
+        workspaceAppScope
+      });
+      const documentDeclarations = extractScriptDeclarations(parsed, {
+        includePayloads: true,
+        workspaceAppSysId,
+        workspaceAppScope
+      });
+      const workspaceDeclarations = this.getWorkspaceDeclarations();
+      const extraDeclarations =
+        workspaceDeclarations === undefined
+          ? documentDeclarations
+          : mergeScriptDeclarations(workspaceDeclarations, documentDeclarations);
+      snDiags.push(...lintScriptRegions(regions, extraDeclarations));
     }
 
     if (
@@ -150,7 +182,11 @@ export class DiagnosticsController implements vscode.Disposable {
 
   refreshActiveEditor(): void {
     const editor = vscode.window.activeTextEditor;
-    if (editor && editor.document.languageId === 'xml') {
+    if (
+      editor &&
+      editor.document.languageId === 'xml' &&
+      isEditableDocument(editor.document)
+    ) {
       this.schedule(editor.document);
     } else {
       this.statusBar.clear();

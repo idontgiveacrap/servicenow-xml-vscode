@@ -1,14 +1,8 @@
-import { EmbeddedFieldHit, ParsedDocument, RecordRow } from './kinds/types';
-import {
-  decodeXmlEntities,
-  extractRowElement,
-  isPrimaryAction,
-  offsetToPosition,
-  parseSnXml
-} from './parseSnXml';
-import { buildDecodedToRawMap } from './jsonStringEditor/escape';
-import { CLIENT_SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
+import { EmbeddedFieldHit, ParsedDocument } from './kinds/types';
+import { isPrimaryAction } from './parseSnXml';
 import { JavaScriptSupport } from './javascriptSupport';
+import { listScriptFields, scriptHitToRegion } from './scriptHits';
+export { resolveScriptProfile } from './scriptProfile';
 
 export interface ScriptRegion extends EmbeddedFieldHit {
   tableName: string;
@@ -17,27 +11,16 @@ export interface ScriptRegion extends EmbeddedFieldHit {
   profile: 'server' | 'client';
   /** ServiceNow JavaScript mode used to select parser and platform rules. */
   javascriptSupport: JavaScriptSupport;
+  /** Technical scope of the record that owns this script, when known. */
+  callerScope?: string;
+  /** Global the owning record declares, so its own script can declare it. */
+  ownDeclarationName?: string;
 }
 
 export interface JsonRegion extends EmbeddedFieldHit {
   tableName: string;
   action: string;
 }
-
-const CLIENT_TABLES = new Set([
-  'sys_ux_client_script',
-  'sys_ux_client_script_include',
-  'sys_ui_script',
-  'sys_client_script',
-  'sys_ui_policy'
-]);
-
-const CLIENT_FIELDS = new Set([
-  'client_script',
-  'client_script_v2',
-  'script_true',
-  'script_false'
-]);
 
 /**
  * Collect lintable script regions from a parsed document.
@@ -49,51 +32,11 @@ export function extractScriptRegions(
   options?: {
     includeDelete?: boolean;
     javascriptSupport?: JavaScriptSupport;
+    workspaceAppSysId?: string;
+    workspaceAppScope?: string;
   }
 ): ScriptRegion[] {
-  const includeDelete = options?.includeDelete === true;
-  const javascriptSupport = options?.javascriptSupport ?? 'ES5';
-  const regions: ScriptRegion[] = [];
-
-  for (const row of doc.rows) {
-    if (!isPrimaryAction(row.action)) {
-      continue;
-    }
-    if (row.action === 'DELETE' && !includeDelete) {
-      continue;
-    }
-    for (const field of row.embeddedFields) {
-      if (field.language !== 'javascript') {
-        continue;
-      }
-      if (!field.content.trim()) {
-        continue;
-      }
-      regions.push({
-        ...field,
-        tableName: row.tableName,
-        action: row.action,
-        profile: resolveScriptProfile(row.tableName, field.fieldName),
-        javascriptSupport
-      });
-    }
-  }
-
-  // Customer updates keep nested record_update XML inside payload CDATA, which
-  // the outer scanner skips. Parse each payload separately and shift positions.
-  for (const row of doc.rows) {
-    if (row.tableName !== 'sys_update_xml') {
-      continue;
-    }
-    if (row.action === 'DELETE' && !includeDelete) {
-      continue;
-    }
-    regions.push(
-      ...extractPayloadScriptRegions(doc, row, includeDelete, javascriptSupport)
-    );
-  }
-
-  return regions;
+  return listScriptFields(doc, options).map((hit) => scriptHitToRegion(doc, hit));
 }
 
 /**
@@ -132,114 +75,6 @@ export function extractJsonRegions(
     }
   }
 
-  return regions;
-}
-
-/**
- * Pick the ESLint global set for a script body. Field name wins over table
- * because a single table can hold both sides: sys_ui_page carries browser code
- * in client_script and server code in processing_script.
- */
-export function resolveScriptProfile(
-  tableName: string,
-  fieldName: string
-): 'server' | 'client' {
-  if (CLIENT_SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) {
-    return 'client';
-  }
-  if (CLIENT_FIELDS.has(fieldName)) {
-    return 'client';
-  }
-  if (CLIENT_TABLES.has(tableName)) {
-    return 'client';
-  }
-  return 'server';
-}
-
-/**
- * Parse one customer-update payload and return script regions in outer-document coordinates.
- */
-function extractPayloadScriptRegions(
-  doc: ParsedDocument,
-  row: RecordRow,
-  includeDelete: boolean,
-  javascriptSupport: JavaScriptSupport
-): ScriptRegion[] {
-  const rowXml = doc.text.slice(row.startOffset, row.endOffset);
-  const payloadEl = extractRowElement(rowXml, 'payload');
-  if (!payloadEl) {
-    return [];
-  }
-  const payload = payloadEl.isCdata
-    ? payloadEl.content
-    : decodeXmlEntities(payloadEl.content);
-  if (!payload.trim()) {
-    return [];
-  }
-
-  const cdataToken = '<![CDATA[';
-  const payloadTag = rowXml.indexOf('<payload');
-  let bodyAbs = row.startOffset;
-  if (payloadEl.isCdata) {
-    const cdataAt = rowXml.indexOf(cdataToken, payloadTag >= 0 ? payloadTag : 0);
-    if (cdataAt >= 0) {
-      bodyAbs = row.startOffset + cdataAt + cdataToken.length;
-    }
-  } else if (payloadTag >= 0) {
-    const openEnd = rowXml.indexOf('>', payloadTag);
-    if (openEnd >= 0) {
-      bodyAbs = row.startOffset + openEnd + 1;
-    }
-  }
-
-  // Offsets from the inner parse are in decoded space. For an entity-encoded
-  // payload the raw text is longer (&lt; is 4 characters, < is 1), so they must
-  // be mapped before being added to a raw-document base or every region lands
-  // hundreds of characters early.
-  let toRawInPayload = (offset: number): number => offset;
-  if (!payloadEl.isCdata) {
-    const decodedToRaw = buildDecodedToRawMap(payloadEl.content, decodeXmlEntities);
-    if (!decodedToRaw) {
-      return [];
-    }
-    const rawLength = payloadEl.content.length;
-    toRawInPayload = (offset) =>
-      offset < decodedToRaw.length ? decodedToRaw[offset] : rawLength;
-  }
-
-  const inner = parseSnXml(payload);
-  if (!inner.wellFormed) {
-    return [];
-  }
-
-  const regions: ScriptRegion[] = [];
-  for (const innerRow of inner.rows) {
-    if (!isPrimaryAction(innerRow.action)) {
-      continue;
-    }
-    if (innerRow.action === 'DELETE' && !includeDelete) {
-      continue;
-    }
-    for (const field of innerRow.embeddedFields) {
-      if (field.language !== 'javascript' || !field.content.trim()) {
-        continue;
-      }
-      const absStart = bodyAbs + toRawInPayload(field.bodyStartOffset);
-      const absEnd = bodyAbs + toRawInPayload(field.bodyEndOffset);
-      const pos = offsetToPosition(doc.text, absStart);
-      regions.push({
-        ...field,
-        bodyStartOffset: absStart,
-        bodyEndOffset: absEnd,
-        bodyStartLine: pos.line,
-        bodyStartCharacter: pos.character,
-        tableName: innerRow.tableName,
-        action: innerRow.action,
-        profile: resolveScriptProfile(innerRow.tableName, field.fieldName),
-        javascriptSupport
-      });
-    }
-  }
   return regions;
 }
 

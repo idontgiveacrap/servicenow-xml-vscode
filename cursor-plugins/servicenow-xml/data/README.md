@@ -6,6 +6,7 @@ Bundled under this folder and synced to `~/.cursor/servicenow-xml/data/` on Curs
 |------|------------|---------|
 | `sys_dictionary.csv.gz` | **servicenow-xml-db-schema** | Instance `sys_dictionary` export |
 | `scripting_reference.json.gz` | **servicenow-xml-scripting** | Server APIs, browser runtime catalog/items, snippets, undocumented notes |
+| `js_performance.json` | **servicenow-xml-scripting** | Evidence-bounded server JavaScript benchmark comparisons |
 
 ## sys_dictionary CSV refresh
 
@@ -36,3 +37,13 @@ python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting referen
 Writes `scripting_reference.json.gz` here (UTF-8 JSON, presentation rows stripped, snake_case fields). Rebuild / reinstall Cursor helpers so `SCRIPTING_REF_PATH` picks up the new file.
 
 The scripting MCP exposes `get_scripting_meta`, `list_scripting_sections`, `get_scripting_section`, `lookup_scripting_name`, `search_scripting_reference`, and `list_runtime_items`.
+
+## JavaScript performance data
+
+`js_performance.json` stores derived comparisons and the supplied raw runs together. The MCP exposes:
+
+- `get_js_performance_meta` for scope, environment gaps, method, and ratio semantics
+- `search_js_performance` for compact evidence rows
+- `lookup_js_performance` for exact comparisons with raw runs and limitations
+
+Keep the evidence boundary explicit. The current dataset measures ES5-compatible and ES12 constructs inside a scoped `es_latest` server runtime. It contains no ES5-runtime, global-scope transpilation, or browser measurements.

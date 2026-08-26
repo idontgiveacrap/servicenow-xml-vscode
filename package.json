@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.7.0",
+  "version": "2.9.5",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -150,7 +150,7 @@
       "editor/context": [
         {
           "command": "servicenowXml.editJsonStringCode",
-          "when": "editorLangId == xml",
+          "when": "editorLangId == xml && resourceScheme == file",
           "group": "1_modification@50"
         }
       ]
@@ -167,6 +167,16 @@
           "type": "boolean",
           "default": false,
           "description": "Bypass the ServiceNow app workspace gate so diagnostics run for every XML file in the window, not just export-shaped ones, and the Records view stays visible. Single export files already lint without this."
+        },
+        "servicenowXml.formatJavaScript": {
+          "type": "boolean",
+          "default": true,
+          "description": "After XML format, format JavaScript in script-typed XML fields (including scripts nested in update-set payloads). Uses the editor's JavaScript formatter."
+        },
+        "servicenowXml.formatXmlFirst": {
+          "type": "boolean",
+          "default": true,
+          "description": "When this extension is the XML default formatter, run the next XML formatter before formatting embedded scripts."
         },
         "servicenowXml.lintJavaScript": {
           "type": "boolean",
@@ -186,7 +196,7 @@
           "default": [
             "**/author_elective_update/**"
           ],
-          "description": "Glob patterns for XML paths to skip (validation, lint, and navigator)."
+          "description": "Glob patterns for XML paths to skip (validation, lint, declaration index, and navigator)."
         },
         "servicenowXml.debounceMs": {
           "type": "number",
@@ -239,6 +249,11 @@
         }
       }
     },
+    "configurationDefaults": {
+      "[xml]": {
+        "editor.defaultFormatter": "local.servicenow-xml"
+      }
+    },
     "grammars": [
       {
         "scopeName": "servicenow-xml.injection",
@@ -259,7 +274,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-lint-bundle.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",

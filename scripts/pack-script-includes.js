@@ -203,3 +203,5 @@ function main() {
 if (require.main === module) {
   main();
 }
+
+module.exports = { parseCsv, JS_IDENTIFIER_RE };

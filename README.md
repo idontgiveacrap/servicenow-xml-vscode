@@ -3,11 +3,12 @@
 Cursor / VS Code extension that:
 
 1. **Colorizes** JavaScript inside ServiceNow script CDATA fields (`script`, `client_script_v2`, `script_true`, `script_false`)
-2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022), across every script-typed field in the bundled dictionary table
+2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022), across every script-typed field in the bundled dictionary table, including scripts nested in update-set payloads
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
 4. **Edits embedded scripts** — right-click any script, however it is encoded (CDATA, entity-escaped, nested inside an update-set `<payload>`, or inside a JSON string), edit it in a temp JS tab, and save to write it back through the same encodings
-5. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
-6. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
+5. **Formats** ServiceNow XML (default XML formatter) by running another XML formatter, then the editor’s JavaScript formatter on script-typed fields
+6. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
+7. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
 
 ## Install (Cursor)
 
@@ -62,11 +63,11 @@ Right-click anywhere inside a script — or run **ServiceNow XML: Edit Embedded 
 2. Save the temp tab to splice the re-encoded script back into the XML
 3. Save the XML file to clear the write-back draft
 
-### What it finds
+Detection is generous: CDATA and entity-escaped script fields, scripts nested in an update-set `<payload>`, JSON string values, and `javascript(…)` wrappers. Write-back re-applies the same encoding stack.
 
-Detection is by content, not by field name. The command walks inward from the click position, peeling one encoding at a time — CDATA, XML entity escaping, a nested `record_update` document inside a `<payload>`, a JSON string value, a `javascript(…)` wrapper — and stops when what is left reads as code. Write-back re-applies the same stack in reverse, so a script buried in an entity-encoded payload round-trips without hand-written cases for each combination.
+Lint and **Format Document** only use **script-typed XML elements** (dictionary script fields plus `script` / `client_script_v2` / `script_true` / `script_false`), including those inside `<payload>`. JavaScript stored as a JSON string is editor-only.
 
-"Reads as code" means the text parses as JavaScript **and** contains a function, class, variable declaration, assignment, call, or control-flow statement. Parsing alone is not enough: `general`, `true`, `300000`, and sys_ids starting with a letter are all valid JavaScript programs, and are ordinary values of non-script fields. A lone call still counts, because `response.sendRedirect(…)` is the entire body of a real `sys_ui_page` processing script.
+"Reads as code" (for non-tag hits) means the text parses as JavaScript **and** contains a function, class, variable declaration, assignment, call, or control-flow statement. Parsing alone is not enough: `general`, `true`, `300000`, and sys_ids starting with a letter are all valid JavaScript programs, and are ordinary values of non-script fields. A lone call still counts, because `response.sendRedirect(…)` is the entire body of a real `sys_ui_page` processing script. Script-typed elements are identified by field name even when the body is a scalar.
 
 Consequences worth knowing:
 
@@ -74,13 +75,27 @@ Consequences worth knowing:
 |-----------|----------|
 | Caret on markup between fields | Nothing opens — the offset is on structure, not a value |
 | Caret in a scalar field (`<category>general</category>`) | Nothing opens |
-| Script field that is empty or a single literal | Nothing opens |
+| Script field that is empty or a single literal | Editor: tag fields can still open; JSON-string hits need to look like code. Lint uses field identity. |
 | CDATA script that builds HTML strings | Opens; CDATA is exempt from the markup check |
 | Encoding differs from ServiceNow's own | Write-back is not byte-identical, only equivalent — entity style may change (`&#39;` becomes `'`) |
 
 If write-back cannot re-encode (for example the edit introduces `]]>` inside CDATA), it refuses and saves a draft rather than writing. After a successful splice it re-reads the result through the same layer walk and fails to a draft if what comes back is not what was typed.
 
 If write-back fails (stale host, encoding, etc.), the edited script is stored under `.servicenow-xml/json-string-drafts/` (the extension ensures `.gitignore` includes `.servicenow-xml/`). Re-opening the same string prompts **Use Draft** / **Reset to XML** / **Cancel**.
+
+## Format
+
+This extension registers as the default XML formatter (`local.servicenow-xml`). **Format Document** / format on save:
+
+1. Calls the next XML formatter (Red Hat XML, XML Tools, …) via a reentrancy guard (`undefined`, not an empty edit list, so the chain continues)
+2. Re-discovers script-typed fields on the result (including inside `<payload>`)
+3. Formats each decoded body with the editor’s JavaScript formatter, restores XML-relative indent, and encodes through the same layer stack
+
+Non-ServiceNow XML documents return `undefined` so another XML formatter still runs. Pinning Red Hat (or another extension) as `editor.defaultFormatter` for `[xml]` skips the JS pass.
+
+XML formatters can rewrite CDATA and entity-encoded payloads. The JS pass formats whatever remains; it cannot repair a formatter that mangles script bodies. Set `servicenowXml.formatXmlFirst` to `false` to skip pass 1. Format Selection inside a script-typed field runs the JS pass only.
+
+JSON/CSS pretty-print and formatting JS inside JSON strings are not included.
 
 ## Records navigator (optional, lazy)
 
@@ -107,6 +122,12 @@ The catalog is built by scanning workspace `*.xml` (honoring `ignoreGlobs`), ext
 
 Refresh via the view title bar or **ServiceNow XML: Refresh Records Navigator**.
 
+### Display names
+
+Per row, the first non-empty of `<target_name>` (update-set rows), `<display_value>`, `<label>`, `<name>`, `<sys_name>`, the last segment of `<api_name>`, then `{table}_{first 8 of sys_id}`.
+
+Studio Git exports also write a table's schema under `{app_sys_id}/dictionary/` with a `<database>` root and no `action=` rows or `sys_id`. Those files are indexed as one record each, taking the table from the collection element's `name` attribute and the display name from its `label` attribute — read from the file content, since the basename follows the `{table}.xml` convention only by default.
+
 ### Sort order
 
 Default is **most opened**. Change via the sort icon on the Records view title, the **ServiceNow XML: Sort Records By…** command, or `servicenowXml.navigator.sortBy`:
@@ -125,13 +146,17 @@ Open counts / last-opened times persist in workspace state. Missing metrics sort
 
 ### Active editor tracking
 
-Switching tabs marks the records that came from the active file: every matching row gets an accented icon and an `In the active editor` hover line, and the first one is selected with its table folder expanded and scrolled into view.
+Switching tabs marks the records that came from the active file: every matching row gets an accented icon and an `In the active editor` hover line, and the first one is scrolled into view with its table folder expanded.
 
-Only one row can be *selected* — VS Code has no API to set a multi-item tree selection — so files that export several records rely on the icon accent for the rest.
+The accented icon is the whole marker — tracking never changes the tree selection. `reveal` cannot set a multi-item selection anyway (so files exporting several records would need the accent regardless), and selecting on every editor change put three writers on one piece of state: this extension, your clicks, and the selection VS Code re-applies after a refresh. That last one lands up to 200 ms late through the extension-host debounce ([microsoft/vscode#192055](https://github.com/microsoft/vscode/issues/192055)), so the marker flickered back to the previously active file.
+
+Moving the marker repaints only the rows that gained or lost it, rather than refreshing the whole tree. Element-level refresh resolves elements by object identity ([microsoft/vscode#137251](https://github.com/microsoft/vscode/issues/137251)), so the provider hands back memoized node instances and drops them whenever the rows are rebuilt.
+
+Row background colors are VS Code's own list selection, not a marker: `list.activeSelectionBackground` (blue in the default dark themes) while the Records view has focus, `list.inactiveSelectionBackground` (grey) once focus is in the editor. So the row you last clicked reads blue until focus moves, and nothing highlights a row you never clicked.
 
 Clicking a record opens the XML at that record row. The row is resolved again from the current editor text, so unsaved edits above it do not shift the destination.
 
-Nothing is revealed when there is no visible target: navigator disabled, catalog still indexing, file not indexed, or all of its rows hidden by the active filter. Reveal is also skipped while the Records view is hidden (revealing would force the view open) and right after clicking a record in the view; the tree re-syncs when it becomes visible again.
+Nothing is revealed when there is no visible target: navigator disabled, catalog still indexing, file not indexed, or all of its rows hidden by the active filter. Reveal is also skipped while the Records view is hidden (revealing would force the view open); the tree re-syncs when it becomes visible again.
 
 ### Git decorations
 
@@ -192,28 +217,56 @@ Individual-script ES12 overrides are stored by ServiceNow in separate `sys_es_la
 
 ## Embedded JS globals
 
-`no-undef` needs to know every identifier the platform supplies, or ordinary ServiceNow code lights up with errors. Three sources feed the ESLint `globals` map in `src/jsLint.ts`:
+`no-undef` needs to know every identifier the platform supplies, or ordinary ServiceNow code lights up with errors. Sources that feed the ESLint `globals` map in `src/jsLint.ts`:
 
 | Source | Contributes | Profile |
 |--------|-------------|---------|
 | `SERVER_GLOBALS` | Glide server classes, `sn_*` namespaces, `Packages` / `java`, and platform entry-point variables (`current`, `action`, `event`, `request`, …) | server |
 | `CLIENT_GLOBALS` | `g_*` variables, client Glide classes (`GlideAjax`, `GlideModal`, …), Service Portal (`spModal`, `spUtil`), browser APIs | client, and merged into server |
 | `src/data/scriptIncludes.json` | Script Include names from an instance export, grouped by scope | server |
+| `src/data/scopes.json` | Technical scope names from a `sys_scope` export, used as `<scope>.<Name>` namespaces | server |
+| Workspace / document index | App Script Includes, UI Scripts, and UX client script includes | server or client by table |
 
-### Script Include whitelist
+### Scope-aware Script Include names
+
+ServiceNow resolves a Script Include by bare name only in its own scope. From another scope, a **global** Script Include is `global.Name`. Cross-scope class names are `other_scope.Name`.
+
+| Caller scope | Global SI `customUtil` | Same-scope SI | Other-scope SI |
+|--------------|------------------------|---------------|----------------|
+| `global` | Bare `customUtil`. `global.customUtil` is **not** defined (`global` itself is undef). | n/a | Namespace identifier only (`sn_hr_core`); the member is not checked |
+| `x_app` | `global.customUtil` (`global` is defined). Bare `customUtil` is **undef**. | Bare `customUtil` | Namespace identifier only |
+
+The bundled whitelist uses the same rules. That is a change from treating every global-scope Script Include as a bare name in every scope.
+
+The namespace identifier comes from the union of the Script Include whitelist scopes and `src/data/scopes.json`, so a scope that owns no whitelisted Script Include still resolves. `global` and the caller's own scope are excluded from that union — a scoped caller gets `global` because global Script Includes are reachable that way, and a same-scope class is referenced bare, so `x_app.Name` inside `x_app` is reported.
+
+Other-scope **members** (`sn_hr_core.HRUtil`) and ServiceNow `access` / `package_private` are **not** validated yet. `no-undef` can only see the namespace identifier. Splitting the two halves is what makes a later custom member-expression rule possible: the scope is checked against the scope list, and the member against the whitelist `scope` / `name` / `access` entries.
+
+Client-callable Script Includes still get no client-side class global. Client code reaches them through `new GlideAjax('HelloWorld')`, where the name is a string literal `no-undef` never inspects.
+
+### UI Scripts and UX client script includes
+
+Indexed `sys_ui_script` and `sys_ux_client_script_include` names apply to the **client** profile only. They are browser / UI Builder identifiers, not Rhino `global.Name` lookups.
+
+A name is a client global when the record is in `global` or in the caller’s scope. Other-scope names stay undefined. `imports` is already a platform global; `imports.Foo` members are not checked (same deferred member-expression story).
+
+### Workspace index vs standalone file
+
+When JavaScript lint is on and the window is an SN app workspace (or `enabledForAllWindows`), a declaration index scans **independent** `{table}_{32-hex}.xml` exports for:
+
+- `sys_script_include`
+- `sys_ui_script`
+- `sys_ux_client_script_include`
+
+It does not walk update-set payloads or arbitrary XML. It is independent of the Records navigator. `ignoreGlobs` applies. The current document is always merged on top, so unsaved edits in the open file count.
+
+A standalone / non-indexed document (one-off export, folderless window) contributes only declarations found in **that file**, including Script Includes nested in `<payload>` CDATA.
+
+Inactive records, `DELETE` rows, and names that are not valid JavaScript identifiers are dropped.
+
+### Bundled Script Include whitelist
 
 `src/data/scriptIncludes.json` is generated from a `sys_script_include` list export and bundled into `dist/extension.js` by esbuild — no separate packaging step, and `.vscodeignore` needs no change.
-
-How scope is applied matters, because ServiceNow does not resolve every Script Include as a bare identifier:
-
-| Entry | Whitelisted as | Why |
-|-------|----------------|-----|
-| `global.ArrayUtil` | `ArrayUtil` | Global-scope Script Includes resolve by bare name from any scope |
-| `sn_hr_core.HRUtil` | `sn_hr_core` | Cross-scope access is `sn_hr_core.HRUtil`, so an undefined-variable error lands on the namespace, not the class |
-
-Scoped class names are still recorded under their scope in the JSON so a future cross-scope access check can tell whether `sn_hr_core.HRUtil` names a real record. They are deliberately **not** emitted as bare globals — doing so would hide genuine typos.
-
-Client-callable Script Includes get no client-side global. Client code reaches them through `new GlideAjax('HelloWorld')`, where the name is a string literal `no-undef` never inspects.
 
 Inactive Script Includes and rows whose `name` is not a valid JavaScript identifier (some `sys_script_include` records hold display text such as `Render All Table`) are dropped by the generator.
 
@@ -235,11 +288,11 @@ Inactive Script Includes and rows whose `name` is not a valid JavaScript identif
 
 `names` always exists. `packagePrivate` and `clientCallable` appear **only** when the source export carried the matching column, so a consumer can distinguish "not package-private" from "unknown" rather than treating a missing column as a negative. `sourceColumns` records what the export actually supplied.
 
-`packagePrivate` matters for cross-scope validation: a Script Include with `access = package_private` is callable only from its own scope, and that applies to global-scope records too. Without the column the whitelist is more permissive than the platform.
+`packagePrivate` is stored for a future cross-scope access check. It is not applied today.
 
 ### Regenerating
 
-Export the list from an instance. `name`, `api_name`, and `active` are required; include `access` and `client_callable` so cross-scope checks have something to work with:
+Export the list from an instance. `name`, `api_name`, and `active` are required; include `access` and `client_callable` so a future cross-scope check has something to work with:
 
 ```text
 /sys_script_include_list.do?CSV&sysparm_fields=name,sys_scope,api_name,active,access,client_callable
@@ -254,7 +307,32 @@ npm run build
 
 The generator prints scope, record, and skip counts, and warns for each optional column the export omitted.
 
-The list only covers the instance it came from. Script Includes in your own application scope are not in an out-of-box export, so re-export from an instance where the app is installed.
+The list only covers the instance it came from. Application Script Includes are picked up from workspace export files instead of this bundle.
+
+### Bundled scope list
+
+`src/data/scopes.json` is generated from a `sys_scope` list export and bundled the same way. It supplies scope namespaces the Script Include whitelist misses, because that whitelist only knows scopes that own at least one active Script Include.
+
+```json
+{
+  "version": 1,
+  "sourceColumns": ["name", "scope", "short_description"],
+  "scopes": ["sn_hr_core", "sn_pipeline"]
+}
+```
+
+Scope values that are not valid JavaScript identifiers are dropped by the generator. Export and regenerate with:
+
+```text
+/sys_scope_list.do?CSV&sysparm_fields=name,scope
+```
+
+```bash
+node scripts/pack-scopes.js "path/to/sys_scope.csv"
+npm run build
+```
+
+The two exports are independent snapshots and neither is a superset of the other, so the linter unions them.
 
 ## Document kinds
 
@@ -263,10 +341,13 @@ The list only covers the instance it came from. Script Includes in your own appl
 | `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action must be `INSERT_OR_UPDATE` or `DELETE` (error); `sys_id`; filename match; script CDATA; `sys_scope` / `sys_package` vs workspace app id (warning) |
 | `data_record_export` | Record rows **without** app metadata | `sys_id` presence/format; refine further with more samples |
 | `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Wrapper action must be `INSERT_OR_UPDATE` or `DELETE` (error); name/type/payload; update-set `<application>` must match member updates and payload `sys_scope` / `sys_package` (warning) |
+| `dictionary_export` | `<database>` root (Studio table-schema export under `{app_sys_id}/dictionary/`) | Root must hold a named table `<element>` (error); no `action=` rows mixed in (warning). No script or JSON lint — these files carry neither |
 | `unknown_sn_xml` | Well-formed XML, no kind match | Warning only |
 | `not_xml` | Parse failure | XML well-formedness error |
 
 Status bar shows the active kind so misclassification is obvious.
+
+`dictionary_export` is recognized from its root alone, so it is claimed for any in-scope XML on a `<database>` root. It is also not part of the per-document gate (`looksLikeSnExportDocument`), which still keys off export roots and the `{table}_{sys_id}.xml` basename: in an app workspace these files classify because the workspace gate already passes, but a dictionary file opened alone in a folderless window is treated as plain XML.
 
 ## Settings
 
@@ -274,9 +355,11 @@ Status bar shows the active kind so misclassification is obvious.
 |---------|---------|-------------|
 | `servicenowXml.enable` | `true` | Enable ServiceNow XML validation and JS linting once a gate passes. |
 | `servicenowXml.enabledForAllWindows` | `false` | Bypass the workspace gate so diagnostics run for **every** XML file in the window, not just export-shaped ones, and the Records view stays visible. Export-shaped single files already work without this via the document gate. |
-| `servicenowXml.lintJavaScript` | `true` | Lint embedded JavaScript in script CDATA regions. |
+| `servicenowXml.lintJavaScript` | `true` | Lint embedded JavaScript in script-typed XML fields (including payload-nested scripts). |
+| `servicenowXml.formatJavaScript` | `true` | After XML format, format those script fields with the editor’s JavaScript formatter. |
+| `servicenowXml.formatXmlFirst` | `true` | Invoke the next XML formatter before the JS pass when this extension is the default XML formatter. |
 | `servicenowXml.lintJson` | `true` | Lint JSON embedded in known ServiceNow XML fields. |
-| `servicenowXml.ignoreGlobs` | `["**/author_elective_update/**"]` | Glob patterns for XML paths to skip (validation, lint, navigator, and gate marker). |
+| `servicenowXml.ignoreGlobs` | `["**/author_elective_update/**"]` | Glob patterns for XML paths to skip (validation, lint, declaration index, navigator, and gate marker). |
 | `servicenowXml.debounceMs` | `400` | Debounce delay (ms) before re-validating on edit. |
 | `servicenowXml.navigator.enable` | `false` | Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used. |
 | `servicenowXml.navigator.excludeDelete` | `false` | Hide `action=DELETE` records from the navigator. |
@@ -296,6 +379,7 @@ On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the
 | **Scripting MCP script** | `scripts/scripting_mcp_server.py` |
 | **DB schema data** | `data/sys_dictionary.csv.gz` (copied from the VSIX; see refresh URL below) |
 | **Scripting reference data** | `data/scripting_reference.json.gz` (packed from the scripting workbook) |
+| **JavaScript performance data** | `data/js_performance.json` (scoped ES12 server benchmarks with raw runs and limitations) |
 | **sessionStart hook** | `hooks/session_start_index.py` |
 | **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
 | **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting` |
@@ -320,6 +404,8 @@ python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting referen
 
 Writes `cursor-plugins/servicenow-xml/data/scripting_reference.json.gz`. Rebuild/reinstall helpers afterward.
 
+The scripting MCP also reads `data/js_performance.json`. Its performance tools expose the benchmark scope and limitations before compact search results, with exact lookup available for raw runs. The bundled measurements apply only to scoped `es_latest` server execution; they do not measure ES5-mode, global-scope transpilation, or browser performance.
+
 Helpers may be installed with the (Ctrl+Shift+P) command **ServiceNow XML: Install Cursor Helpers**. After install (or when helpers change on activation), the extension suggests **Developer: Reload Window** (Ctrl+Shift+P) so MCP servers and rules take effect.
 
 If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the local MCP servers / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
@@ -330,7 +416,7 @@ VS Code installs ignore this path entirely; lint/navigator behavior is unchanged
 
 ## Fixtures
 
-See `fixtures/` for a minimal scoped-app sample and placeholders for other kinds. Drop real examples into those folders when refining detectors.
+See `fixtures/` for a minimal scoped-app sample, an anonymized `<database>` dictionary export, and placeholders for other kinds. Drop real examples into those folders when refining detectors.
 
 ## Adding a kind
 

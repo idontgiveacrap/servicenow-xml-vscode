@@ -13,6 +13,31 @@ const SN_EXPORT_MARKER_RE =
 const PREFIX_LINE_LIMIT = 200;
 
 /**
+ * Schemes whose documents are buffers the user can actually edit and save.
+ *
+ * Diff and review documents (`git:`, `gitlens:`, `pr:`, and the quick-diff
+ * original resource, whose path is the file path plus `.git`) are synced to the
+ * extension host like any other document, and the XML language claims them
+ * because it matches a leading `<?xml` line rather than the file extension.
+ * Anything published against them shows up as a second, read-only `*.xml.git`
+ * entry beside the real file.
+ */
+const EDITABLE_SCHEMES = new Set([
+  'file',
+  'untitled',
+  'vscode-remote',
+  'vscode-vfs'
+]);
+
+/**
+ * True when the document is a real editable buffer rather than a diff, review,
+ * or otherwise virtual copy of one. See {@link EDITABLE_SCHEMES}.
+ */
+export function isEditableDocument(document: vscode.TextDocument): boolean {
+  return EDITABLE_SCHEMES.has(document.uri.scheme);
+}
+
+/**
  * Permissive document-level gate: true when the buffer looks like a ServiceNow
  * export even though the workspace has no `{sys_id}/sys_app_{sys_id}.xml` marker
  * (single-file windows, or an export opened from an unrelated project).
@@ -24,7 +49,7 @@ const PREFIX_LINE_LIMIT = 200;
  * multi-megabyte update sets ServiceNow can produce.
  */
 export function looksLikeSnExportDocument(document: vscode.TextDocument): boolean {
-  if (document.languageId !== 'xml') {
+  if (document.languageId !== 'xml' || !isEditableDocument(document)) {
     return false;
   }
   if (parseExportFileName(document.uri.fsPath)) {

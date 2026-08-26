@@ -6,9 +6,9 @@ import {
   type JsonStringHit
 } from './detect';
 import {
-  detectEmbeddedScriptAtOffset,
-  type EmbeddedScriptHit
-} from '../embedded/layers';
+  scriptAt,
+  type ScriptHit
+} from '../scriptHits';
 import {
   deleteDraft,
   ensureDraftsDir,
@@ -146,13 +146,13 @@ function detectAtCaret(editor: vscode.TextEditor): JsonStringHit | null {
   const text = doc.getText();
   const stableId = stableIdForUri(doc.uri);
 
-  // The layer walk handles every encoding stack, including scripts nested in an
-  // entity-encoded <payload>, so it goes first. The original JSON-string
-  // detector stays as a fallback for values that are JSON but do not read as
-  // code, which it still opens on the javascript(…) / *Script name rule.
-  const layered = detectEmbeddedScriptAtOffset(text, offset);
-  if (layered) {
-    return toJsonStringHit(layered, doc.uri.fsPath, doc.version, stableId);
+  const hit = scriptAt(text, offset, {
+    hostPath: doc.uri.fsPath,
+    hostVersion: doc.version,
+    stableHostId: stableId
+  });
+  if (hit) {
+    return scriptHitToJsonStringHit(hit, doc.uri.fsPath, doc.version, stableId);
   }
 
   return detectJsonStringAtOffset(
@@ -165,11 +165,10 @@ function detectAtCaret(editor: vscode.TextEditor): JsonStringHit | null {
 }
 
 /**
- * Adapt a layered hit to the shape the session, draft, and write-back code
- * already speak.
+ * Adapt a shared script hit to the session, draft, and write-back shape.
  */
-function toJsonStringHit(
-  hit: EmbeddedScriptHit,
+function scriptHitToJsonStringHit(
+  hit: ScriptHit,
   hostPath: string,
   hostVersion: number,
   stableHostId: string
@@ -181,8 +180,8 @@ function toJsonStringHit(
     fieldName: hit.fieldName,
     keyPath,
     draftKey: makeDraftKey(stableHostId, hit.fieldName, keyPath),
-    absoluteStart: hit.absoluteStart,
-    absoluteEnd: hit.absoluteEnd,
+    absoluteStart: hit.hostStart,
+    absoluteEnd: hit.hostEnd,
     unescapedValue: hit.code,
     editorCode: hit.code,
     hadJavascriptWrapper: hit.layers.some((l) => l.kind === 'jsWrapper'),

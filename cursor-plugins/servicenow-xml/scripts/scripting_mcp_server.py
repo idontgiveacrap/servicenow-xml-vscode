@@ -205,6 +205,118 @@ class ScriptingIndex:
         return results
 
 
+class JavaScriptPerformanceIndex:
+    """Searchable, evidence-bounded ServiceNow JavaScript benchmark data."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        raw = json.loads(_open_bytes(path).decode("utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError(f"JavaScript performance root must be an object: {path}")
+        comparisons = raw.get("comparisons")
+        if not isinstance(comparisons, list):
+            raise ValueError(
+                f"JavaScript performance comparisons must be an array: {path}"
+            )
+        self.data = raw
+        self.comparisons = [row for row in comparisons if isinstance(row, dict)]
+
+    def meta(self) -> dict[str, Any]:
+        """Return dataset scope and methodology without benchmark result rows."""
+        return {
+            "format": self.data.get("format"),
+            "version": self.data.get("version"),
+            "dataset_id": self.data.get("dataset_id"),
+            "scope": self.data.get("scope"),
+            "environment": self.data.get("environment"),
+            "method": self.data.get("method"),
+            "ratio_semantics": self.data.get("ratio_semantics"),
+            "comparison_count": len(self.comparisons),
+            "comparison_ids": [row.get("id") for row in self.comparisons],
+        }
+
+    def lookup(self, construct: str) -> list[dict[str, Any]]:
+        """Return full evidence rows for an exact id, alias, or variant label."""
+        needle = construct.strip().lower()
+        if not needle:
+            raise ValueError("construct is required")
+        hits = []
+        for row in self.comparisons:
+            names = [
+                row.get("id"),
+                *(
+                    (row.get("aliases") or [])
+                    if isinstance(row.get("aliases"), list)
+                    else []
+                ),
+                (row.get("baseline") or {}).get("label"),
+                (row.get("candidate") or {}).get("label"),
+            ]
+            if needle in {
+                str(name).strip().lower() for name in names if name is not None
+            }:
+                hits.append(row)
+        return hits
+
+    def search(
+        self,
+        query: str = "",
+        *,
+        javascript_support: str = "",
+        runtime: str = "",
+        max_matches: int = 25,
+    ) -> list[dict[str, Any]]:
+        """Return compact matching comparisons while preserving scope warnings."""
+        scope = self.data.get("scope") or {}
+        support_n = javascript_support.strip().lower()
+        runtime_n = runtime.strip().lower()
+        if support_n and support_n != str(scope.get("javascript_support") or "").lower():
+            return []
+        if runtime_n and runtime_n not in str(scope.get("runtime") or "").lower():
+            return []
+
+        needle = query.strip().lower()
+        results: list[dict[str, Any]] = []
+        for row in self.comparisons:
+            searchable = {
+                "id": row.get("id"),
+                "aliases": row.get("aliases"),
+                "category": row.get("category"),
+                "baseline": row.get("baseline"),
+                "candidate": row.get("candidate"),
+                "workload": row.get("workload"),
+                "observed": row.get("observed"),
+                "limitations": row.get("limitations"),
+            }
+            if needle and needle not in json.dumps(searchable, ensure_ascii=False).lower():
+                continue
+            results.append(
+                {
+                    "id": row.get("id"),
+                    "category": row.get("category"),
+                    "runtime": scope.get("runtime"),
+                    "javascript_support": scope.get("javascript_support"),
+                    "execution_scope": scope.get("execution_scope"),
+                    "application_js_level": scope.get("application_js_level"),
+                    "has_es5_runtime_measurements": scope.get(
+                        "has_es5_runtime_measurements"
+                    ),
+                    "has_global_scope_measurements": scope.get(
+                        "has_global_scope_measurements"
+                    ),
+                    "scope_warning": scope.get("warning"),
+                    "baseline": row.get("baseline"),
+                    "candidate": row.get("candidate"),
+                    "workload": row.get("workload"),
+                    "observed": row.get("observed"),
+                    "limitations": row.get("limitations"),
+                }
+            )
+            if len(results) >= max_matches:
+                break
+        return results
+
+
 def _get_ref_path() -> Path:
     raw = os.environ.get("SCRIPTING_REF_PATH", "").strip()
     if not raw:
@@ -214,6 +326,19 @@ def _get_ref_path() -> Path:
         raise FileNotFoundError(f"Scripting reference file not found: {path}")
     if not path.is_file():
         raise ValueError(f"SCRIPTING_REF_PATH is not a file: {path}")
+    return path
+
+
+def _get_performance_path() -> Path | None:
+    """Resolve optional JavaScript performance data for the scripting MCP."""
+    raw = os.environ.get("JS_PERFORMANCE_PATH", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"JavaScript performance file not found: {path}")
+    if not path.is_file():
+        raise ValueError(f"JS_PERFORMANCE_PATH is not a file: {path}")
     return path
 
 
@@ -228,11 +353,22 @@ def _safe_int(raw: Any, default: int, *, lo: int, hi: int) -> int:
 def _build_server() -> FastMCP:
     ref_path = _get_ref_path()
     index = ScriptingIndex(ref_path)
+    performance_path = _get_performance_path()
+    performance_index = (
+        JavaScriptPerformanceIndex(performance_path) if performance_path else None
+    )
     mcp = FastMCP("servicenow-xml-scripting")
 
     @mcp.resource("scripting://meta")
     def scripting_meta() -> str:
         return json.dumps(index.meta(), ensure_ascii=False, indent=2)
+
+    @mcp.resource("scripting://js-performance/meta")
+    def js_performance_meta_resource() -> str:
+        """Return scope and methodology for bundled JavaScript benchmarks."""
+        if performance_index is None:
+            return json.dumps({"available": False})
+        return json.dumps(performance_index.meta(), ensure_ascii=False, indent=2)
 
     @mcp.tool()
     def get_scripting_meta() -> str:
@@ -307,6 +443,61 @@ def _build_server() -> FastMCP:
             if len(out) >= limit:
                 break
         return out
+
+    @mcp.tool()
+    def get_js_performance_meta() -> str:
+        """
+        Return benchmark scope, method, environment, ratio semantics, and ids.
+
+        Read this before generalizing results. In particular, check whether the
+        dataset contains ES5-runtime measurements.
+        """
+        if performance_index is None:
+            return json.dumps(
+                {
+                    "available": False,
+                    "reason": "JS_PERFORMANCE_PATH is not configured.",
+                }
+            )
+        return json.dumps(performance_index.meta(), ensure_ascii=False, indent=2)
+
+    @mcp.tool()
+    def lookup_js_performance(construct: str) -> str:
+        """
+        Return full benchmark evidence for an exact comparison id, alias, or label.
+
+        Full rows include both raw runs, workload shape, derived ratio, and
+        limitations. An empty array means this dataset has no exact evidence.
+        """
+        if performance_index is None:
+            return json.dumps([])
+        return json.dumps(
+            performance_index.lookup(construct), ensure_ascii=False, indent=2
+        )
+
+    @mcp.tool()
+    def search_js_performance(
+        query: str = "",
+        javascript_support: str = "",
+        runtime: str = "",
+        max_matches: int = 25,
+    ) -> list[dict[str, Any]]:
+        """
+        Search compact JavaScript performance comparisons.
+
+        Filters are evidence filters, not compatibility fallbacks. For example,
+        requesting ES5 returns no rows when only ES12-runtime measurements exist.
+        Use lookup_js_performance for raw runs and complete evidence.
+        """
+        if performance_index is None:
+            return []
+        limit = _safe_int(max_matches, 25, lo=1, hi=200)
+        return performance_index.search(
+            query,
+            javascript_support=javascript_support,
+            runtime=runtime,
+            max_matches=limit,
+        )
 
     return mcp
 

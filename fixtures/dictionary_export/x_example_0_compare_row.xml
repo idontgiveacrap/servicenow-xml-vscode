@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?><database>
+    <element audit="true" db_object_id="22222222222222222222222222222222" label="Compare row" max_length="40" name="x_example_0_compare_row" type="collection">
+        <element label="Structural path" max_length="100" name="structural_path" read_only="true" type="string"/>
+        <element active="false" label="Container only" max_length="40" name="container_only" type="boolean"/>
+        <element label="Has override" max_length="40" name="has_override" type="boolean"/>
+        <element active="false" label="Parent" max_length="32" name="parent" reference="x_example_0_compare_row" type="reference"/>
+        <element label="New JSON" max_length="10000" name="new_json" read_only="true" type="string"/>
+        <element label="Display value" max_length="10000" name="display_value" read_only="true" type="string"/>
+        <element choice="1" label="Override user action" max_length="40" name="override_user_action" type="choice">
+            <choice>
+                <element inactive_on_update="false" label="No change" sequence="3" value="N"/>
+                <element inactive_on_update="false" label="U" sequence="2" value="U"/>
+                <element inactive_on_update="false" label="A" sequence="1" value="A"/>
+                <element inactive_on_update="false" label="E" sequence="0" value="E"/>
+            </choice>
+        </element>
+        <element choice="3" default="unreviewed" label="Approval status" max_length="255" name="approval_status" type="choice">
+            <choice>
+                <element inactive_on_update="false" label="Unreviewed" sequence="0" value="unreviewed"/>
+                <element inactive_on_update="false" label="Rejected" sequence="2" value="rejected"/>
+                <element inactive_on_update="false" label="Approved" sequence="1" value="approved"/>
+            </choice>
+        </element>
+        <element label="Person name" max_length="40" name="person_name" type="string"/>
+        <element label="Invalid fields" max_length="500" name="invalid_fields" type="string"/>
+        <element label="Entity type" max_length="40" name="entity_type" type="string"/>
+        <element display="true" label="Key" max_length="1000" name="key" read_only="true" type="string" unique="true"/>
+        <element label="Compare task" max_length="32" name="compare_task" reference="x_example_0_submission" type="reference"/>
+        <element active="false" label="Comment" max_length="1000" name="comment" type="string"/>
+        <index name="index">
+            <element name="compare_task"/>
+        </index>
+    </element>
+</database>

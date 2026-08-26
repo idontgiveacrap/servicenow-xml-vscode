@@ -66,14 +66,21 @@ export function decodeXmlEntities(raw: string): string {
 
 /**
  * Encode characters that must be escaped in non-CDATA XML text nodes.
+ *
+ * Only `&`, `<` and `>` are encoded, matching what ServiceNow itself emits in
+ * text nodes. Quotes and apostrophes are legal unescaped in text content, and
+ * encoding them mangles embedded JSON: a JSON string's own `"` delimiters and
+ * its `\"` escapes would come back as `&quot;` / `\&quot;`, producing a diff
+ * against the instance export even though the decoded value is unchanged.
+ * Not safe for attribute values — this is text-node encoding only.
+ *
  * Non-ASCII is left as-is (ServiceNow exports often keep them; CDATA is preferred for scripts).
  */
 export function encodeXmlEntities(text: string): string {
   return text
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/>/g, '&gt;');
 }
 
 /**
@@ -87,6 +94,99 @@ export function findCdataRanges(text: string): Array<{ start: number; end: numbe
     ranges.push({ start: m.index, end: m.index + m[0].length });
   }
   return ranges;
+}
+
+const CDATA_OPEN = '<![CDATA[';
+
+/** Direct child of a single rooted element (row or similar). CDATA is opaque. */
+export interface DirectChildElement {
+  name: string;
+  /** Offset of the opening `<` in `xml`. */
+  start: number;
+  /** Offset of the first character after the opening tag. */
+  bodyStart: number;
+  /** Offset of the closing tag's `<`. */
+  bodyEnd: number;
+}
+
+const CHILD_TAG_RE =
+  /<!\[CDATA\[[\s\S]*?\]\]>|<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<\/([A-Za-z_][\w.:-]*)\s*>|<([A-Za-z_][\w.:-]*)((?:"[^"]*"|'[^']*'|[^>"'])*)(\/?)>/g;
+
+/**
+ * List elements that are direct children of the root element in `xml`.
+ * Tags inside CDATA, comments, and processing instructions are ignored.
+ */
+export function scanDirectChildElements(xml: string): DirectChildElement[] {
+  const children: DirectChildElement[] = [];
+  CHILD_TAG_RE.lastIndex = 0;
+  let depth = 0;
+  let pending: { name: string; start: number; bodyStart: number } | undefined;
+  let m: RegExpExecArray | null;
+  while ((m = CHILD_TAG_RE.exec(xml)) !== null) {
+    if (m[1] != null) {
+      if (
+        pending &&
+        depth === 2 &&
+        pending.name.toLowerCase() === m[1].toLowerCase()
+      ) {
+        children.push({
+          name: pending.name,
+          start: pending.start,
+          bodyStart: pending.bodyStart,
+          bodyEnd: m.index
+        });
+        pending = undefined;
+      }
+      depth--;
+      continue;
+    }
+    if (m[2] == null) {
+      continue;
+    }
+    const name = m[2];
+    if (m[0].endsWith('/>')) {
+      if (depth === 1) {
+        children.push({
+          name,
+          start: m.index,
+          bodyStart: CHILD_TAG_RE.lastIndex,
+          bodyEnd: CHILD_TAG_RE.lastIndex
+        });
+      }
+      continue;
+    }
+    depth++;
+    if (depth === 2) {
+      pending = {
+        name,
+        start: m.index,
+        bodyStart: CHILD_TAG_RE.lastIndex
+      };
+    }
+  }
+  return children;
+}
+
+/**
+ * True when `fieldName` is a script-typed element for `tableName`.
+ */
+export function isScriptTypedField(
+  tableName: string | undefined,
+  fieldName: string
+): boolean {
+  const name = fieldName.toLowerCase();
+  if (
+    (SCRIPT_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === name)
+  ) {
+    return true;
+  }
+  if (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) {
+    return true;
+  }
+  if (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName.toLowerCase()}.${name}`)) {
+    return true;
+  }
+  return false;
 }
 
 function isInsideRanges(
@@ -369,32 +469,36 @@ function extractEmbeddedFields(
   const hits: EmbeddedFieldHit[] = [];
   const seen = new Set<string>();
 
-  for (const fieldName of scriptFieldNamesFor(rowXml, tableName)) {
-    for (const hit of extractNamedField(rowXml, rowStart, fullText, fieldName, 'javascript')) {
-      const key = `${hit.fieldName}:${hit.bodyStartOffset}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        hits.push(hit);
-      }
+  for (const child of scanDirectChildElements(rowXml)) {
+    const language = languageForChild(tableName, child.name);
+    if (!language) {
+      continue;
     }
-  }
-  for (const fieldName of JSON_FIELD_NAMES) {
-    for (const hit of extractNamedField(rowXml, rowStart, fullText, fieldName, 'json')) {
-      const key = `${hit.fieldName}:${hit.bodyStartOffset}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        hits.push(hit);
-      }
+    const classified = classifyLeafFieldBody(rowXml.slice(child.bodyStart, child.bodyEnd));
+    if (!classified) {
+      continue;
     }
-  }
-  for (const fieldName of CSS_FIELD_NAMES) {
-    for (const hit of extractNamedField(rowXml, rowStart, fullText, fieldName, 'css')) {
-      const key = `${hit.fieldName}:${hit.bodyStartOffset}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        hits.push(hit);
-      }
+    const bodyStartOffset = rowStart + child.bodyStart + classified.innerStart;
+    const bodyEndOffset = bodyStartOffset + classified.content.length;
+    const pos = offsetToPosition(fullText, bodyStartOffset);
+    const key = `${child.name}:${bodyStartOffset}`;
+    if (seen.has(key)) {
+      continue;
     }
+    seen.add(key);
+    hits.push({
+      fieldName: child.name,
+      language,
+      isCdata: classified.isCdata,
+      bodyStartOffset,
+      bodyEndOffset,
+      bodyStartLine: pos.line,
+      bodyStartCharacter: pos.character,
+      content: classified.content,
+      decodedContent: classified.isCdata
+        ? classified.content
+        : decodeXmlEntities(classified.content)
+    });
   }
 
   // Heuristic: leaf fields (no nested tags) whose body looks like JSON.
@@ -405,10 +509,7 @@ function extractEmbeddedFields(
   while ((hm = heuristicRe.exec(rowXml)) !== null) {
     const fieldName = hm[1];
     if (
-      (SCRIPT_FIELD_NAMES as readonly string[]).includes(fieldName) ||
-      (JSON_FIELD_NAMES as readonly string[]).includes(fieldName) ||
-      (CSS_FIELD_NAMES as readonly string[]).includes(fieldName) ||
-      (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) ||
+      languageForChild(tableName, fieldName) ||
       fieldName === 'sys_id' ||
       fieldName.startsWith('sys_') ||
       fieldName === 'payload'
@@ -445,95 +546,44 @@ function extractEmbeddedFields(
   return hits;
 }
 
-/**
- * Script field names to look for in one row: the always-on base names plus any
- * dictionary-typed script field for this table.
- *
- * Only names that actually appear in the row are returned, so cost tracks the
- * size of the record rather than the size of the dictionary table.
- */
-function scriptFieldNamesFor(
-  rowXml: string,
-  tableName: string | undefined
-): string[] {
-  const names = new Set<string>(SCRIPT_FIELD_NAMES);
-  if (!tableName) {
-    return [...names];
+function languageForChild(
+  tableName: string | undefined,
+  fieldName: string
+): EmbeddedLanguage | undefined {
+  if (isScriptTypedField(tableName, fieldName)) {
+    return 'javascript';
   }
-  const elementRe = /<\s*([A-Za-z_][\w.-]*)\b/g;
-  let m: RegExpExecArray | null;
-  while ((m = elementRe.exec(rowXml)) !== null) {
-    const element = m[1];
-    if (!names.has(element) && SCRIPT_FIELD_PAIRS.has(`${tableName}.${element}`)) {
-      names.add(element);
-    }
+  const lower = fieldName.toLowerCase();
+  if ((JSON_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === lower)) {
+    return 'json';
   }
-  return [...names];
+  if ((CSS_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === lower)) {
+    return 'css';
+  }
+  return undefined;
 }
 
-function extractNamedField(
-  rowXml: string,
-  rowStart: number,
-  fullText: string,
-  fieldName: string,
-  language: EmbeddedLanguage
-): EmbeddedFieldHit[] {
-  const hits: EmbeddedFieldHit[] = [];
-  const cdataRe = new RegExp(
-    `<\\s*${escapeRegExp(fieldName)}\\b[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*</\\s*${escapeRegExp(fieldName)}\\s*>`,
-    'gi'
-  );
-  let m: RegExpExecArray | null;
-  while ((m = cdataRe.exec(rowXml)) !== null) {
-    const content = m[1];
-    const cdataToken = '<![CDATA[';
-    const bodyLocal = m.index + m[0].indexOf(cdataToken) + cdataToken.length;
-    const bodyStartOffset = rowStart + bodyLocal;
-    const bodyEndOffset = bodyStartOffset + content.length;
-    const pos = offsetToPosition(fullText, bodyStartOffset);
-    hits.push({
-      fieldName,
-      language,
+/**
+ * CDATA-only or text leaf. Nested element markup is skipped.
+ */
+function classifyLeafFieldBody(
+  bodyRaw: string
+): { isCdata: boolean; content: string; innerStart: number } | undefined {
+  const cdataMatch = /^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/.exec(bodyRaw);
+  if (cdataMatch) {
+    return {
       isCdata: true,
-      bodyStartOffset,
-      bodyEndOffset,
-      bodyStartLine: pos.line,
-      bodyStartCharacter: pos.character,
-      content,
-      decodedContent: content
-    });
+      content: cdataMatch[1],
+      innerStart: bodyRaw.indexOf(CDATA_OPEN) + CDATA_OPEN.length
+    };
   }
-
-  const plainRe = new RegExp(
-    `<\\s*${escapeRegExp(fieldName)}\\b[^>]*>([\\s\\S]*?)</\\s*${escapeRegExp(fieldName)}\\s*>`,
-    'gi'
-  );
-  let pm: RegExpExecArray | null;
-  while ((pm = plainRe.exec(rowXml)) !== null) {
-    if (pm[0].includes('<![CDATA[')) {
-      continue;
-    }
-    const content = pm[1];
-    if (!content.trim()) {
-      continue;
-    }
-    const openEnd = pm[0].indexOf('>') + 1;
-    const bodyStartOffset = rowStart + pm.index + openEnd;
-    const bodyEndOffset = bodyStartOffset + content.length;
-    const pos = offsetToPosition(fullText, bodyStartOffset);
-    hits.push({
-      fieldName,
-      language,
-      isCdata: false,
-      bodyStartOffset,
-      bodyEndOffset,
-      bodyStartLine: pos.line,
-      bodyStartCharacter: pos.character,
-      content,
-      decodedContent: decodeXmlEntities(content)
-    });
+  if (/<[A-Za-z_]/.test(bodyRaw)) {
+    return undefined;
   }
-  return hits;
+  if (!bodyRaw.trim()) {
+    return undefined;
+  }
+  return { isCdata: false, content: bodyRaw, innerStart: 0 };
 }
 
 function escapeRegExp(s: string): string {
@@ -554,11 +604,29 @@ export function isValidSysId(value: string | undefined): boolean {
 
 /**
  * Extract a named child element body from a row (CDATA or plain).
+ * Prefers a direct child so markup inside CDATA cannot spoof a second field.
  */
 export function extractRowElement(
   rowXml: string,
   fieldName: string
 ): { content: string; isCdata: boolean; localIndex: number } | undefined {
+  const want = fieldName.toLowerCase();
+  for (const child of scanDirectChildElements(rowXml)) {
+    if (child.name.toLowerCase() !== want) {
+      continue;
+    }
+    const classified = classifyLeafFieldBody(
+      rowXml.slice(child.bodyStart, child.bodyEnd)
+    );
+    if (!classified) {
+      continue;
+    }
+    return {
+      content: classified.content,
+      isCdata: classified.isCdata,
+      localIndex: child.start
+    };
+  }
   const cdataRe = new RegExp(
     `<\\s*${escapeRegExp(fieldName)}\\b[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*</\\s*${escapeRegExp(fieldName)}\\s*>`,
     'i'

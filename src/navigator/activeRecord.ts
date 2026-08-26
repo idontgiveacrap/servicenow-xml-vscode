@@ -2,15 +2,17 @@ import * as vscode from 'vscode';
 import { RecordCatalog } from './catalog';
 import { RecordsTreeProvider, TreeNode } from './tree';
 
-/** How long a navigator click suppresses the follow-up scroll-into-view. */
-const SUPPRESS_REVEAL_MS = 1000;
-
-/** Coalesce bursts of tab switches / tree refreshes into one sync. */
+/** Coalesce bursts of tab switches / row rebuilds into one sync. */
 const SYNC_DEBOUNCE_MS = 50;
 
 /**
  * Keeps the Records view in sync with the active editor: marks every indexed
- * record from the active file and scrolls the first visible one into view.
+ * record from the active file and scrolls the first one into view.
+ *
+ * Tree selection is deliberately left alone. `reveal` cannot set a multi-item
+ * selection anyway, and selecting on every editor change put three writers on
+ * one piece of state — this class, the user's clicks, and the selection VS Code
+ * re-applies after a refresh — which is what made the marker flicker.
  *
  * Reveal is skipped while the view is hidden because `TreeView.reveal` opens the
  * containing view, which would pop the ServiceNow sidebar open on every tab
@@ -19,8 +21,6 @@ const SYNC_DEBOUNCE_MS = 50;
 export class ActiveRecordSync implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private syncTimer: NodeJS.Timeout | undefined;
-  /** Timestamp until which reveal is skipped (set by clicks in this view). */
-  private suppressRevealUntil = 0;
 
   constructor(
     private readonly treeView: vscode.TreeView<TreeNode>,
@@ -35,8 +35,9 @@ export class ActiveRecordSync implements vscode.Disposable {
         }
       }),
       // Covers catalog loads/updates and filter changes: a record that was not
-      // indexed or was filtered out can become revealable later.
-      this.treeProvider.onDidChangeTreeData(() => this.schedule())
+      // indexed or was filtered out can become revealable later. Marker updates
+      // do not raise this event, so this cannot re-trigger itself.
+      this.treeProvider.onDidChangeRecords(() => this.schedule())
     );
     this.schedule();
   }
@@ -51,14 +52,6 @@ export class ActiveRecordSync implements vscode.Disposable {
     }
   }
 
-  /**
-   * Skip the next scroll-into-view, for editor changes the user started from
-   * this view (the tree already shows and selects the clicked row).
-   */
-  suppressNextReveal(): void {
-    this.suppressRevealUntil = Date.now() + SUPPRESS_REVEAL_MS;
-  }
-
   schedule(): void {
     if (this.syncTimer) {
       clearTimeout(this.syncTimer);
@@ -70,8 +63,6 @@ export class ActiveRecordSync implements vscode.Disposable {
   }
 
   private sync(): void {
-    const suppressed = Date.now() < this.suppressRevealUntil;
-
     if (!this.catalog.isEnabled() || !this.catalog.isLoaded()) {
       this.treeProvider.setActiveUri(undefined);
       return;
@@ -86,7 +77,7 @@ export class ActiveRecordSync implements vscode.Disposable {
 
     const indexed = this.catalog.getRecordsForUri(uri).length > 0;
     this.treeProvider.setActiveUri(indexed ? uri : undefined);
-    if (!indexed || suppressed || !this.treeView.visible) {
+    if (!indexed || !this.treeView.visible) {
       return;
     }
 
@@ -95,9 +86,8 @@ export class ActiveRecordSync implements vscode.Disposable {
     if (!target) {
       return;
     }
-    this.suppressRevealUntil = 0;
     void Promise.resolve(
-      this.treeView.reveal(target, { select: true, focus: false })
+      this.treeView.reveal(target, { select: false, focus: false })
     ).catch((error: unknown) => {
       // A concurrent refresh can drop the node between lookup and reveal.
       console.warn(

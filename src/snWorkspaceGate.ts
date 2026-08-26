@@ -1,9 +1,10 @@
 import * as vscode from 'vscode';
 import { matchesSnAppMarker, parseExportFileName } from './fileName';
 import { getIgnoreGlobs, isPathIgnored } from './ignorePaths';
-import { looksLikeSnExportDocument } from './snDocumentShape';
+import { isEditableDocument, looksLikeSnExportDocument } from './snDocumentShape';
 import {
   detectJavaScriptSupport,
+  detectSysAppMetadata,
   JavaScriptSupport
 } from './javascriptSupport';
 
@@ -24,6 +25,7 @@ type GateListener = () => void;
 interface GateCache {
   isSnWorkspace: boolean;
   appSysId?: string;
+  appScope?: string;
   appJavaScriptSupport?: JavaScriptSupport;
 }
 
@@ -34,6 +36,7 @@ interface GateCache {
 export class SnWorkspaceGate implements vscode.Disposable {
   private snWorkspace = false;
   private appSysId: string | undefined;
+  private appScope: string | undefined;
   private appJavaScriptSupport: JavaScriptSupport | undefined;
   private probeTimer: NodeJS.Timeout | undefined;
   private probeGeneration = 0;
@@ -91,6 +94,14 @@ export class SnWorkspaceGate implements vscode.Disposable {
   }
 
   /**
+   * Technical scope from the workspace `sys_app` marker (`x_example`, `global`).
+   * Undefined when no marker has been found.
+   */
+  getWorkspaceAppScope(): string | undefined {
+    return this.appScope;
+  }
+
+  /**
    * JavaScript mode read from the workspace `sys_app` marker.
    * Undefined when no marker has been found; callers must default to ES5.
    */
@@ -122,8 +133,14 @@ export class SnWorkspaceGate implements vscode.Disposable {
    * one document: the window gate passes, or the document itself looks like a
    * ServiceNow export. The second path is what makes a one-off update set opened
    * in a folderless window work, where no marker can ever be found.
+   *
+   * Diff and review copies are excluded even in an SN workspace: the window gate
+   * alone would otherwise let them through.
    */
   isValidationAllowed(document: vscode.TextDocument): boolean {
+    if (!isEditableDocument(document)) {
+      return false;
+    }
     return this.isLintActive() || looksLikeSnExportDocument(document);
   }
 
@@ -143,6 +160,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     this.snWorkspace = true;
     this.appSysId = cached.appSysId;
+    this.appScope = cached.appScope;
     this.appJavaScriptSupport = cached.appJavaScriptSupport;
     // Publish immediately so the Records view `when` clause can show on reload
     // without waiting for findFiles.
@@ -153,6 +171,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     const value: GateCache = {
       isSnWorkspace: this.snWorkspace,
       appSysId: this.appSysId,
+      appScope: this.appScope,
       appJavaScriptSupport: this.appJavaScriptSupport
     };
     void this.workspaceState.update(STATE_KEY, value);
@@ -176,12 +195,13 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     const found = marker !== undefined;
     const appSysId = marker?.sysId;
-    const appJavaScriptSupport = marker
-      ? await this.readMarkerJavaScriptSupport(marker.uri)
-      : undefined;
+    const appMeta = marker ? await this.readMarkerMetadata(marker.uri) : undefined;
+    const appScope = appMeta?.scope;
+    const appJavaScriptSupport = appMeta?.javascriptSupport;
     if (
       found === this.snWorkspace &&
       appSysId === this.appSysId &&
+      appScope === this.appScope &&
       appJavaScriptSupport === this.appJavaScriptSupport
     ) {
       await this.publishContext();
@@ -190,6 +210,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     }
     this.snWorkspace = found;
     this.appSysId = appSysId;
+    this.appScope = appScope;
     this.appJavaScriptSupport = appJavaScriptSupport;
     await this.publishContext();
     this.persistCache();
@@ -224,16 +245,21 @@ export class SnWorkspaceGate implements vscode.Disposable {
   }
 
   /**
-   * Read `sys_app.js_level`; malformed or missing metadata is conservatively ES5.
+   * Read `sys_app` scope and `js_level`; malformed or missing metadata is conservatively ES5.
    */
-  private async readMarkerJavaScriptSupport(
+  private async readMarkerMetadata(
     uri: vscode.Uri
-  ): Promise<JavaScriptSupport> {
+  ): Promise<{ scope?: string; javascriptSupport: JavaScriptSupport }> {
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
-      return detectJavaScriptSupport(Buffer.from(bytes).toString('utf8'));
+      const xml = Buffer.from(bytes).toString('utf8');
+      const meta = detectSysAppMetadata(xml);
+      return {
+        scope: meta?.scope?.trim() || undefined,
+        javascriptSupport: detectJavaScriptSupport(xml)
+      };
     } catch {
-      return 'ES5';
+      return { javascriptSupport: 'ES5' };
     }
   }
 

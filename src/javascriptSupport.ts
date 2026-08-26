@@ -41,6 +41,40 @@ export function normalizeJavaScriptSupport(
   return undefined;
 }
 
+/** Fields read from a workspace or in-document `sys_app` export. */
+export interface SysAppMetadata {
+  /** Sys_id from the `sys_app` row, when present. */
+  sysId?: string;
+  /** Technical scope from `<scope>` (for example `x_example`). */
+  scope?: string;
+  /**
+   * Mode implied by `js_level` before the global-scope ES12 clamp.
+   * Absent when the field is missing or unrecognized.
+   */
+  jsLevel?: JavaScriptSupport;
+}
+
+/**
+ * Read `sys_id`, technical `<scope>`, and `js_level` from a `sys_app` row.
+ */
+export function detectSysAppMetadata(xml: string): SysAppMetadata | undefined {
+  const appRow = xml.match(/<\s*sys_app\b[^>]*>[\s\S]*?<\/\s*sys_app\s*>/i)?.[0];
+  if (!appRow) {
+    return undefined;
+  }
+  const sysId = elementText(appRow, 'sys_id');
+  const scope = elementText(appRow, 'scope');
+  const jsLevel = normalizeJavaScriptSupport(elementText(appRow, 'js_level'));
+  if (!sysId && !scope && !jsLevel) {
+    return {};
+  }
+  return {
+    sysId,
+    scope,
+    jsLevel
+  };
+}
+
 /**
  * Read the application JavaScript mode from exported XML.
  *
@@ -52,23 +86,27 @@ export function detectJavaScriptSupport(
   xml: string,
   fallback: JavaScriptSupport = 'ES5'
 ): JavaScriptSupport {
-  const appRow = xml.match(/<\s*sys_app\b[^>]*>[\s\S]*?<\/\s*sys_app\s*>/i)?.[0];
-  if (!appRow) {
+  const meta = detectSysAppMetadata(xml);
+  if (!meta) {
     return fallback;
   }
-  const levelMatch = appRow.match(
-    /<\s*js_level\b[^>]*>\s*(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))\s*<\/\s*js_level\s*>/i
-  );
-  const support = normalizeJavaScriptSupport(
-    levelMatch?.[1] ?? levelMatch?.[2]
-  );
-  if (support !== 'ES12') {
-    return support ?? fallback;
+  if (meta.jsLevel !== 'ES12') {
+    return meta.jsLevel ?? fallback;
   }
-
-  const scopeMatch = appRow.match(
-    /<\s*scope\b[^>]*>\s*(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))\s*<\/\s*scope\s*>/i
-  );
-  const scope = (scopeMatch?.[1] ?? scopeMatch?.[2])?.trim().toLowerCase();
+  const scope = meta.scope?.trim().toLowerCase();
   return scope && scope !== 'global' ? 'ES12' : fallback;
+}
+
+/**
+ * Return decoded text of the first matching simple element in `xml`.
+ */
+function elementText(xml: string, fieldName: string): string | undefined {
+  const match = xml.match(
+    new RegExp(
+      `<\\s*${fieldName}\\b[^>]*>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([^<]*))\\s*</\\s*${fieldName}\\s*>`,
+      'i'
+    )
+  );
+  const value = (match?.[1] ?? match?.[2])?.trim();
+  return value || undefined;
 }

@@ -1,0 +1,248 @@
+{
+  "format": "servicenow_js_performance",
+  "version": 1,
+  "dataset_id": "servicenow-server-es12-two-run-2026-08-25",
+  "scope": {
+    "runtime": "servicenow_server_javascript",
+    "javascript_support": "ES12",
+    "execution_scope": "scoped_application",
+    "application_js_level": "es_latest",
+    "comparison_kind": "ES5-compatible constructs versus ES12 constructs in the same ES12-capable runtime",
+    "has_es5_runtime_measurements": false,
+    "has_global_scope_measurements": false,
+    "warning": "These results do not compare an ES5-mode runtime with an ES12-mode runtime and do not measure global-scope transpilation. Do not infer ES5-runtime or global-scope performance."
+  },
+  "environment": {
+    "servicenow_release": null,
+    "instance_family": null,
+    "hardware": null,
+    "load": null,
+    "javascript_engine_version": null
+  },
+  "method": {
+    "runs": 2,
+    "iterations_per_benchmark_per_run": 10000,
+    "harness": "global.UsefulStuff().benchmark",
+    "caller_context": "Scoped application configured with js_level=es_latest; global.UsefulStuff is a dependency invoked by the scoped benchmark script.",
+    "timing_unit": "milliseconds",
+    "execution_order": "fixed in the order represented by the source script",
+    "warmup": "not reported",
+    "counterbalanced": false,
+    "notes": [
+      "Each reported mean is total elapsed milliseconds divided by 10000 iterations.",
+      "The two supplied runs are retained for auditability.",
+      "Very short benchmarks are sensitive to timer granularity and harness overhead.",
+      "No statistical significance claim is available from two runs."
+    ]
+  },
+  "ratio_semantics": {
+    "field": "candidate_to_baseline_ratio",
+    "formula": "candidate average mean milliseconds / baseline average mean milliseconds",
+    "interpretation": "Above 1 means the candidate was slower; below 1 means the candidate was faster."
+  },
+  "comparisons": [
+    {
+      "id": "array-foreach-arrow-vs-traditional-callback",
+      "aliases": ["arrow callback", "traditional callback", "arrow function", "function callback", "forEach callback"],
+      "category": "callback_syntax",
+      "baseline": {
+        "label": "Traditional callback",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "[1,2,3,4,5].forEach(function (n) { sum += n; })"
+      },
+      "candidate": {
+        "label": "Arrow callback",
+        "javascript_syntax": "ES12",
+        "operation": "[1,2,3,4,5].forEach(n => { sum += n; })"
+      },
+      "workload": "Sum a newly allocated five-element array through forEach.",
+      "observed": {
+        "baseline_average_mean_ms": 0.01115,
+        "candidate_average_mean_ms": 0.0123,
+        "candidate_to_baseline_ratio": 1.103139,
+        "candidate_delta_percent": 10.313901,
+        "faster_observed_variant": "baseline",
+        "claim": "The traditional callback averaged 10.31% less time than the arrow callback in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.0113, "baseline_total_ms": 113, "candidate_mean_ms": 0.0118, "candidate_total_ms": 118},
+        {"run": 2, "baseline_mean_ms": 0.011, "baseline_total_ms": 110, "candidate_mean_ms": 0.0128, "candidate_total_ms": 128}
+      ],
+      "limitations": ["The measured difference is small.", "Array allocation and forEach overhead are included."]
+    },
+    {
+      "id": "object-destructuring-vs-direct-property-access",
+      "aliases": ["destructuring", "direct property access", "object property", "object destructuring"],
+      "category": "property_access",
+      "baseline": {
+        "label": "Direct property access",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "total += obj.a; total += obj.b; total += obj.c"
+      },
+      "candidate": {
+        "label": "Destructuring",
+        "javascript_syntax": "ES12",
+        "operation": "var {a, b, c} = obj; total += a; total += b; total += c"
+      },
+      "workload": "Read three properties from one preallocated object and sum them.",
+      "observed": {
+        "baseline_average_mean_ms": 0.0018,
+        "candidate_average_mean_ms": 0.0021,
+        "candidate_to_baseline_ratio": 1.166667,
+        "candidate_delta_percent": 16.666667,
+        "faster_observed_variant": "baseline",
+        "claim": "Direct property access averaged 16.67% less time than destructuring in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.0019, "baseline_total_ms": 19, "candidate_mean_ms": 0.0021, "candidate_total_ms": 21},
+        {"run": 2, "baseline_mean_ms": 0.0017, "baseline_total_ms": 17, "candidate_mean_ms": 0.0021, "candidate_total_ms": 21}
+      ],
+      "limitations": ["Totals of 17-21 ms make timer granularity material.", "Only three properties were read."]
+    },
+    {
+      "id": "array-for-of-vs-classic-for",
+      "aliases": ["for...of", "for of", "classic for", "indexed loop", "array iteration"],
+      "category": "array_iteration",
+      "baseline": {
+        "label": "Classic for loop",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "for (var i = 0; i < arr.length; i++) { sum += arr[i]; }"
+      },
+      "candidate": {
+        "label": "for...of",
+        "javascript_syntax": "ES12",
+        "operation": "for (const value of arr) { sum += value; }"
+      },
+      "workload": "Sum 100 numeric elements from one preallocated array.",
+      "observed": {
+        "baseline_average_mean_ms": 0.10165,
+        "candidate_average_mean_ms": 0.45945,
+        "candidate_to_baseline_ratio": 4.519921,
+        "candidate_delta_percent": 351.99213,
+        "faster_observed_variant": "baseline",
+        "claim": "for...of averaged 4.52 times the duration of the classic indexed loop in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.1002, "baseline_total_ms": 1002, "candidate_mean_ms": 0.4475, "candidate_total_ms": 4475},
+        {"run": 2, "baseline_mean_ms": 0.1031, "baseline_total_ms": 1031, "candidate_mean_ms": 0.4714, "candidate_total_ms": 4714}
+      ],
+      "limitations": ["Only dense numeric arrays of length 100 were measured."]
+    },
+    {
+      "id": "array-reduce-vs-classic-for-sum",
+      "aliases": ["reduce", "array reduce", "for sum", "classic for sum"],
+      "category": "array_reduction",
+      "baseline": {
+        "label": "for sum",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "for (var i = 0; i < arr.length; i++) { sum += arr[i]; }"
+      },
+      "candidate": {
+        "label": "reduce sum",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "arr.reduce(function (a, b) { return a + b; }, 0)"
+      },
+      "workload": "Sum 100 numeric elements from one preallocated array.",
+      "observed": {
+        "baseline_average_mean_ms": 0.10275,
+        "candidate_average_mean_ms": 0.09205,
+        "candidate_to_baseline_ratio": 0.895864,
+        "candidate_delta_percent": -10.413625,
+        "faster_observed_variant": "candidate",
+        "claim": "reduce averaged 10.41% less time than the classic indexed loop across the two supplied runs, but the per-run advantage varied substantially."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.1046, "baseline_total_ms": 1046, "candidate_mean_ms": 0.0849, "candidate_total_ms": 849},
+        {"run": 2, "baseline_mean_ms": 0.1009, "baseline_total_ms": 1009, "candidate_mean_ms": 0.0992, "candidate_total_ms": 992}
+      ],
+      "limitations": ["Both variants use ES5-compatible syntax.", "The candidate advantage was 18.83% in run 1 and 1.68% in run 2.", "Only dense numeric arrays of length 100 were measured."]
+    },
+    {
+      "id": "array-spread-append-vs-push",
+      "aliases": ["array spread append", "spread append", "array push", "push", "copy append"],
+      "category": "array_construction",
+      "baseline": {
+        "label": "Array push",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "Repeat 50 times: copy.push(i)"
+      },
+      "candidate": {
+        "label": "Array spread append",
+        "javascript_syntax": "ES12",
+        "operation": "Repeat 50 times: copy = [...copy, i]"
+      },
+      "workload": "Build a 50-element array from empty; spread reallocates the growing array on every append.",
+      "observed": {
+        "baseline_average_mean_ms": 0.052,
+        "candidate_average_mean_ms": 1.4309,
+        "candidate_to_baseline_ratio": 27.517308,
+        "candidate_delta_percent": 2651.730769,
+        "faster_observed_variant": "baseline",
+        "claim": "Repeated spread append averaged 27.52 times the duration of push in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.0438, "baseline_total_ms": 438, "candidate_mean_ms": 1.4156, "candidate_total_ms": 14156},
+        {"run": 2, "baseline_mean_ms": 0.0602, "baseline_total_ms": 602, "candidate_mean_ms": 1.4462, "candidate_total_ms": 14462}
+      ],
+      "limitations": ["This measures repeated copying through spread, not one spread operation or bulk concatenation.", "Only 50 sequential appends were measured."]
+    },
+    {
+      "id": "map-get-vs-object-property-lookup",
+      "aliases": ["Map lookup", "Map.get", "object lookup", "property lookup", "key lookup"],
+      "category": "keyed_lookup",
+      "baseline": {
+        "label": "Object lookup",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "lookup['k' + i]"
+      },
+      "candidate": {
+        "label": "Map lookup",
+        "javascript_syntax": "ES12",
+        "operation": "map.get('k' + i)"
+      },
+      "workload": "Read 1000 existing string keys from prepopulated Object and Map containers and sum numeric values.",
+      "observed": {
+        "baseline_average_mean_ms": 1.4486,
+        "candidate_average_mean_ms": 2.02445,
+        "candidate_to_baseline_ratio": 1.397522,
+        "candidate_delta_percent": 39.752175,
+        "faster_observed_variant": "baseline",
+        "claim": "Map.get averaged 39.75% more time than object property lookup in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 1.4103, "baseline_total_ms": 14103, "candidate_mean_ms": 1.9914, "candidate_total_ms": 19914},
+        {"run": 2, "baseline_mean_ms": 1.4869, "baseline_total_ms": 14869, "candidate_mean_ms": 2.0575, "candidate_total_ms": 20575}
+      ],
+      "limitations": ["Container construction was excluded.", "Only 1000 existing string keys with numeric values were measured.", "The dynamic key-string expression is included in both variants."]
+    },
+    {
+      "id": "template-literal-vs-string-concatenation",
+      "aliases": ["template literal", "string concatenation", "string concat", "backtick string"],
+      "category": "string_construction",
+      "baseline": {
+        "label": "String concatenation",
+        "javascript_syntax": "ES5-compatible",
+        "operation": "'abc' + '-' + 123 + '-' + 'xyz'"
+      },
+      "candidate": {
+        "label": "Template literal",
+        "javascript_syntax": "ES12",
+        "operation": "`abc-${123}-xyz`"
+      },
+      "workload": "Construct one short string containing one numeric interpolation.",
+      "observed": {
+        "baseline_average_mean_ms": 0.00095,
+        "candidate_average_mean_ms": 0.0034,
+        "candidate_to_baseline_ratio": 3.578947,
+        "candidate_delta_percent": 257.894737,
+        "faster_observed_variant": "baseline",
+        "claim": "The template literal averaged 3.58 times the duration of concatenation in this exact two-run workload."
+      },
+      "raw_runs": [
+        {"run": 1, "baseline_mean_ms": 0.0009, "baseline_total_ms": 9, "candidate_mean_ms": 0.0036, "candidate_total_ms": 36},
+        {"run": 2, "baseline_mean_ms": 0.001, "baseline_total_ms": 10, "candidate_mean_ms": 0.0032, "candidate_total_ms": 32}
+      ],
+      "limitations": ["Totals of 9-36 ms make timer granularity and harness overhead material.", "Only one short constant-heavy string shape was measured."]
+    }
+  ]
+}

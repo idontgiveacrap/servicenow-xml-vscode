@@ -1,7 +1,14 @@
-import type { Linter as LinterType, Rule } from 'eslint';
+import type { Linter as LinterType, Rule, Scope } from 'eslint';
 import { ScriptRegion, mapScriptOffsetToXml } from './scriptRegions';
 import { SnDiagnostic } from './kinds/types';
 import { JavaScriptSupport } from './javascriptSupport';
+import {
+  globalsForDeclarations,
+  ScopeList,
+  ScriptDeclaration,
+  scriptDeclarationsKey,
+  ScriptIncludeWhitelist
+} from './scriptDeclarations';
 
 const SERVER_GLOBALS: Record<string, 'readonly' | 'writable'> = {
   // Core scripting entry point
@@ -143,53 +150,13 @@ const CLIENT_GLOBALS: Record<string, 'readonly' | 'writable'> = {
   api: 'readonly'
 };
 
-export interface ScriptIncludeScope {
-  /** Every active Script Include name in the scope. */
-  names: string[];
-  /**
-   * Names whose `access` is `package_private`, i.e. callable only from their own
-   * scope. Absent when the source export omitted the `access` column, which is
-   * different from present-but-empty.
-   */
-  packagePrivate?: string[];
-  /** Names reachable from client code through GlideAjax. */
-  clientCallable?: string[];
-}
-
-interface ScriptIncludeWhitelist {
-  version: number;
-  /** Scope technical name (api_name prefix) -> Script Includes in that scope. */
-  scopes: Record<string, ScriptIncludeScope>;
-}
-
 // Required rather than imported so tsc does not infer a literal type for every
 // one of the several thousand names; esbuild still inlines the JSON.
 const SCRIPT_INCLUDES: ScriptIncludeWhitelist = require('./data/scriptIncludes.json');
 
-/**
- * Server-side globals contributed by the Script Include whitelist.
- *
- * ServiceNow only resolves a Script Include by bare name when it lives in the
- * `global` scope (or in the scope of the script being linted). Everything else
- * is reached as `<scope>.<Name>`, where an undefined-variable error would land
- * on the scope namespace, not the class. So global-scope entries become bare
- * names and every other scope contributes its namespace identifier instead.
- */
-function buildScriptIncludeGlobals(): Record<string, 'readonly'> {
-  const globals: Record<string, 'readonly'> = {};
-  for (const [scope, entry] of Object.entries(SCRIPT_INCLUDES.scopes)) {
-    if (scope === 'global') {
-      for (const name of entry.names) {
-        globals[name] = 'readonly';
-      }
-    } else {
-      globals[scope] = 'readonly';
-    }
-  }
-  return globals;
-}
-
-const SCRIPT_INCLUDE_GLOBALS = buildScriptIncludeGlobals();
+// Instance scope list, so a `<scope>.<Name>` namespace resolves even when the
+// Script Include whitelist has no record for that scope.
+const SCOPES: ScopeList = require('./data/scopes.json');
 
 /** Characters that force entity encoding (or break CDATA) in XML text nodes. */
 const XML_TEXT_ESCAPE_RE = /[&<]|[^\t\n\r\x20-\x7E]/;
@@ -262,6 +229,145 @@ const PLATFORM_FEATURE_GLOBALS: Record<string, 'readonly'> = {
 };
 
 /**
+ * Globals reported only when declared at the top level of a script.
+ *
+ * Whether the platform binds any of these depends on the script field, and code
+ * rebinds them in an inner scope on purpose: `handler({api, event, imports})` in
+ * a UX client script, a helper that takes `current` as a parameter, the
+ * `(function ($) { ... })(jQuery)` wrapper. A top-level declaration still
+ * replaces the platform value for the whole script.
+ */
+const SHADOW_TOP_LEVEL_ONLY: string[] = [
+  // Platform-supplied entry-point variables
+  'current',
+  'previous',
+  'g_scratchpad',
+  'workflow',
+  'activity',
+  'action',
+  'event',
+  'producer',
+  'template',
+  'email',
+  'email_action',
+  'request',
+  'response',
+  'RP',
+  'g_form',
+  'g_user',
+  'g_list',
+  'g_navigation',
+  'g_document',
+  'g_i18n',
+  'g_modal',
+  'g_menu',
+  'g_service_catalog',
+  'imports',
+  'api',
+
+  // Ambient names that wrapper idioms routinely rebind
+  'window',
+  'document',
+  'location',
+  'navigator',
+  'history',
+  'top',
+  'parent',
+  'jQuery',
+  '$',
+  '$j',
+  'angular'
+];
+
+const SHADOWED_PLATFORM_GLOBAL_RULE = 'servicenow-xml/no-shadowed-platform-global';
+
+/**
+ * ESLint tags every global that came from configuration — our `globals` map,
+ * the env, and the ecmaVersion builtins — with an implicit setting, and leaves
+ * it undefined for names the script itself introduces. Core `no-redeclare`
+ * reads the same field; @types/eslint does not declare it.
+ */
+type ConfiguredGlobal = Scope.Variable & {
+  eslintImplicitGlobalSetting?: 'readonly' | 'writable' | 'off';
+};
+
+/**
+ * Report declarations of names the platform binds at runtime, such as
+ * `var gs = ...` or `var GlideRecord = ...`, which shadow the platform value.
+ *
+ * Neither core rule can do this. `no-redeclare` with `builtinGlobals` treats
+ * every name in `globals` as built-in, so it reports each Script Include's own
+ * `var Name = Class.create()`; `no-shadow` only walks the child scopes of the
+ * global scope, so it never sees a top-level declaration. `allow` carries the
+ * names that are globals for a reason other than the platform binding them, and
+ * `topLevelOnly` the ones an inner scope may rebind.
+ */
+const noShadowedPlatformGlobal: Rule.RuleModule = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description:
+        'Disallow declaring a variable that the ServiceNow platform already provides'
+    },
+    messages: {
+      shadowed:
+        "'{{name}}' is supplied by the platform at runtime; declaring it here shadows the platform value."
+    },
+    schema: [
+      {
+        type: 'object',
+        properties: {
+          allow: { type: 'array', items: { type: 'string' } },
+          topLevelOnly: { type: 'array', items: { type: 'string' } }
+        },
+        additionalProperties: false
+      }
+    ]
+  },
+  create(context) {
+    const allow = new Set<string>(context.options[0]?.allow ?? []);
+    const topLevelOnly = new Set<string>(context.options[0]?.topLevelOnly ?? []);
+    return {
+      Program(node) {
+        const globalScope = context.sourceCode.getScope(node);
+        // Only the global scope records where a name came from, so collect the
+        // configured names once and match nested declarations against them.
+        const configured = new Set<string>();
+        for (const variable of globalScope.variables) {
+          const setting = (variable as ConfiguredGlobal)
+            .eslintImplicitGlobalSetting;
+          if (setting === 'readonly' || setting === 'writable') {
+            configured.add(variable.name);
+          }
+        }
+
+        const scopes: Scope.Scope[] = [globalScope];
+        for (let i = 0; i < scopes.length; i++) {
+          scopes.push(...scopes[i].childScopes);
+          const nested = i > 0;
+          for (const variable of scopes[i].variables) {
+            if (!configured.has(variable.name) || allow.has(variable.name)) {
+              continue;
+            }
+            if (nested && topLevelOnly.has(variable.name)) {
+              continue;
+            }
+            // A configured global with no identifiers is only referenced here.
+            for (const identifier of variable.identifiers) {
+              context.report({
+                node: identifier,
+                messageId: 'shadowed',
+                data: { name: variable.name }
+              });
+            }
+          }
+        }
+      }
+    };
+  }
+};
+
+/**
  * Load ESLint only when an embedded JavaScript region actually needs linting.
  */
 function getLinter(): LinterType {
@@ -269,14 +375,15 @@ function getLinter(): LinterType {
     // eslint is deliberately required lazily to keep XML-only activation lighter.
     const { Linter } = require('eslint') as typeof import('eslint');
     linter = new Linter();
-    linter.defineRules(
-      Object.fromEntries(
+    linter.defineRules({
+      ...Object.fromEntries(
         Object.entries(SERVICENOW_RULES).map(([name, rule]) => [
           `servicenow/${name}`,
           rule
         ])
-      )
-    );
+      ),
+      [SHADOWED_PLATFORM_GLOBAL_RULE]: noShadowedPlatformGlobal
+    });
   }
   return linter;
 }
@@ -286,27 +393,38 @@ const configCache = new Map<string, LinterType.Config>();
 /**
  * Build (and cache) the ESLint config for a script profile.
  *
- * Cached because the server globals map carries a few thousand Script Include
- * names and `lintScriptRegions` asks for a config per region.
+ * Cached because Script Include maps are large and `lintScriptRegions` asks
+ * for a config per region; the key includes caller scope and extra declarations.
  */
 function configFor(
   profile: 'server' | 'client',
-  javascriptSupport: JavaScriptSupport
+  javascriptSupport: JavaScriptSupport,
+  callerScope: string | undefined,
+  ownDeclarationName: string | undefined,
+  extraDeclarations: ScriptDeclaration[]
 ): LinterType.Config {
-  const cacheKey = `${profile}:${javascriptSupport}`;
+  const cacheKey = `${profile}:${javascriptSupport}:${callerScope ?? ''}:${ownDeclarationName ?? ''}:${scriptDeclarationsKey(extraDeclarations)}`;
   const cached = configCache.get(cacheKey);
   if (cached) {
     return cached;
   }
 
-  // Script Include names come first so the hand-maintained platform lists win
-  // if an instance ever ships a Script Include that shadows a Glide API.
+  // Indexed / bundled Script Include names come first so the hand-maintained
+  // platform lists win if an instance ever ships a Script Include that shadows
+  // a Glide API.
+  const declarationGlobals = globalsForDeclarations({
+    profile,
+    callerScope,
+    bundledScriptIncludes: SCRIPT_INCLUDES,
+    bundledScopes: SCOPES,
+    extra: extraDeclarations
+  });
   const globals =
     profile === 'client'
-      ? { ...PLATFORM_FEATURE_GLOBALS, ...CLIENT_GLOBALS }
+      ? { ...PLATFORM_FEATURE_GLOBALS, ...declarationGlobals, ...CLIENT_GLOBALS }
       : {
           ...PLATFORM_FEATURE_GLOBALS,
-          ...SCRIPT_INCLUDE_GLOBALS,
+          ...declarationGlobals,
           ...SERVER_GLOBALS,
           ...CLIENT_GLOBALS
         };
@@ -314,6 +432,33 @@ function configFor(
     javascriptSupport === 'ES5'
       ? { ...PLATFORM_RULES_ALL_MODES, ...PLATFORM_RULES_ES5_ONLY }
       : PLATFORM_RULES_ALL_MODES;
+
+  // Names that are globals for a reason other than the platform binding them,
+  // so declaring them shadows nothing. Bundled Script Includes (JSUtil,
+  // ArrayUtil) are absent: an instance supplies those, so declaring one does
+  // shadow it. Indexed and same-document records are source in the workspace
+  // rather than platform API, and the record's own name stays exempt even when
+  // it is inactive, has no resolvable scope, or overrides a bundled name.
+  const shadowAllow = Object.keys(
+    globalsForDeclarations({ profile, callerScope, extra: extraDeclarations })
+  );
+  if (ownDeclarationName) {
+    shadowAllow.push(ownDeclarationName);
+  }
+  if (javascriptSupport === 'ES5') {
+    // ES5 instances do not supply these, so a hand-written polyfill is the
+    // declaration rather than a shadow.
+    shadowAllow.push(...Object.keys(PLATFORM_FEATURE_GLOBALS));
+  }
+  if (profile === 'server') {
+    // Client names are merged into the server profile only to tolerate mixed
+    // legacy code; the ones a server script never receives are fair game.
+    for (const name of Object.keys(CLIENT_GLOBALS)) {
+      if (!(name in SERVER_GLOBALS)) {
+        shadowAllow.push(name);
+      }
+    }
+  }
 
   const config = {
     env: javascriptSupport === 'ES12' ? { es2022: true } : {},
@@ -340,7 +485,23 @@ function configFor(
           varsIgnorePattern: '^_'
         }
       ],
-      'no-redeclare': 'error',
+      // Script Include / UI Script names are supplied as `globals` so `no-undef`
+      // resolves cross-record references. `no-redeclare` defaults to
+      // builtinGlobals: true, which then treats the record's own
+      // `var Name = Class.create()` as redeclaring a built-in. Duplicate
+      // declarations inside one script body are still reported.
+      'no-redeclare': ['error', { builtinGlobals: false }],
+      [SHADOWED_PLATFORM_GLOBAL_RULE]: [
+        'warn',
+        { allow: shadowAllow, topLevelOnly: SHADOW_TOP_LEVEL_ONLY }
+      ],
+      // Writing to a readonly global replaces the platform's or another
+      // record's value for the transaction. The owning record is exempt so a
+      // Script Include that assigns its own name without `var` still works.
+      'no-global-assign': [
+        'error',
+        { exceptions: ownDeclarationName ? [ownDeclarationName] : [] }
+      ],
       'no-dupe-keys': 'error',
       'no-unreachable': 'error',
       'no-constant-condition': 'warn',
@@ -495,7 +656,10 @@ function encodingDiagnostics(region: ScriptRegion): SnDiagnostic[] {
  * Lint extracted script regions and return diagnostics in host XML coordinates.
  * Always lints entity-decoded text; maps positions back through entity spans when needed.
  */
-export function lintScriptRegions(regions: ScriptRegion[]): SnDiagnostic[] {
+export function lintScriptRegions(
+  regions: ScriptRegion[],
+  extraDeclarations: ScriptDeclaration[] = []
+): SnDiagnostic[] {
   const out: SnDiagnostic[] = [];
   const engine = getLinter();
 
@@ -503,7 +667,13 @@ export function lintScriptRegions(regions: ScriptRegion[]): SnDiagnostic[] {
     out.push(...encodingDiagnostics(region));
 
     const javascriptSupport = region.javascriptSupport ?? 'ES5';
-    const config = configFor(region.profile, javascriptSupport);
+    const config = configFor(
+      region.profile,
+      javascriptSupport,
+      region.callerScope,
+      region.ownDeclarationName,
+      extraDeclarations
+    );
     const source = region.decodedContent;
     let messages: LinterType.LintMessage[];
     try {
@@ -542,16 +712,19 @@ export function lintScriptRegions(regions: ScriptRegion[]): SnDiagnostic[] {
         endCharacter = end.character;
       }
 
+      // A parse error is fatal for the region: ESLint returns it alone, so
+      // every other check on this field is missing rather than passing.
+      const fatal = msg.fatal === true;
       out.push({
         message: `[${region.fieldName}] [${javascriptSupport}] ${msg.message}${
           msg.ruleId ? ` (${msg.ruleId})` : ''
-        }`,
+        }${fatal ? ' No other checks ran for this field.' : ''}`,
         severity: msg.severity === 2 ? 'error' : 'warning',
         line: start.line,
         character: start.character,
         endLine,
         endCharacter,
-        code: msg.ruleId ?? 'eslint'
+        code: msg.ruleId ?? (fatal ? 'eslint-parse-error' : 'eslint')
       });
     }
   }

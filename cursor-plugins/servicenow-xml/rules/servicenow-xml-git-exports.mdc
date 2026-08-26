@@ -14,9 +14,9 @@ Use this when reading or editing **scoped application** source exported from Ser
 | Directory | Role |
 |-----------|------|
 | **`update/`** | Primary live application source — scripts, UX, dictionary, choices, etc. **Default place to read and edit.** |
-| **`author_elective_update/`** | Mostly **DELETE** payloads and elective / residual application configuration. **Ignore by default.** |
+| **`author_elective_update/`** | Mostly **DELETE** payloads and elective / residual application configuration. **Ignore by default**, but this is where deletions you author belong (see **Deletes**). |
 
-**`author_elective_update/` policy:** do not search, open, review, or edit files under this directory unless the task specifically requires finding a **deleted record** (`action="DELETE"`) or **application configuration that only lives there**. Prefer `update/` for all normal implementation, debugging, and review work. Repos often `.cursorignore` this tree; still treat it as out of scope even if it is visible.
+**`author_elective_update/` policy:** do not search, open, review, or edit files under this directory unless the task is **authoring a deletion** (see **Deletes**), finding a **deleted record** (`action="DELETE"`), or **application configuration that only lives there**. Prefer `update/` for all normal implementation, debugging, and review work. Treat it as out of scope for applying updates (not deletes) even if it is visible.
 
 ## File naming
 
@@ -25,10 +25,22 @@ Use this when reading or editing **scoped application** source exported from Ser
 ## Deletes
 
 - A deletion is **`action="DELETE"`** on the **top-level element** under `<?xml …?>` — the tag **named after the table** for that row.
-- DELETE payloads often live under **`author_elective_update/`**; open that directory only when tracking deletions or broken references to removed records.
+- DELETE payloads live under **`author_elective_update/`**; open that directory only when tracking deletions, authoring a deletion, or resolving broken references to removed records.
 - **Treat DELETE files as deleted** — do not edit, refactor, or otherwise modify them unless the user **explicitly** asks for changes to that file or record.
 - **Payload data on a DELETE is not live config** in the instance; treat it as **ignored** for current behavior unless the task is **broken references** or **script calls** into removed records.
 - If the same record has both **`INSERT_OR_UPDATE`** and **`DELETE`** anywhere in the tree (**same or different files/directories**), **DELETE wins** — the record is gone.
+
+### Authoring a deletion
+
+When **you** remove a record, the file must end up in `author_elective_update/`, not `update/`:
+
+1. Replace the file body `action="INSERT_OR_UPDATE"` (or any action, but it should be one of these two) with the DELETE form — `action="DELETE"` on the table element, containing only that row's `sys_id`.
+2. **Move the file** from `**/update/` to the sibling `**/author_elective_update/`, keeping the `{table_name}_{sys_id}.xml` name. Use `git mv` so history follows the record.
+3. Do **not** leave a DELETE file in `update/`, and do **not** delete the XML file outright — the DELETE row is what removes the record on install.
+
+Un-deleting is the reverse of this process
+
+A DELETE left in `update/` still applies on install, but it misfiles the record: `update/` is read as live source, so later review and indexing treat a deleted row as current config.
 
 ## Multiple operations per file
 

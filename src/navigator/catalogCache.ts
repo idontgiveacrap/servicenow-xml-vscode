@@ -1,7 +1,7 @@
 /** Workspace-state key for the persisted Records navigator catalog. */
 export const CATALOG_CACHE_STATE_KEY = 'servicenowXml.navigator.catalogCache';
 
-const CATALOG_CACHE_VERSION = 1;
+const CATALOG_CACHE_VERSION = 3;
 
 /** Record metadata persisted between extension-host sessions. */
 export interface PersistedCatalogRecord {

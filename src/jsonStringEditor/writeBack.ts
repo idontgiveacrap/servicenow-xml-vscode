@@ -8,10 +8,8 @@ import {
   wouldBreakCdata
 } from './escape';
 import { detectJsonStringByKeyPath, type JsonStringHit } from './detect';
-import {
-  detectEmbeddedScriptAtOffset,
-  encodeThroughLayers
-} from '../embedded/layers';
+import { scriptAt } from '../scriptHits';
+import { encodeThroughLayers } from '../embedded/layers';
 import {
   deleteDraft,
   ensureDraftsDir,
@@ -150,7 +148,7 @@ export async function writeBackJsonString(
   if (hit.layers) {
     // Read the splice back through the same descent. If the layers re-decode to
     // what was typed, every encoding in the stack was applied correctly.
-    const roundTrip = detectEmbeddedScriptAtOffset(hostDoc.getText(), absStart);
+    const roundTrip = scriptAt(hostDoc.getText(), absStart);
     if (!roundTrip || roundTrip.code !== editedCode) {
       return fail('Write-back did not round-trip through the encoding layers.');
     }
@@ -207,7 +205,7 @@ function relocateLayeredHit(
   hostVersion: number,
   absoluteStart: number
 ): JsonStringHit | null {
-  const found = detectEmbeddedScriptAtOffset(text, absoluteStart);
+  const found = scriptAt(text, absoluteStart);
   if (!found || found.fieldName !== hit.fieldName) {
     return null;
   }
@@ -217,8 +215,8 @@ function relocateLayeredHit(
   return {
     ...hit,
     hostVersion,
-    absoluteStart: found.absoluteStart,
-    absoluteEnd: found.absoluteEnd,
+    absoluteStart: found.hostStart,
+    absoluteEnd: found.hostEnd,
     layers: found.layers
   };
 }

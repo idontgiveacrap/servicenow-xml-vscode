@@ -16,7 +16,7 @@ const bundlePath = path.join(tempDir, 'layers.cjs');
 
 try {
   const entry = [
-    "export { parseSnXml, encodeXmlEntities } from './src/parseSnXml';",
+    "export { parseSnXml, encodeXmlEntities, decodeXmlEntities } from './src/parseSnXml';",
     "export { extractScriptRegions } from './src/scriptRegions';",
     "export { detectEmbeddedScriptAtOffset, encodeThroughLayers } from './src/embedded/layers';",
     "export { looksLikeJavaScript } from './src/embedded/jsLikeness';"
@@ -37,6 +37,7 @@ try {
   const {
     parseSnXml,
     encodeXmlEntities,
+    decodeXmlEntities,
     extractScriptRegions,
     detectEmbeddedScriptAtOffset,
     encodeThroughLayers,
@@ -215,6 +216,61 @@ try {
   const htmlHit = detectEmbeddedScriptAtOffset(htmlText, htmlAt + 5);
   assert.ok(htmlHit, 'a CDATA script containing HTML strings must be detected');
   assert.strictEqual(htmlHit.code, htmlBuilder);
+
+  // --- JSON string in an entity-encoded text node ------------------------
+  // sys_ux_macroponent <composition> is plain JSON in a text node, so a JSON
+  // string's own quotes sit raw in the file. Re-encoding must leave them raw:
+  // turning them into &quot; still decodes to the same value but rewrites
+  // every quote in the token, which shows up as a bogus diff against the
+  // instance export.
+  const inlineScript =
+    'function evaluateEvent({ api, event }) {\n' +
+    "    // chars that do need escaping: < > &\n" +
+    '    return { propName: "cardStates", value: api.state.cardStates };\n' +
+    '}';
+  const composition = JSON.stringify({ events: [{ inlineScript }] }, null, 4);
+  const macroponentText =
+    '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    '<record_update table="sys_ux_macroponent">\n' +
+    '<sys_ux_macroponent action="INSERT_OR_UPDATE">\n' +
+    `<composition>${encodeXmlEntities(composition)}</composition>\n` +
+    '<sys_id>195f22bcc354c31086f39f3ed4013127</sys_id>\n' +
+    '</sys_ux_macroponent>\n</record_update>\n';
+
+  const inlineAt = macroponentText.indexOf('evaluateEvent');
+  assert.ok(inlineAt > 0, 'fixture must contain the inline script');
+  const inlineHit = detectEmbeddedScriptAtOffset(macroponentText, inlineAt);
+  assert.ok(inlineHit, 'must detect a script inside a JSON string in a text node');
+  assert.strictEqual(inlineHit.fieldName, 'composition');
+  assert.strictEqual(inlineHit.code, inlineScript);
+  assert.strictEqual(
+    encodeThroughLayers(inlineHit.code, inlineHit.layers).text,
+    macroponentText.slice(inlineHit.absoluteStart, inlineHit.absoluteEnd),
+    'an untouched JSON string must re-encode to the exact bytes it replaces'
+  );
+
+  const editedInline = inlineScript.replace('cardStates', 'nextCardStates');
+  const inlineSpliced = encodeThroughLayers(editedInline, inlineHit.layers);
+  assert.ok(inlineSpliced.ok, 'edited inline script must re-encode');
+  assert.ok(
+    !inlineSpliced.text.includes('&quot;'),
+    'JSON string quotes must not be entity-encoded'
+  );
+  const updatedMacroponent =
+    macroponentText.slice(0, inlineHit.absoluteStart) +
+    inlineSpliced.text +
+    macroponentText.slice(inlineHit.absoluteEnd);
+  const bodyOpen =
+    updatedMacroponent.indexOf('<composition>') + '<composition>'.length;
+  const bodyClose = updatedMacroponent.indexOf('</composition>');
+  const reparsed = JSON.parse(
+    decodeXmlEntities(updatedMacroponent.slice(bodyOpen, bodyClose))
+  );
+  assert.strictEqual(
+    reparsed.events[0].inlineScript,
+    editedInline,
+    'the spliced JSON must decode back to exactly what was edited'
+  );
 
   console.log('embedded layers smoke test passed');
 } finally {

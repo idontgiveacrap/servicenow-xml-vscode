@@ -8,6 +8,7 @@ import {
 import { scopedAppRecordUpdate } from './scopedAppRecordUpdate';
 import { dataRecordExport } from './dataRecordExport';
 import { customerUpdate } from './customerUpdate';
+import { dictionaryExport } from './dictionaryExport';
 import { unknownSnXml } from './unknown';
 
 /**
@@ -18,7 +19,8 @@ import { unknownSnXml } from './unknown';
 export const KIND_PROFILES: KindProfile[] = [
   customerUpdate,
   scopedAppRecordUpdate,
-  dataRecordExport
+  dataRecordExport,
+  dictionaryExport
 ];
 
 /**
@@ -69,6 +71,8 @@ export function kindDisplayLabel(kind: DocumentKindId): string {
       return 'Data record export';
     case 'customer_update':
       return 'Customer / update-set';
+    case 'dictionary_export':
+      return 'Dictionary export';
     case 'unknown_sn_xml':
       return 'Unknown SN XML';
     case 'not_xml':

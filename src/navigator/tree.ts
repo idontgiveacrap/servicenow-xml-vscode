@@ -5,14 +5,19 @@ import { tableDecorationUri } from './gitStatus';
 
 export type TreeNode = TableNode | RecordNode | MessageNode;
 
+/**
+ * Table folder. `id` doubles as the cache key and the `TreeItem.id`; the record
+ * count is derived at render time so a filter change does not stale the node.
+ */
 interface TableNode {
   kind: 'table';
+  id: string;
   table: string;
-  count: number;
 }
 
 interface RecordNode {
   kind: 'record';
+  id: string;
   record: CatalogRecord;
 }
 
@@ -95,9 +100,17 @@ export class RecordsTreeProvider
   implements vscode.TreeDataProvider<TreeNode>, vscode.Disposable
 {
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<
-    TreeNode | undefined | null | void
+    TreeNode | TreeNode[] | undefined | null | void
   >();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  private readonly _onDidChangeRecords = new vscode.EventEmitter<void>();
+  /**
+   * Fires when the rows themselves changed (catalog, filter, view state) rather
+   * than when a rendered row was repainted. Active-editor tracking listens here
+   * so its own marker updates cannot re-trigger it.
+   */
+  readonly onDidChangeRecords = this._onDidChangeRecords.event;
 
   private viewVisible = false;
   private loadError = '';
@@ -105,12 +118,21 @@ export class RecordsTreeProvider
   private filterQuery = '';
   /** URI key of the file in the active editor; empty means no record is marked. */
   private activeUriKey = '';
+  /**
+   * Node instances already handed to VS Code, keyed by tree item id, plus a
+   * URI-keyed index of the record nodes. Element-level refresh and `reveal`
+   * resolve elements by object identity (microsoft/vscode#137251), so every
+   * lookup has to return the same instance until the rows are rebuilt.
+   */
+  private readonly nodes = new Map<string, TreeNode>();
+  private readonly recordNodesByUri = new Map<string, RecordNode[]>();
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly catalog: RecordCatalog) {
     this.disposables.push(
-      this.catalog.onDidChange(() => this._onDidChangeTreeData.fire()),
-      this._onDidChangeTreeData
+      this.catalog.onDidChange(() => this.fireRootRefresh()),
+      this._onDidChangeTreeData,
+      this._onDidChangeRecords
     );
   }
 
@@ -132,7 +154,7 @@ export class RecordsTreeProvider
    */
   setFilterQuery(query: string): void {
     this.filterQuery = query.trim().toLowerCase();
-    this._onDidChangeTreeData.fire();
+    this.fireRootRefresh();
   }
 
   /**
@@ -143,21 +165,83 @@ export class RecordsTreeProvider
       return;
     }
     this.filterQuery = '';
-    this._onDidChangeTreeData.fire();
+    this.fireRootRefresh();
   }
 
   /**
    * Mark every record from `uri` as belonging to the active editor; pass undefined
-   * to clear the marker. Returns true when the marker changed (tree refreshed).
+   * to clear the marker. Returns true when the marker moved.
+   *
+   * Only the rows that gained or lost the marker are refreshed. A root refresh
+   * here would make VS Code re-fetch children and re-apply its own selection and
+   * scroll position, which raced `reveal` and flickered the marker back to the
+   * previously active file on every tab switch (microsoft/vscode#192055).
    */
   setActiveUri(uri: vscode.Uri | undefined): boolean {
     const key = uri ? uriKey(uri) : '';
     if (key === this.activeUriKey) {
       return false;
     }
+    const previous = this.activeUriKey;
     this.activeUriKey = key;
-    this._onDidChangeTreeData.fire();
+    const changed = [
+      ...(previous ? (this.recordNodesByUri.get(previous) ?? []) : []),
+      ...(key ? (this.recordNodesByUri.get(key) ?? []) : [])
+    ];
+    // Neither file has a row built yet (view never opened, table collapsed, or
+    // rows rebuilt since); getTreeItem reads the marker when they are.
+    if (changed.length > 0) {
+      this._onDidChangeTreeData.fire(changed);
+    }
     return true;
+  }
+
+  /**
+   * Rebuild every row from scratch. Cached nodes are dropped because the catalog
+   * hands out new record objects on each rebuild, and stale instances would keep
+   * rendering stale names and paths.
+   */
+  private fireRootRefresh(): void {
+    this.nodes.clear();
+    this.recordNodesByUri.clear();
+    this._onDidChangeTreeData.fire();
+    this._onDidChangeRecords.fire();
+  }
+
+  /**
+   * Cached folder node for a table.
+   */
+  private tableNode(table: string): TableNode {
+    const id = `table:${table}`;
+    const existing = this.nodes.get(id);
+    if (existing?.kind === 'table') {
+      return existing;
+    }
+    const node: TableNode = { kind: 'table', id, table };
+    this.nodes.set(id, node);
+    return node;
+  }
+
+  /**
+   * Cached leaf node for a record, indexed by file so the active-editor marker
+   * can repaint just those rows.
+   */
+  private recordNode(record: CatalogRecord): RecordNode {
+    const key = uriKey(record.uri);
+    const id = `record:${record.table}|${key}|${record.sysId ?? record.displayName}`;
+    const existing = this.nodes.get(id);
+    if (existing?.kind === 'record') {
+      return existing;
+    }
+    const node: RecordNode = { kind: 'record', id, record };
+    this.nodes.set(id, node);
+    const byUri = this.recordNodesByUri.get(key);
+    if (byUri) {
+      byUri.push(node);
+    } else {
+      this.recordNodesByUri.set(key, [node]);
+    }
+    return node;
   }
 
   /**
@@ -183,7 +267,7 @@ export class RecordsTreeProvider
       }
       for (const record of this.filteredRecordsForTable(table)) {
         if (uriKey(record.uri) === key) {
-          return { kind: 'record', record };
+          return this.recordNode(record);
         }
       }
     }
@@ -197,12 +281,7 @@ export class RecordsTreeProvider
     if (element.kind !== 'record') {
       return undefined;
     }
-    const table = element.record.table;
-    return {
-      kind: 'table',
-      table,
-      count: this.filteredRecordsForTable(table).length
-    };
+    return this.tableNode(element.record.table);
   }
 
   /**
@@ -235,14 +314,14 @@ export class RecordsTreeProvider
             `ServiceNow Records indexing failed: ${this.loadError}`
           );
         })
-        .finally(() => this._onDidChangeTreeData.fire());
+        .finally(() => this.fireRootRefresh());
     }
-    this._onDidChangeTreeData.fire();
+    this.fireRootRefresh();
   }
 
   refreshTree(): void {
     this.loadError = '';
-    this._onDidChangeTreeData.fire();
+    this.fireRootRefresh();
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -261,24 +340,23 @@ export class RecordsTreeProvider
     }
 
     if (element.kind === 'table') {
+      const count = this.filteredRecordsForTable(element.table).length;
       const item = new vscode.TreeItem(
         element.table,
         this.filterQuery
           ? vscode.TreeItemCollapsibleState.Expanded
           : vscode.TreeItemCollapsibleState.Collapsed
       );
-      item.description = String(element.count);
+      item.description = String(count);
       // Stable ids keep expansion state across refreshes and let reveal resolve
       // the table → record chain. Filter count stays out of the id on purpose.
-      item.id = `table:${element.table}`;
+      item.id = element.id;
       item.contextValue = 'servicenowXml.table';
       // `symbol-folder` is the same glyph as `folder`, but VS Code treats the
       // `folder` id as "let the file icon theme draw this" once resourceUri is
       // set — which leaves no icon at all under themes without folder icons.
       item.iconPath = new vscode.ThemeIcon('symbol-folder');
-      item.tooltip = `${element.table}\n${element.count} record${
-        element.count === 1 ? '' : 's'
-      }`;
+      item.tooltip = `${element.table}\n${count} record${count === 1 ? '' : 's'}`;
       // Synthetic URI so the folder picks up the Git state rolled up from its
       // record files; record leaves get that from their own file URI.
       item.resourceUri = tableDecorationUri(element.table);
@@ -293,19 +371,19 @@ export class RecordsTreeProvider
       vscode.TreeItemCollapsibleState.None
     );
     item.description = isDelete ? `DELETE · ${r.table}` : r.table;
-    item.id = `record:${r.table}|${uriKey(r.uri)}|${r.sysId ?? r.displayName}`;
+    item.id = element.id;
     // Tooltip is filled in by resolveTreeItem; see the note there.
     item.resourceUri = r.uri;
-    // Routed through our own command so a click from this view can suppress the
-    // scroll-into-view that follows an editor change from elsewhere.
+    // Routed through our own command so the editor opens at this record's row
+    // rather than at the top of a file that may hold many records.
     item.command = {
       command: 'servicenowXml.navigator.openRecord',
       title: 'Open',
       arguments: [r]
     };
     item.contextValue = 'servicenowXml.record';
-    // Tree selection can only hold one item, so every row from the active file
-    // gets an accented icon; the first one also gets selected via reveal.
+    // The accent is the whole active-file marker: selection stays the user's,
+    // and one file can export several records anyway.
     item.iconPath = new vscode.ThemeIcon(
       isDelete ? 'trash' : 'file-code',
       isActive
@@ -433,10 +511,9 @@ export class RecordsTreeProvider
     }
 
     if (element.kind === 'table') {
-      return this.filteredRecordsForTable(element.table).map((record) => ({
-        kind: 'record' as const,
-        record
-      }));
+      return this.filteredRecordsForTable(element.table).map((record) =>
+        this.recordNode(record)
+      );
     }
 
     return [];
@@ -446,14 +523,12 @@ export class RecordsTreeProvider
    * Tables with at least one matching record when filtered; otherwise all tables.
    */
   private filteredTables(): TableNode[] {
-    const tables = this.catalog.getTables();
     const nodes: TableNode[] = [];
-    for (const table of tables) {
-      const count = this.filteredRecordsForTable(table).length;
-      if (count === 0) {
+    for (const table of this.catalog.getTables()) {
+      if (this.filteredRecordsForTable(table).length === 0) {
         continue;
       }
-      nodes.push({ kind: 'table', table, count });
+      nodes.push(this.tableNode(table));
     }
     return nodes;
   }

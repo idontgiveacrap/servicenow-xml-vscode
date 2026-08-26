@@ -28,8 +28,10 @@ import {
   suggestReloadAfterCursorHelpers
 } from './cursorHelpers';
 import { registerJsonStringEditor } from './jsonStringEditor';
+import { registerEmbeddedFormatter } from './formatEmbedded';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
+import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
 
 const SORT_BY_PICKS: Array<{
   label: string;
@@ -77,10 +79,24 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(gate);
 
   registerJsonStringEditor(context);
+  registerEmbeddedFormatter(context, (document) => gate.isValidationAllowed(document));
 
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog(context.workspaceState);
+  const declarationIndex = new ScriptDeclarationIndex(context.workspaceState);
+  declarationIndex.configure({
+    isActive: () =>
+      gate.isLintActive() &&
+      vscode.workspace
+        .getConfiguration('servicenowXml')
+        .get<boolean>('enable', true) &&
+      vscode.workspace
+        .getConfiguration('servicenowXml')
+        .get<boolean>('lintJavaScript', true),
+    getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
+    getWorkspaceAppScope: () => gate.getWorkspaceAppScope()
+  });
   const treeProvider = new RecordsTreeProvider(catalog);
   const treeView = vscode.window.createTreeView<TreeNode>('servicenowXml.records', {
     treeDataProvider: treeProvider,
@@ -90,6 +106,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   context.subscriptions.push(
     catalog,
+    declarationIndex,
     treeProvider,
     treeView,
     treeView.onDidChangeVisibility((e) => {
@@ -113,7 +130,6 @@ export function activate(context: vscode.ExtensionContext): void {
        * so unsaved edits above the row do not make the indexed offset stale.
        */
       async (record: CatalogRecord) => {
-        activeRecordSync.suppressNextReveal();
         try {
           const document = await vscode.workspace.openTextDocument(record.uri);
           const candidates = extractRecordIdentities(
@@ -175,7 +191,14 @@ export function activate(context: vscode.ExtensionContext): void {
   maybeStartCatalogIndex(catalog, treeProvider, gate);
 
   try {
-    activateDiagnosticsAndCommands(context, catalog, treeProvider, treeView, gate);
+    activateDiagnosticsAndCommands(
+      context,
+      catalog,
+      treeProvider,
+      treeView,
+      gate,
+      declarationIndex
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[servicenow-xml] activation failed after tree registration:', error);
@@ -183,6 +206,8 @@ export function activate(context: vscode.ExtensionContext): void {
       `ServiceNow XML activated the Records view, but other features failed: ${message}`
     );
   }
+
+  maybeStartDeclarationIndex(declarationIndex);
 
   // Cursor-only helpers: fire-and-forget after core features. Missing Python must
   // not delay or break lint/navigator (installCursorHelpers never throws).
@@ -230,6 +255,13 @@ function maybeStartCatalogIndex(
     .finally(() => treeProvider.refreshTree());
 }
 
+function maybeStartDeclarationIndex(index: ScriptDeclarationIndex): void {
+  void index.ensure().catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn('[servicenow-xml] declaration index failed:', message);
+  });
+}
+
 /**
  * Wire diagnostics, commands, and search after the Records tree is available.
  */
@@ -238,18 +270,28 @@ function activateDiagnosticsAndCommands(
   catalog: RecordCatalog,
   treeProvider: RecordsTreeProvider,
   treeView: vscode.TreeView<TreeNode>,
-  gate: SnWorkspaceGate
+  gate: SnWorkspaceGate,
+  declarationIndex: ScriptDeclarationIndex
 ): void {
   const statusBar = new KindStatusBar();
   const diagnostics = new DiagnosticsController(
     statusBar,
     (document) => gate.isValidationAllowed(document),
     () => gate.getWorkspaceAppSysId(),
-    () => gate.getWorkspaceJavaScriptSupport()
+    () => gate.getWorkspaceJavaScriptSupport(),
+    () => gate.getWorkspaceAppScope(),
+    () => declarationIndex.getDeclarations()
   );
   context.subscriptions.push(
     statusBar,
     diagnostics,
+    declarationIndex.onDidChange(() => {
+      for (const doc of vscode.workspace.textDocuments) {
+        if (doc.languageId === 'xml') {
+          diagnostics.schedule(doc);
+        }
+      }
+    }),
     gate.onDidChange(() => {
       for (const doc of vscode.workspace.textDocuments) {
         if (doc.languageId === 'xml') {
@@ -259,6 +301,7 @@ function activateDiagnosticsAndCommands(
       diagnostics.refreshActiveEditor();
       publishSnDocumentContext();
       maybeStartCatalogIndex(catalog, treeProvider, gate);
+      maybeStartDeclarationIndex(declarationIndex);
     })
   );
 
@@ -454,6 +497,7 @@ function activateDiagnosticsAndCommands(
             diagnostics.schedule(doc);
           }
         }
+        maybeStartDeclarationIndex(declarationIndex);
       }
       if (e.affectsConfiguration('servicenowXml.navigator')) {
         treeProvider.refreshTree();
