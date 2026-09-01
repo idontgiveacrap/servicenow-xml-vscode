@@ -15,7 +15,13 @@ import {
   type ScriptHit
 } from './scriptHits';
 
-let xmlFormatReentry = false;
+/**
+ * Documents currently inside the nested `executeFormatDocumentProvider` call, so
+ * this provider can decline when the editor re-enters it for the same document.
+ * Keyed per document rather than a single flag: a concurrent format of another
+ * file would otherwise be silently skipped.
+ */
+const xmlFormatReentry = new Set<string>();
 
 /**
  * Register document and range formatting for ServiceNow XML.
@@ -49,14 +55,30 @@ async function formatSnXmlRange(
   token: vscode.CancellationToken,
   isValidationAllowed: (document: vscode.TextDocument) => boolean
 ): Promise<vscode.TextEdit[] | undefined> {
-  if (xmlFormatReentry || !isSnXmlFormatTarget(document, isValidationAllowed)) {
+  if (
+    xmlFormatReentry.has(document.uri.toString()) ||
+    !isSnXmlFormatTarget(document, isValidationAllowed)
+  ) {
     return undefined;
   }
+  const text = document.getText();
   const offset = document.offsetAt(range.start);
-  const hit = scriptAt(document.getText(), offset);
+  const hit = scriptAt(text, offset);
   if (hit?.role === 'scriptField') {
+    const original = text.slice(hit.hostStart, hit.hostEnd);
     const formatted = await formatOneScriptHit(hit, options, token);
-    if (formatted === undefined || formatted === document.getText().slice(hit.hostStart, hit.hostEnd)) {
+    if (formatted === undefined || formatted === original) {
+      return [];
+    }
+    // Formatting the script is async, so the buffer can move while it runs. The
+    // hit offsets came from the pre-format snapshot, and applying them to a
+    // shifted buffer splices the formatted script over unrelated XML while
+    // leaving part of the original behind — a silent duplication rather than a
+    // failure. Abandon the format instead.
+    if (
+      token.isCancellationRequested ||
+      document.getText().slice(hit.hostStart, hit.hostEnd) !== original
+    ) {
       return [];
     }
     return [
@@ -78,7 +100,8 @@ async function formatSnXmlDocument(
   token: vscode.CancellationToken,
   isValidationAllowed: (document: vscode.TextDocument) => boolean
 ): Promise<vscode.TextEdit[] | undefined> {
-  if (xmlFormatReentry) {
+  const reentryKey = document.uri.toString();
+  if (xmlFormatReentry.has(reentryKey)) {
     return undefined;
   }
   if (!isSnXmlFormatTarget(document, isValidationAllowed)) {
@@ -89,10 +112,13 @@ async function formatSnXmlDocument(
   const formatJs = config.get<boolean>('formatJavaScript', true);
   const formatXmlFirst = config.get<boolean>('formatXmlFirst', true);
 
-  let text = document.getText();
+  // Every edit below is expressed against this snapshot, so a buffer that moves
+  // mid-format invalidates all of them.
+  const original = document.getText();
+  let text = original;
 
   if (formatXmlFirst) {
-    xmlFormatReentry = true;
+    xmlFormatReentry.add(reentryKey);
     let xmlEdits: vscode.TextEdit[] | undefined;
     try {
       xmlEdits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
@@ -101,9 +127,9 @@ async function formatSnXmlDocument(
         options
       );
     } finally {
-      xmlFormatReentry = false;
+      xmlFormatReentry.delete(reentryKey);
     }
-    if (token.isCancellationRequested) {
+    if (token.isCancellationRequested || document.getText() !== original) {
       return undefined;
     }
     if (xmlEdits?.length) {
@@ -112,7 +138,7 @@ async function formatSnXmlDocument(
   }
 
   if (!formatJs) {
-    if (text === document.getText()) {
+    if (text === original) {
       return [];
     }
     return [vscode.TextEdit.replace(fullRange(document), text)];
@@ -136,7 +162,10 @@ async function formatSnXmlDocument(
   }
 
   text = applyOffsetEdits(text, offsetEdits);
-  if (text === document.getText()) {
+  // A buffer that moved while the scripts were formatting would have every edit
+  // below it shifted, so the whole-document replacement built from the snapshot
+  // no longer describes this document.
+  if (document.getText() !== original || text === original) {
     return [];
   }
   return [vscode.TextEdit.replace(fullRange(document), text)];

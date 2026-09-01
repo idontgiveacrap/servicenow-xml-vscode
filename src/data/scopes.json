@@ -117,6 +117,7 @@
     "sn_role_builder",
     "sn_sc",
     "sn_scmobile",
+    "sn_scoped_cache",
     "sn_sd",
     "sn_sla",
     "sn_sla_brkdwn",

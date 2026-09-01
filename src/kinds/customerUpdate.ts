@@ -34,6 +34,7 @@ export const customerUpdate: KindProfile = {
     const remoteSets = doc.rows.filter((r) => r.tableName === 'sys_remote_update_set');
     const localSets = doc.rows.filter((r) => r.tableName === 'sys_update_set');
     const updates = doc.rows.filter((r) => r.tableName === 'sys_update_xml');
+    const requireRecordSysIds = ctx?.requireRecordSysIds === true;
 
     if (remoteSets.length === 0 && localSets.length === 0 && updates.length === 0) {
       diagnostics.push({
@@ -62,7 +63,7 @@ export const customerUpdate: KindProfile = {
     const containerAppIds: string[] = [];
 
     for (const row of remoteSets) {
-      validateRemoteUpdateSet(doc, row, diagnostics);
+      validateRemoteUpdateSet(doc, row, diagnostics, requireRecordSysIds);
       if (row.sysId && isValidSysId(row.sysId)) {
         remoteSetIds.add(row.sysId.toLowerCase());
       }
@@ -73,7 +74,7 @@ export const customerUpdate: KindProfile = {
     }
 
     for (const row of localSets) {
-      validateLocalUpdateSet(doc, row, diagnostics);
+      validateLocalUpdateSet(doc, row, diagnostics, requireRecordSysIds);
       const appId = extractApplicationValue(doc.text, row);
       if (appId) {
         containerAppIds.push(appId);
@@ -108,7 +109,14 @@ export const customerUpdate: KindProfile = {
     }
 
     for (const row of updates) {
-      validateUpdateXml(doc, row, diagnostics, remoteSetIds, containerAppId);
+      validateUpdateXml(
+        doc,
+        row,
+        diagnostics,
+        remoteSetIds,
+        containerAppId,
+        requireRecordSysIds
+      );
     }
 
     return diagnostics;
@@ -129,18 +137,21 @@ type RowSlice = {
 function validateRemoteUpdateSet(
   doc: { text: string },
   row: RowSlice,
-  diagnostics: SnDiagnostic[]
+  diagnostics: SnDiagnostic[],
+  requireRecordSysIds: boolean
 ): void {
   pushStrictActionError(diagnostics, row, 'sys_remote_update_set', 'cu-remote-bad-action');
 
   if (!row.sysId) {
-    diagnostics.push({
-      message: '<sys_remote_update_set> is missing <sys_id>.',
-      severity: 'error',
-      line: row.line,
-      character: row.character,
-      code: 'cu-remote-missing-sys-id'
-    });
+    if (requireRecordSysIds) {
+      diagnostics.push({
+        message: '<sys_remote_update_set> is missing <sys_id>.',
+        severity: 'error',
+        line: row.line,
+        character: row.character,
+        code: 'cu-remote-missing-sys-id'
+      });
+    }
   } else if (!isValidSysId(row.sysId)) {
     diagnostics.push({
       message: `sys_id "${row.sysId}" is not a 32-character hex id.`,
@@ -190,18 +201,21 @@ function validateRemoteUpdateSet(
 function validateLocalUpdateSet(
   doc: { text: string },
   row: RowSlice,
-  diagnostics: SnDiagnostic[]
+  diagnostics: SnDiagnostic[],
+  requireRecordSysIds: boolean
 ): void {
   pushStrictActionError(diagnostics, row, 'sys_update_set', 'cu-set-bad-action');
 
   if (!row.sysId) {
-    diagnostics.push({
-      message: '<sys_update_set> is missing <sys_id>.',
-      severity: 'error',
-      line: row.line,
-      character: row.character,
-      code: 'cu-set-missing-sys-id'
-    });
+    if (requireRecordSysIds) {
+      diagnostics.push({
+        message: '<sys_update_set> is missing <sys_id>.',
+        severity: 'error',
+        line: row.line,
+        character: row.character,
+        code: 'cu-set-missing-sys-id'
+      });
+    }
   } else if (!isValidSysId(row.sysId)) {
     diagnostics.push({
       message: `sys_id "${row.sysId}" is not a 32-character hex id.`,
@@ -230,18 +244,21 @@ function validateUpdateXml(
   row: RowSlice,
   diagnostics: SnDiagnostic[],
   remoteSetIds: Set<string>,
-  containerAppId: string | undefined
+  containerAppId: string | undefined,
+  requireRecordSysIds: boolean
 ): void {
   pushStrictActionError(diagnostics, row, 'sys_update_xml', 'cu-bad-action');
 
   if (!row.sysId) {
-    diagnostics.push({
-      message: '<sys_update_xml> is missing <sys_id>.',
-      severity: 'error',
-      line: row.line,
-      character: row.character,
-      code: 'cu-missing-sys-id'
-    });
+    if (requireRecordSysIds) {
+      diagnostics.push({
+        message: '<sys_update_xml> is missing <sys_id>.',
+        severity: 'error',
+        line: row.line,
+        character: row.character,
+        code: 'cu-missing-sys-id'
+      });
+    }
   } else if (!isValidSysId(row.sysId)) {
     diagnostics.push({
       message: `sys_id "${row.sysId}" is not a 32-character hex id.`,

@@ -36,6 +36,9 @@ export class DiagnosticsController implements vscode.Disposable {
   private readonly getWorkspaceDeclarations: () =>
     | ScriptDeclaration[]
     | undefined;
+  private readonly requiresRecordSysId: (
+    document: vscode.TextDocument
+  ) => boolean;
 
   constructor(
     statusBar: KindStatusBar,
@@ -47,7 +50,9 @@ export class DiagnosticsController implements vscode.Disposable {
     getWorkspaceAppScope: () => string | undefined = () => undefined,
     getWorkspaceDeclarations: () =>
       | ScriptDeclaration[]
-      | undefined = () => undefined
+      | undefined = () => undefined,
+    requiresRecordSysId: (document: vscode.TextDocument) => boolean = () =>
+      false
   ) {
     this.collection = vscode.languages.createDiagnosticCollection(COLLECTION_NAME);
     this.statusBar = statusBar;
@@ -56,6 +61,7 @@ export class DiagnosticsController implements vscode.Disposable {
     this.getWorkspaceAppScope = getWorkspaceAppScope;
     this.getWorkspaceJavaScriptSupport = getWorkspaceJavaScriptSupport;
     this.getWorkspaceDeclarations = getWorkspaceDeclarations;
+    this.requiresRecordSysId = requiresRecordSysId;
   }
 
   dispose(): void {
@@ -127,7 +133,8 @@ export class DiagnosticsController implements vscode.Disposable {
     const workspaceAppScope = this.getWorkspaceAppScope();
     const parsed = parseSnXml(text, filePath);
     const classification = classifyAndValidate(parsed, {
-      workspaceAppSysId
+      workspaceAppSysId,
+      requireRecordSysIds: this.requiresRecordSysId(document)
     });
 
     const snDiags: SnDiagnostic[] = [...classification.diagnostics];

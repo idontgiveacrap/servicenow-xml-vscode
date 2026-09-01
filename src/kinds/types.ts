@@ -100,6 +100,11 @@ export interface KindProfile {
 export interface ValidationContext {
   /** Sys_id from `{sys_id}/sys_app_{sys_id}.xml` when the gate found a marker. */
   workspaceAppSysId?: string;
+  /**
+   * True when the document belongs to the workspace folder containing that app
+   * marker. Source-control imports require record rows to carry their sys_id.
+   */
+  requireRecordSysIds?: boolean;
 }
 
 export interface ClassificationResult {

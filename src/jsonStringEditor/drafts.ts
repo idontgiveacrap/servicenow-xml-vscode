@@ -18,6 +18,12 @@ export interface DraftMeta {
   /** Absolute token range in host after a successful buffer write-back. */
   absoluteStart?: number;
   absoluteEnd?: number;
+  /**
+   * SHA-256 of the exact text written into that range. The draft is the only
+   * copy of the user's edit, so it is discarded only when the host still holds
+   * this content — a range that merely exists is not evidence of the write.
+   */
+  writtenSha256?: string;
 }
 
 export interface DraftRecord {
@@ -27,16 +33,21 @@ export interface DraftRecord {
 
 /**
  * Resolve the directory that stores JSON-string drafts for a host file.
+ *
+ * Returns the workspace root alongside it so callers never have to recover it by
+ * walking back up from `dir` — that derivation silently pointed the `.gitignore`
+ * write at whatever sat two levels above the drafts directory.
  */
 export function resolveDraftsDir(
   hostUri: vscode.Uri,
   globalStorageUri: vscode.Uri
-): { dir: string; usedGlobalStorage: boolean } {
+): { dir: string; usedGlobalStorage: boolean; workspaceRoot?: string } {
   const folder = vscode.workspace.getWorkspaceFolder(hostUri);
   if (folder) {
     return {
       dir: path.join(folder.uri.fsPath, DRAFTS_DIR_NAME, DRAFTS_SUBDIR),
-      usedGlobalStorage: false
+      usedGlobalStorage: false,
+      workspaceRoot: folder.uri.fsPath
     };
   }
   return {
@@ -46,15 +57,15 @@ export function resolveDraftsDir(
 }
 
 /**
- * Ensure drafts directory exists and workspace .gitignore lists .servicenow-xml/.
+ * Ensure the drafts directory exists. When a workspace root is given, its
+ * `.gitignore` is also updated to list the drafts root; global-storage drafts
+ * live outside any repository and pass no root.
  */
-export function ensureDraftsDir(dir: string, usedGlobalStorage: boolean): void {
+export function ensureDraftsDir(dir: string, workspaceRoot?: string): void {
   fs.mkdirSync(dir, { recursive: true });
-  if (usedGlobalStorage) {
-    return;
+  if (workspaceRoot) {
+    ensureGitignoreEntry(workspaceRoot);
   }
-  const workspaceRoot = path.dirname(path.dirname(dir));
-  ensureGitignoreEntry(workspaceRoot);
 }
 
 /**
@@ -140,6 +151,44 @@ export function loadDraft(
   } catch {
     return null;
   }
+}
+
+/**
+ * Every drafts directory this window could have written to: one per workspace
+ * folder, plus the global-storage fallback used for hosts outside any folder.
+ */
+export function draftsDirsForWindow(
+  globalStorageUri: vscode.Uri
+): Array<{ dir: string; label: string }> {
+  const dirs = (vscode.workspace.workspaceFolders ?? []).map((folder) => ({
+    dir: path.join(folder.uri.fsPath, DRAFTS_DIR_NAME, DRAFTS_SUBDIR),
+    label: folder.name
+  }));
+  dirs.push({
+    dir: path.join(globalStorageUri.fsPath, DRAFTS_SUBDIR),
+    label: 'no workspace folder'
+  });
+  return dirs;
+}
+
+/**
+ * Drafts stored in one directory, most recently saved first.
+ */
+export function listDrafts(draftsDir: string): DraftRecord[] {
+  if (!fs.existsSync(draftsDir)) {
+    return [];
+  }
+  const out: DraftRecord[] = [];
+  for (const name of fs.readdirSync(draftsDir)) {
+    if (!name.endsWith('.json')) {
+      continue;
+    }
+    const record = loadDraft(draftsDir, name.slice(0, -'.json'.length));
+    if (record) {
+      out.push(record);
+    }
+  }
+  return out.sort((a, b) => b.meta.savedAt.localeCompare(a.meta.savedAt));
 }
 
 /**

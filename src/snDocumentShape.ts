@@ -7,7 +7,7 @@ import { parseExportFileName } from './fileName';
  * document is worth parsing, and the kind profiles still classify it afterwards.
  */
 const SN_EXPORT_MARKER_RE =
-  /<\s*(?:unload|record_update|sys_update_xml|sys_remote_update_set|sys_update_set)\b/i;
+  /<\s*(?:unload|record_update|database|sys_update_xml|sys_remote_update_set|sys_update_set)\b/i;
 
 /** Lines scanned from the top; export roots appear within the first few. */
 const PREFIX_LINE_LIMIT = 200;

@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.9.5",
+  "version": "2.9.8",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -79,6 +79,10 @@
       {
         "command": "servicenowXml.loadJsonStringDraft",
         "title": "ServiceNow XML: Load Draft for Embedded Script…"
+      },
+      {
+        "command": "servicenowXml.manageJsonStringDrafts",
+        "title": "ServiceNow XML: Manage Embedded Script Drafts…"
       }
     ],
     "viewsContainers": {

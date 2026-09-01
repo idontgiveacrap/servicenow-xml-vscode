@@ -1,3 +1,4 @@
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
@@ -24,12 +25,25 @@ export interface WriteBackBinding {
   hostVersion: number;
   absoluteStart: number;
   absoluteEnd: number;
+  /**
+   * Exact host text this session expects to find in the range it replaces.
+   * Substitution is authorized by this value, not by the offsets: offsets and
+   * document versions only locate a candidate span, and a span whose content has
+   * drifted is re-found or refused rather than overwritten.
+   */
+  expectedSlice: string;
 }
 
 interface PendingHostSave {
   draftKey: string;
   absoluteStart: number;
   absoluteEnd: number;
+  writtenSha256: string;
+}
+
+/** Content hash used to confirm a written range still holds what was written. */
+function sha256(text: string): string {
+  return crypto.createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
 /** Pending host-save confirmations that outlive the temp editor session. */
@@ -47,11 +61,12 @@ export async function writeBackJsonString(
   editedCode: string,
   globalStorageUri: vscode.Uri
 ): Promise<WriteBackResult> {
-  const { dir: draftsDir, usedGlobalStorage } = resolveDraftsDir(
-    binding.hostUri,
-    globalStorageUri
-  );
-  ensureDraftsDir(draftsDir, usedGlobalStorage);
+  const {
+    dir: draftsDir,
+    usedGlobalStorage,
+    workspaceRoot
+  } = resolveDraftsDir(binding.hostUri, globalStorageUri);
+  ensureDraftsDir(draftsDir, workspaceRoot);
 
   const fail = (error: string): WriteBackResult => {
     saveDraft(draftsDir, binding.hit.draftKey, editedCode, {
@@ -75,12 +90,17 @@ export async function writeBackJsonString(
   let hit = binding.hit;
   let absStart = binding.absoluteStart;
   let absEnd = binding.absoluteEnd;
+  // Read once: everything below is computed against this snapshot, and there is
+  // no await between here and applyEdit, so the buffer cannot move underneath.
+  const text = hostDoc.getText();
 
-  if (hostDoc.version !== binding.hostVersion) {
+  // Re-find the span whenever the bytes there are not the ones this session
+  // expects, rather than trusting a matching document version.
+  if (text.slice(absStart, absEnd) !== binding.expectedSlice) {
     const rediscovered = hit.layers
-      ? relocateLayeredHit(hostDoc.getText(), hit, hostDoc.version, absStart)
+      ? relocateLayeredHit(text, hit, hostDoc.version, absStart)
       : detectJsonStringByKeyPath(
-          hostDoc.getText(),
+          text,
           binding.hit.hostPath,
           hostDoc.version,
           binding.hit.fieldName,
@@ -133,6 +153,36 @@ export async function writeBackJsonString(
     }
   }
 
+  // Validate the spliced result before it reaches the buffer. These checks used
+  // to run after applyEdit, so a rejected splice stayed in the document with only
+  // an error message to say so.
+  const nextText = text.slice(0, absStart) + replacement + text.slice(absEnd);
+
+  if (hit.layers) {
+    // Read the splice back through the same descent. If the layers re-decode to
+    // what was typed, every encoding in the stack was applied correctly.
+    const roundTrip = scriptAt(nextText, absStart);
+    if (!roundTrip || roundTrip.code !== editedCode) {
+      return fail('Write-back would not round-trip through the encoding layers.');
+    }
+  } else if (hit.field) {
+    const field = hit.field;
+    const delta = replacement.length - (absEnd - absStart);
+    const fieldStart = field.bodyStartOffset;
+    const fieldEnd = field.bodyEndOffset + delta;
+    const rawFieldBody = nextText.slice(fieldStart, fieldEnd);
+    const decodedBody = field.isCdata
+      ? rawFieldBody
+      : decodeXmlEntities(rawFieldBody);
+    try {
+      JSON.parse(decodedBody.trim());
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'JSON parse failed before write-back';
+      return fail(`Write-back would leave invalid JSON: ${message}`);
+    }
+  }
+
   const edit = new vscode.WorkspaceEdit();
   edit.replace(
     hostDoc.uri,
@@ -144,33 +194,14 @@ export async function writeBackJsonString(
   if (!applied) {
     return fail('Workspace edit was rejected.');
   }
-
-  if (hit.layers) {
-    // Read the splice back through the same descent. If the layers re-decode to
-    // what was typed, every encoding in the stack was applied correctly.
-    const roundTrip = scriptAt(hostDoc.getText(), absStart);
-    if (!roundTrip || roundTrip.code !== editedCode) {
-      return fail('Write-back did not round-trip through the encoding layers.');
-    }
-  } else if (hit.field) {
-    const field = hit.field;
-    const delta = replacement.length - (absEnd - absStart);
-    const fieldStart = field.bodyStartOffset;
-    const fieldEnd = field.bodyEndOffset + delta;
-    const rawFieldBody = hostDoc.getText().slice(fieldStart, fieldEnd);
-    const decodedBody = field.isCdata
-      ? rawFieldBody
-      : decodeXmlEntities(rawFieldBody);
-    try {
-      JSON.parse(decodedBody.trim());
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'JSON parse failed after write-back';
-      return fail(`Write-back left invalid JSON: ${message}`);
-    }
+  if (hostDoc.getText() !== nextText) {
+    return fail(
+      'Host document changed while the write-back was applied; draft saved.'
+    );
   }
 
   const newEnd = absStart + replacement.length;
+  const writtenSha256 = sha256(replacement);
   saveDraft(draftsDir, hit.draftKey, editedCode, {
     hostPath: hit.hostPath,
     fieldName: hit.fieldName,
@@ -178,15 +209,26 @@ export async function writeBackJsonString(
     hadJavascriptWrapper: hit.hadJavascriptWrapper,
     pendingHostSave: true,
     absoluteStart: absStart,
-    absoluteEnd: newEnd
+    absoluteEnd: newEnd,
+    writtenSha256
   });
 
-  binding.hit = hit;
+  // The host now holds the edited code, so that is what a later re-location has
+  // to match; keeping the originally opened code here would make every write
+  // after the first fail to re-locate.
+  binding.hit = { ...hit, editorCode: editedCode };
   binding.hostVersion = hostDoc.version;
   binding.absoluteStart = absStart;
   binding.absoluteEnd = newEnd;
+  binding.expectedSlice = replacement;
 
-  rememberPendingHostSave(binding.hostUri, hit.draftKey, absStart, newEnd);
+  rememberPendingHostSave(
+    binding.hostUri,
+    hit.draftKey,
+    absStart,
+    newEnd,
+    writtenSha256
+  );
 
   return { ok: true, pendingHostSave: true };
 }
@@ -225,29 +267,29 @@ function rememberPendingHostSave(
   hostUri: vscode.Uri,
   draftKey: string,
   absoluteStart: number,
-  absoluteEnd: number
+  absoluteEnd: number,
+  writtenSha256: string
 ): void {
   const key = hostUri.toString();
   const list = pendingByHost.get(key) ?? [];
   const filtered = list.filter((p) => p.draftKey !== draftKey);
-  filtered.push({ draftKey, absoluteStart, absoluteEnd });
+  filtered.push({ draftKey, absoluteStart, absoluteEnd, writtenSha256 });
   pendingByHost.set(key, filtered);
 }
 
 /**
- * After host disk save, delete any pending drafts for that file when the
- * written token range is still present.
+ * After host disk save, delete any pending drafts for that file whose written
+ * text is still exactly what the saved document holds at that range.
  */
 export function onHostDocumentSaved(
   hostDoc: vscode.TextDocument,
   globalStorageUri: vscode.Uri
 ): void {
-  const { dir: draftsDir, usedGlobalStorage } = resolveDraftsDir(
+  const { dir: draftsDir, workspaceRoot } = resolveDraftsDir(
     hostDoc.uri,
     globalStorageUri
   );
-  ensureDraftsDir(draftsDir, usedGlobalStorage);
-  void usedGlobalStorage;
+  ensureDraftsDir(draftsDir, workspaceRoot);
 
   const key = hostDoc.uri.toString();
   const text = hostDoc.getText();
@@ -260,8 +302,12 @@ export function onHostDocumentSaved(
     if (!draft?.meta.pendingHostSave) {
       continue;
     }
-    const slice = text.slice(item.absoluteStart, item.absoluteEnd);
-    if (!slice) {
+    // A range that merely exists proves nothing: keep the draft unless the saved
+    // file still holds the exact text that was written there.
+    if (
+      sha256(text.slice(item.absoluteStart, item.absoluteEnd)) !==
+      item.writtenSha256
+    ) {
       remaining.push(item);
       continue;
     }
@@ -298,6 +344,7 @@ function clearPendingDraftsOnDisk(
         draftKey?: string;
         absoluteStart?: number;
         absoluteEnd?: number;
+        writtenSha256?: string;
       };
       if (
         !meta.pendingHostSave ||
@@ -310,12 +357,15 @@ function clearPendingDraftsOnDisk(
       }
       if (
         typeof meta.absoluteStart !== 'number' ||
-        typeof meta.absoluteEnd !== 'number'
+        typeof meta.absoluteEnd !== 'number' ||
+        typeof meta.writtenSha256 !== 'string'
       ) {
         continue;
       }
-      const slice = hostText.slice(meta.absoluteStart, meta.absoluteEnd);
-      if (!slice) {
+      if (
+        sha256(hostText.slice(meta.absoluteStart, meta.absoluteEnd)) !==
+        meta.writtenSha256
+      ) {
         continue;
       }
       deleteDraft(draftsDir, meta.draftKey);

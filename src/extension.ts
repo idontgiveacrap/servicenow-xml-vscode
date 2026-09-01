@@ -280,7 +280,8 @@ function activateDiagnosticsAndCommands(
     () => gate.getWorkspaceAppSysId(),
     () => gate.getWorkspaceJavaScriptSupport(),
     () => gate.getWorkspaceAppScope(),
-    () => declarationIndex.getDeclarations()
+    () => declarationIndex.getDeclarations(),
+    (document) => gate.requiresRecordSysId(document)
   );
   context.subscriptions.push(
     statusBar,

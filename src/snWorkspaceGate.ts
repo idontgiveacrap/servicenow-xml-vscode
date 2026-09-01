@@ -27,6 +27,7 @@ interface GateCache {
   appSysId?: string;
   appScope?: string;
   appJavaScriptSupport?: JavaScriptSupport;
+  markerWorkspaceFolder?: string;
 }
 
 /**
@@ -38,6 +39,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
   private appSysId: string | undefined;
   private appScope: string | undefined;
   private appJavaScriptSupport: JavaScriptSupport | undefined;
+  private markerWorkspaceFolder: string | undefined;
   private probeTimer: NodeJS.Timeout | undefined;
   private probeGeneration = 0;
   private readonly workspaceState: vscode.Memento;
@@ -110,6 +112,20 @@ export class SnWorkspaceGate implements vscode.Disposable {
   }
 
   /**
+   * True when a document belongs to the workspace folder containing the
+   * ServiceNow app marker. Tracked record rows in that folder require sys_ids;
+   * standalone documents and unrelated folders in a multi-root window do not.
+   */
+  requiresRecordSysId(document: vscode.TextDocument): boolean {
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri);
+    return (
+      this.snWorkspace &&
+      folder !== undefined &&
+      folder.uri.toString() === this.markerWorkspaceFolder
+    );
+  }
+
+  /**
    * Window-level gate: an SN app marker exists, or `enabledForAllWindows`
    * bypasses it so every XML document in the window is in scope.
    *
@@ -162,6 +178,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     this.appSysId = cached.appSysId;
     this.appScope = cached.appScope;
     this.appJavaScriptSupport = cached.appJavaScriptSupport;
+    this.markerWorkspaceFolder = cached.markerWorkspaceFolder;
     // Publish immediately so the Records view `when` clause can show on reload
     // without waiting for findFiles.
     void this.publishContext();
@@ -172,7 +189,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
       isSnWorkspace: this.snWorkspace,
       appSysId: this.appSysId,
       appScope: this.appScope,
-      appJavaScriptSupport: this.appJavaScriptSupport
+      appJavaScriptSupport: this.appJavaScriptSupport,
+      markerWorkspaceFolder: this.markerWorkspaceFolder
     };
     void this.workspaceState.update(STATE_KEY, value);
   }
@@ -198,11 +216,15 @@ export class SnWorkspaceGate implements vscode.Disposable {
     const appMeta = marker ? await this.readMarkerMetadata(marker.uri) : undefined;
     const appScope = appMeta?.scope;
     const appJavaScriptSupport = appMeta?.javascriptSupport;
+    const markerWorkspaceFolder = marker
+      ? vscode.workspace.getWorkspaceFolder(marker.uri)?.uri.toString()
+      : undefined;
     if (
       found === this.snWorkspace &&
       appSysId === this.appSysId &&
       appScope === this.appScope &&
-      appJavaScriptSupport === this.appJavaScriptSupport
+      appJavaScriptSupport === this.appJavaScriptSupport &&
+      markerWorkspaceFolder === this.markerWorkspaceFolder
     ) {
       await this.publishContext();
       this.persistCache();
@@ -212,6 +234,7 @@ export class SnWorkspaceGate implements vscode.Disposable {
     this.appSysId = appSysId;
     this.appScope = appScope;
     this.appJavaScriptSupport = appJavaScriptSupport;
+    this.markerWorkspaceFolder = markerWorkspaceFolder;
     await this.publishContext();
     this.persistCache();
     this.notify();

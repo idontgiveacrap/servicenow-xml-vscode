@@ -1,6 +1,10 @@
 import * as fs from 'fs/promises';
 import * as vscode from 'vscode';
-import { getIgnoreGlobs, isPathIgnored } from './ignorePaths';
+import {
+  getIgnoreGlobs,
+  isPathIgnored,
+  isWorkspaceSchemeUri
+} from './ignorePaths';
 import { parseSnXml } from './parseSnXml';
 import {
   createDeclarationCache,
@@ -215,7 +219,14 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     if (!records) {
       return false;
     }
-    this.declarations = records;
+    // Same self-heal as the catalog: older snapshots can name virtual copies.
+    this.declarations = records.filter((declaration) => {
+      try {
+        return isWorkspaceSchemeUri(vscode.Uri.parse(declaration.uri));
+      } catch {
+        return false;
+      }
+    });
     this.loaded = true;
     return true;
   }
@@ -306,7 +317,15 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     }
   }
 
+  /**
+   * Queue one changed declaration file. Non-workspace schemes are dropped for
+   * the same reason as in the record catalog: a `git:` watcher event would index
+   * the staged copy of an export as a second declaration of the same name.
+   */
   private scheduleFileChange(uri: vscode.Uri, deleted = false): void {
+    if (!isWorkspaceSchemeUri(uri)) {
+      return;
+    }
     this.pendingFileChanges.set(uriKey(uri), deleted ? undefined : uri);
     if (this.watchDebounce) {
       clearTimeout(this.watchDebounce);

@@ -30,7 +30,7 @@ export const dataRecordExport: KindProfile = {
     return doc.rows.some((r) => isPrimaryAction(r.action) || !!r.sysId);
   },
 
-  validate(doc) {
+  validate(doc, ctx) {
     const diagnostics: SnDiagnostic[] = [];
 
     if (doc.rootName !== 'unload' && doc.rootName !== 'record_update') {
@@ -58,13 +58,15 @@ export const dataRecordExport: KindProfile = {
 
     for (const row of primary) {
       if (!row.sysId) {
-        diagnostics.push({
-          message: `<${row.tableName}> is missing <sys_id>.`,
-          severity: 'warning',
-          line: row.line,
-          character: row.character,
-          code: 'data-missing-sys-id'
-        });
+        if (ctx?.requireRecordSysIds) {
+          diagnostics.push({
+            message: `<${row.tableName}> is missing <sys_id>.`,
+            severity: 'error',
+            line: row.line,
+            character: row.character,
+            code: 'data-missing-sys-id'
+          });
+        }
       } else if (!isValidSysId(row.sysId)) {
         diagnostics.push({
           message: `sys_id "${row.sysId}" is not a 32-character hex id.`,

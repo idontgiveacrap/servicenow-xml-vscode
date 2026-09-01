@@ -1,6 +1,10 @@
 import * as fs from 'fs/promises';
 import * as vscode from 'vscode';
-import { getIgnoreGlobs, isPathIgnored } from '../ignorePaths';
+import {
+  getIgnoreGlobs,
+  isPathIgnored,
+  isWorkspaceSchemeUri
+} from '../ignorePaths';
 import {
   CATALOG_CACHE_STATE_KEY,
   createCatalogCache,
@@ -305,9 +309,16 @@ export class RecordCatalog implements vscode.Disposable {
     const restored: CatalogRecord[] = [];
     try {
       for (const record of records) {
+        const uri = vscode.Uri.parse(record.uri);
+        // Snapshots written before watcher events were scheme-filtered can hold
+        // rows for virtual copies of a file; drop them instead of rendering a
+        // duplicate row until the next full scan.
+        if (!isWorkspaceSchemeUri(uri)) {
+          continue;
+        }
         restored.push({
           ...record,
-          uri: vscode.Uri.parse(record.uri),
+          uri,
           openCount: 0
         });
       }
@@ -679,8 +690,14 @@ export class RecordCatalog implements vscode.Disposable {
 
   /**
    * Debounce changed paths and update only those catalog entries.
+   *
+   * Watcher events are filtered by scheme here rather than at each watcher
+   * because this is also the entry point for any future change source.
    */
   private scheduleFileChange(uri: vscode.Uri, deleted = false): void {
+    if (!isWorkspaceSchemeUri(uri)) {
+      return;
+    }
     this.pendingFileChanges.set(uriKey(uri), deleted ? undefined : uri);
     if (this.watchDebounce) {
       clearTimeout(this.watchDebounce);

@@ -85,13 +85,15 @@ export const scopedAppRecordUpdate: KindProfile = {
       }
 
       if (!row.sysId) {
-        diagnostics.push({
-          message: `<${row.tableName}> is missing <sys_id>.`,
-          severity: 'error',
-          line: row.line,
-          character: row.character,
-          code: 'scoped-missing-sys-id'
-        });
+        if (ctx?.requireRecordSysIds) {
+          diagnostics.push({
+            message: `<${row.tableName}> is missing <sys_id>.`,
+            severity: 'error',
+            line: row.line,
+            character: row.character,
+            code: 'scoped-missing-sys-id'
+          });
+        }
       } else if (!isValidSysId(row.sysId)) {
         diagnostics.push({
           message: `sys_id "${row.sysId}" is not a 32-character hex id.`,
@@ -148,7 +150,7 @@ export const scopedAppRecordUpdate: KindProfile = {
         if (row.sysId && fileMeta.sysId !== row.sysId.toLowerCase()) {
           diagnostics.push({
             message: `Filename sys_id does not match <sys_id> ${row.sysId}.`,
-            severity: 'error',
+            severity: 'warning',
             line: row.sysIdLine ?? row.line,
             character: row.sysIdCharacter ?? row.character,
             code: 'scoped-filename-sys-id-mismatch'

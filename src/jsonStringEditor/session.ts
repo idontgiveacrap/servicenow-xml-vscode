@@ -21,7 +21,7 @@ export interface EditorSession {
  */
 export class JsonStringSessionManager {
   private readonly byDraftKey = new Map<string, EditorSession>();
-  private readonly byTempBase = new Map<string, EditorSession>();
+  private readonly byTempPath = new Map<string, EditorSession>();
 
   /**
    * Open or focus a temp editor for the given hit with the provided code body.
@@ -31,6 +31,16 @@ export class JsonStringSessionManager {
     hostUri: vscode.Uri,
     code: string
   ): Promise<EditorSession> {
+    // The bytes the write-back is allowed to replace, captured now so the splice
+    // is authorized by content rather than by the offsets alone. An unreadable
+    // host leaves this empty, which forces the write-back to re-find the script.
+    const hostDoc = vscode.workspace.textDocuments.find(
+      (d) => d.uri.toString() === hostUri.toString()
+    );
+    const expectedSlice = hostDoc
+      ? hostDoc.getText().slice(hit.absoluteStart, hit.absoluteEnd)
+      : '';
+
     const existing = this.byDraftKey.get(hit.draftKey);
     if (existing && !this.isClosed(existing)) {
       existing.hit = hit;
@@ -39,7 +49,8 @@ export class JsonStringSessionManager {
         hostUri,
         hostVersion: hit.hostVersion,
         absoluteStart: hit.absoluteStart,
-        absoluteEnd: hit.absoluteEnd
+        absoluteEnd: hit.absoluteEnd,
+        expectedSlice
       };
       await this.replaceTempContent(existing, code);
       await vscode.window.showTextDocument(existing.tempUri, {
@@ -72,16 +83,21 @@ export class JsonStringSessionManager {
         hostUri,
         hostVersion: hit.hostVersion,
         absoluteStart: hit.absoluteStart,
-        absoluteEnd: hit.absoluteEnd
+        absoluteEnd: hit.absoluteEnd,
+        expectedSlice
       }
     };
     this.byDraftKey.set(hit.draftKey, session);
-    this.byTempBase.set(safeFileName, session);
+    this.byTempPath.set(tempPathKey(tempPath), session);
     return session;
   }
 
   /**
    * Resolve a session from a saved temp document.
+   *
+   * Keyed on the temp file's full path rather than its base name: the base name
+   * is derived from a hash of the draft key, so two scripts whose hashes collided
+   * would have resolved to one session and written back into the wrong field.
    */
   getSessionForTempDocument(
     document: vscode.TextDocument
@@ -89,8 +105,7 @@ export class JsonStringSessionManager {
     if (!document.uri.fsPath.includes('servicenow-xml-json-string-editor')) {
       return undefined;
     }
-    const base = path.parse(document.uri.fsPath).name;
-    return this.byTempBase.get(base);
+    return this.byTempPath.get(tempPathKey(document.uri.fsPath));
   }
 
   /**
@@ -109,7 +124,7 @@ export class JsonStringSessionManager {
       return;
     }
     this.byDraftKey.delete(session.draftKey);
-    this.byTempBase.delete(session.safeFileName);
+    this.byTempPath.delete(tempPathKey(session.tempUri.fsPath));
     try {
       if (fs.existsSync(session.tempUri.fsPath)) {
         fs.unlinkSync(session.tempUri.fsPath);
@@ -133,7 +148,7 @@ export class JsonStringSessionManager {
       }
     }
     this.byDraftKey.clear();
-    this.byTempBase.clear();
+    this.byTempPath.clear();
   }
 
   private isClosed(session: EditorSession): boolean {
@@ -161,10 +176,15 @@ export class JsonStringSessionManager {
     const last = hit.keyPath.split('.').pop() || 'script';
     const safe = last.replace(/\W/g, '_').slice(0, 30);
     const hash = crypto
-      .createHash('md5')
+      .createHash('sha256')
       .update(hit.draftKey)
       .digest('hex')
-      .slice(0, 8);
+      .slice(0, 16);
     return `${safe}_${hash}`;
   }
+}
+
+/** Temp-file map key; Windows paths compare case-insensitively. */
+function tempPathKey(fsPath: string): string {
+  return process.platform === 'win32' ? fsPath.toLowerCase() : fsPath;
 }

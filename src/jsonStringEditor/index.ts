@@ -11,7 +11,9 @@ import {
 } from '../scriptHits';
 import {
   deleteDraft,
+  draftsDirsForWindow,
   ensureDraftsDir,
+  listDrafts,
   loadDraft,
   promptDraftOpenChoice,
   resolveDraftsDir
@@ -39,6 +41,12 @@ export function registerJsonStringEditor(
       'servicenowXml.loadJsonStringDraft',
       async () => {
         await loadDraftIntoSession(context, sessions);
+      }
+    ),
+    vscode.commands.registerCommand(
+      'servicenowXml.manageJsonStringDrafts',
+      async () => {
+        await manageDrafts(context);
       }
     ),
     vscode.workspace.onDidSaveTextDocument(async (document) => {
@@ -77,15 +85,24 @@ async function openFromActiveEditor(
     return;
   }
 
-  const { dir, usedGlobalStorage } = resolveDraftsDir(
+  const { dir, usedGlobalStorage, workspaceRoot } = resolveDraftsDir(
     editor.document.uri,
     context.globalStorageUri
   );
-  ensureDraftsDir(dir, usedGlobalStorage);
+  ensureDraftsDir(dir, workspaceRoot);
 
   let code = hit.editorCode;
   const existing = loadDraft(dir, hit.draftKey);
-  if (existing) {
+  // A draft holding what the XML already holds represents no unsaved work, so
+  // there is nothing to choose between. Compared with line endings normalized
+  // because the temp editor may have saved CRLF over an LF export. The draft
+  // file is left in place: while it is pending a host save it is still the only
+  // copy outside the buffer.
+  const draftMatchesXml =
+    existing !== null &&
+    existing.code.replace(/\r\n/g, '\n') ===
+      hit.editorCode.replace(/\r\n/g, '\n');
+  if (existing && !draftMatchesXml) {
     const choice = await promptDraftOpenChoice(hit.keyPath);
     if (choice === 'cancel') {
       return;
@@ -106,6 +123,70 @@ async function openFromActiveEditor(
   }
 }
 
+/**
+ * List every embedded-script draft in the window and delete the selected ones.
+ *
+ * Drafts are written whenever a write-back is refused or is waiting on a host
+ * save, so they can outlive the edit that produced them; this is the only way to
+ * see them without going digging in `.servicenow-xml/`.
+ */
+async function manageDrafts(context: vscode.ExtensionContext): Promise<void> {
+  interface DraftPick extends vscode.QuickPickItem {
+    dir: string;
+    draftKey: string;
+  }
+
+  const picks: DraftPick[] = [];
+  for (const { dir, label } of draftsDirsForWindow(context.globalStorageUri)) {
+    for (const draft of listDrafts(dir)) {
+      const status = draft.meta.pendingHostSave
+        ? 'waiting for the XML file to be saved'
+        : draft.meta.lastError
+          ? `write-back failed: ${draft.meta.lastError}`
+          : 'saved';
+      picks.push({
+        label: draft.meta.keyPath || draft.meta.fieldName,
+        description: `${draft.meta.hostPath} · ${label}`,
+        detail: `${status} · ${draft.meta.savedAt} · ${draft.code.length} chars`,
+        dir,
+        draftKey: draft.meta.draftKey
+      });
+    }
+  }
+
+  if (picks.length === 0) {
+    void vscode.window.showInformationMessage(
+      'No embedded-script drafts are stored for this window.'
+    );
+    return;
+  }
+
+  const selected = await vscode.window.showQuickPick(picks, {
+    canPickMany: true,
+    title: `Embedded script drafts (${picks.length})`,
+    placeHolder: 'Select drafts to delete, or press Escape to just look'
+  });
+  if (!selected || selected.length === 0) {
+    return;
+  }
+
+  const confirm = await vscode.window.showWarningMessage(
+    `Delete ${selected.length} draft${selected.length === 1 ? '' : 's'}? The edited script in each is discarded.`,
+    { modal: true },
+    'Delete'
+  );
+  if (confirm !== 'Delete') {
+    return;
+  }
+
+  for (const pick of selected) {
+    deleteDraft(pick.dir, pick.draftKey);
+  }
+  void vscode.window.showInformationMessage(
+    `Deleted ${selected.length} draft${selected.length === 1 ? '' : 's'}.`
+  );
+}
+
 async function loadDraftIntoSession(
   context: vscode.ExtensionContext,
   sessions: JsonStringSessionManager
@@ -124,11 +205,11 @@ async function loadDraftIntoSession(
     );
     return;
   }
-  const { dir, usedGlobalStorage } = resolveDraftsDir(
+  const { dir, workspaceRoot } = resolveDraftsDir(
     editor.document.uri,
     context.globalStorageUri
   );
-  ensureDraftsDir(dir, usedGlobalStorage);
+  ensureDraftsDir(dir, workspaceRoot);
   const draft = loadDraft(dir, hit.draftKey);
   if (!draft) {
     void vscode.window.showInformationMessage('No draft for this JSON string.');
@@ -228,11 +309,11 @@ async function handleTempSave(
     'Dismiss'
   );
   if (picked === 'Open Draft') {
-    const { dir, usedGlobalStorage } = resolveDraftsDir(
+    const { dir, workspaceRoot } = resolveDraftsDir(
       session.binding.hostUri,
       context.globalStorageUri
     );
-    ensureDraftsDir(dir, usedGlobalStorage);
+    ensureDraftsDir(dir, workspaceRoot);
     const draftPath = path.join(dir, `${session.hit.draftKey}.js`);
     const draftDoc = await vscode.workspace.openTextDocument(
       vscode.Uri.file(draftPath)

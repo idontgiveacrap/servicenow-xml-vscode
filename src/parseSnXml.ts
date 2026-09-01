@@ -434,26 +434,40 @@ function extractReferenceFieldValue(
   return value.length > 0 ? value : undefined;
 }
 
+/**
+ * Read the row's own `<sys_id>`.
+ *
+ * Must scan direct children rather than the raw row text: rows such as
+ * `sys_metadata_link` and `sys_update_xml` carry a `<payload>` CDATA holding a
+ * nested record, and the payload's `<sys_id>` precedes the row's own field in
+ * the export's alphabetical field order.
+ */
 function extractSysId(
   rowXml: string,
   rowStart: number,
   fullText: string
 ): { sysId: string; line: number; character: number } | undefined {
-  const m = rowXml.match(
-    /<\s*sys_id\b[^>]*>\s*(?:<!\[CDATA\[([\s\S]*?)\]\]>|([^<]*))\s*<\/\s*sys_id\s*>/i
+  const child = scanDirectChildElements(rowXml).find(
+    (c) => c.name.toLowerCase() === 'sys_id'
   );
-  if (!m) {
+  if (!child) {
     return undefined;
   }
-  const rawValue = m[1] ?? m[2] ?? '';
-  const trimmedValue = rawValue.trim();
-  const sysId = m[1] != null ? trimmedValue : decodeXmlEntities(trimmedValue);
+  const classified = classifyLeafFieldBody(
+    rowXml.slice(child.bodyStart, child.bodyEnd)
+  );
+  if (!classified) {
+    return undefined;
+  }
+  const trimmedValue = classified.content.trim();
+  const sysId = classified.isCdata
+    ? trimmedValue
+    : decodeXmlEntities(trimmedValue);
   const localOffset =
-    rowXml.indexOf(m[0]) +
-    m[0].indexOf(rawValue) +
-    rawValue.indexOf(trimmedValue);
-  const abs = rowStart + localOffset;
-  const pos = offsetToPosition(fullText, abs);
+    child.bodyStart +
+    classified.innerStart +
+    classified.content.indexOf(trimmedValue);
+  const pos = offsetToPosition(fullText, rowStart + localOffset);
   return { sysId, line: pos.line, character: pos.character };
 }
 
