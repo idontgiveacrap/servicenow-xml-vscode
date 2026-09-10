@@ -14,6 +14,7 @@ import {
   SYS_ID_RE
 } from './kinds/types';
 import { SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
+import { looksLikeJavaScript } from './embedded/jsLikeness';
 
 /**
  * Convert a 0-based absolute offset into line/character using the source text.
@@ -62,6 +63,26 @@ export function decodeXmlEntities(raw: string): string {
       }
     }
   );
+}
+
+/**
+ * Collapse CRLF and lone CR to LF after entity decode.
+ *
+ * ServiceNow entity-encoded script fields often end each source line with
+ * `&#13;` and a literal newline in the XML file — together one CRLF line ending,
+ * not two logical newlines.
+ */
+export function normalizeDecodedLineEndings(text: string): string {
+  // SN exports end each line with &#13; before the XML file newline; on Windows
+  // that decodes to \r\r\n — collapse the whole run to one LF.
+  return text.replace(/\r+\n/g, '\n').replace(/\r/g, '\n');
+}
+
+/**
+ * Decode entity-encoded XML field text and normalize line endings for editing.
+ */
+export function decodeXmlFieldText(raw: string): string {
+  return normalizeDecodedLineEndings(decodeXmlEntities(raw));
 }
 
 /**
@@ -510,8 +531,8 @@ function extractEmbeddedFields(
       bodyStartCharacter: pos.character,
       content: classified.content,
       decodedContent: classified.isCdata
-        ? classified.content
-        : decodeXmlEntities(classified.content)
+        ? normalizeDecodedLineEndings(classified.content)
+        : decodeXmlFieldText(classified.content)
     });
   }
 
@@ -557,7 +578,75 @@ function extractEmbeddedFields(
     });
   }
 
+  pushFlowStepScriptValue(rowXml, rowStart, fullText, tableName, hits, seen);
+
   return hits;
+}
+
+/**
+ * Flow Designer stores step scripts in sys_variable_value rows (value field)
+ * whose document points at sys_hub_step_instance.
+ */
+function pushFlowStepScriptValue(
+  rowXml: string,
+  rowStart: number,
+  fullText: string,
+  tableName: string | undefined,
+  hits: EmbeddedFieldHit[],
+  seen: Set<string>
+): void {
+  if (tableName?.toLowerCase() !== 'sys_variable_value') {
+    return;
+  }
+  const documentChild = scanDirectChildElements(rowXml).find(
+    (c) => c.name.toLowerCase() === 'document'
+  );
+  if (!documentChild) {
+    return;
+  }
+  const documentName = decodeXmlEntities(
+    rowXml.slice(documentChild.bodyStart, documentChild.bodyEnd).trim()
+  ).trim();
+  if (documentName !== 'sys_hub_step_instance') {
+    return;
+  }
+  const valueChild = scanDirectChildElements(rowXml).find(
+    (c) => c.name.toLowerCase() === 'value'
+  );
+  if (!valueChild) {
+    return;
+  }
+  const classified = classifyLeafFieldBody(
+    rowXml.slice(valueChild.bodyStart, valueChild.bodyEnd)
+  );
+  if (!classified) {
+    return;
+  }
+  const decodedContent = classified.isCdata
+    ? normalizeDecodedLineEndings(classified.content)
+    : decodeXmlFieldText(classified.content);
+  if (!looksLikeJavaScript(decodedContent.trim()).ok) {
+    return;
+  }
+  const bodyStartOffset = rowStart + valueChild.bodyStart + classified.innerStart;
+  const bodyEndOffset = bodyStartOffset + classified.content.length;
+  const key = `value:${bodyStartOffset}`;
+  if (seen.has(key)) {
+    return;
+  }
+  seen.add(key);
+  const pos = offsetToPosition(fullText, bodyStartOffset);
+  hits.push({
+    fieldName: 'value',
+    language: 'javascript',
+    isCdata: classified.isCdata,
+    bodyStartOffset,
+    bodyEndOffset,
+    bodyStartLine: pos.line,
+    bodyStartCharacter: pos.character,
+    content: classified.content,
+    decodedContent
+  });
 }
 
 function languageForChild(

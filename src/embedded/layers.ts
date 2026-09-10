@@ -16,7 +16,10 @@
 import type { JSONVisitor } from 'jsonc-parser/lib/esm/main.js';
 import { visit } from 'jsonc-parser/lib/esm/main.js';
 import { decodeXmlEntities, encodeXmlEntities } from '../parseSnXml';
-import { buildDecodedToRawMap } from '../jsonStringEditor/escape';
+import {
+  buildNormalizedDecodedToRawMap,
+  rawOffsetToNormalized
+} from '../jsonStringEditor/escape';
 import { stripJavascriptWrapper } from '../jsonStringEditor/escape';
 import { resolveScriptProfile } from '../scriptProfile';
 import { looksLikeJavaScript } from './jsLikeness';
@@ -154,27 +157,56 @@ function descend(frame: Frame, depth: number): EmbeddedScriptHit | null {
   if (cdataMatch) {
     const innerStart =
       el.bodyStart + bodyRaw.indexOf(CDATA_OPEN) + CDATA_OPEN.length;
-    decoded = cdataMatch[1];
-    offsetInDecoded = frame.offset - innerStart;
-    toAbsolute = (o) => frame.toAbsolute(innerStart + o);
-    layers.push({ kind: 'cdata', fieldName: el.name });
-  } else if (bodyRaw.includes('&')) {
-    const map = buildDecodedToRawMap(bodyRaw, decodeXmlEntities);
-    if (!map) {
+    const rawCdata = cdataMatch[1];
+    const norm = buildNormalizedDecodedToRawMap(rawCdata, (s) => s);
+    if (!norm) {
       return null;
     }
-    decoded = decodeXmlEntities(bodyRaw);
+    decoded = norm.normalized;
+    const rawLength = rawCdata.length;
+    offsetInDecoded = rawOffsetToNormalized(
+      norm.normalizedToRaw,
+      frame.offset - innerStart
+    );
+    toAbsolute = (o) =>
+      frame.toAbsolute(
+        innerStart +
+          (o >= decoded.length ? rawLength : norm.normalizedToRaw[o])
+      );
+    layers.push({ kind: 'cdata', fieldName: el.name });
+  } else if (bodyRaw.includes('&')) {
+    const norm = buildNormalizedDecodedToRawMap(bodyRaw, decodeXmlEntities);
+    if (!norm) {
+      return null;
+    }
+    decoded = norm.normalized;
     const bodyStart = el.bodyStart;
     const rawLength = bodyRaw.length;
-    offsetInDecoded = rawOffsetToDecoded(map, frame.offset - bodyStart);
+    offsetInDecoded = rawOffsetToNormalized(
+      norm.normalizedToRaw,
+      frame.offset - bodyStart
+    );
     toAbsolute = (o) =>
-      frame.toAbsolute(bodyStart + (o < map.length ? map[o] : rawLength));
+      frame.toAbsolute(
+        bodyStart + (o >= decoded.length ? rawLength : norm.normalizedToRaw[o])
+      );
     layers.push({ kind: 'xmlText', fieldName: el.name });
   } else {
-    decoded = bodyRaw;
+    const norm = buildNormalizedDecodedToRawMap(bodyRaw, (s) => s);
+    if (!norm) {
+      return null;
+    }
+    decoded = norm.normalized;
     const bodyStart = el.bodyStart;
-    offsetInDecoded = frame.offset - bodyStart;
-    toAbsolute = (o) => frame.toAbsolute(bodyStart + o);
+    const rawLength = bodyRaw.length;
+    offsetInDecoded = rawOffsetToNormalized(
+      norm.normalizedToRaw,
+      frame.offset - bodyStart
+    );
+    toAbsolute = (o) =>
+      frame.toAbsolute(
+        bodyStart + (o >= decoded.length ? rawLength : norm.normalizedToRaw[o])
+      );
     layers.push({ kind: 'xmlText', fieldName: el.name });
   }
 
@@ -314,23 +346,6 @@ function looksLikeXmlDocument(text: string): boolean {
     return false;
   }
   return /^<\?xml\b/i.test(trimmed) || /^<record_update\b/i.test(trimmed);
-}
-
-/**
- * Largest decoded index whose raw start is at or before `rawOffset`.
- */
-function rawOffsetToDecoded(decodedToRaw: number[], rawOffset: number): number {
-  let best = -1;
-  for (let i = 0; i < decodedToRaw.length; i++) {
-    if (decodedToRaw[i] === rawOffset) {
-      return i;
-    }
-    if (decodedToRaw[i] > rawOffset) {
-      break;
-    }
-    best = i;
-  }
-  return best;
 }
 
 interface StringToken {

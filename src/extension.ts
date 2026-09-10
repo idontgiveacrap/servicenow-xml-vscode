@@ -32,6 +32,10 @@ import { registerEmbeddedFormatter } from './formatEmbedded';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
 import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
+import {
+  refreshSncContext,
+  registerPruneRedundantDeletes
+} from './pruneRedundantDeletes';
 
 const SORT_BY_PICKS: Array<{
   label: string;
@@ -187,6 +191,8 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.window.registerFileDecorationProvider(gitDecorations)
   );
 
+  void refreshSncContext();
+
   // Overlap indexing with view appearance when cache/gate already says SN workspace.
   maybeStartCatalogIndex(catalog, treeProvider, gate);
 
@@ -307,6 +313,7 @@ function activateDiagnosticsAndCommands(
   );
 
   registerGoToRecord(context, catalog);
+  registerPruneRedundantDeletes(context, catalog, treeView, treeProvider);
 
   context.subscriptions.push(
     vscode.commands.registerCommand('servicenowXml.showKind', () => {
@@ -508,6 +515,9 @@ function activateDiagnosticsAndCommands(
             treeProvider.setViewVisible(true);
           }
         }
+      }
+      if (e.affectsConfiguration('servicenowXml.snc.path')) {
+        void refreshSncContext();
       }
       if (
         isCursorHost() &&

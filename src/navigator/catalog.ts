@@ -2,7 +2,6 @@ import * as fs from 'fs/promises';
 import * as vscode from 'vscode';
 import {
   getIgnoreGlobs,
-  isPathIgnored,
   isWorkspaceSchemeUri
 } from '../ignorePaths';
 import {
@@ -11,7 +10,12 @@ import {
   PersistedCatalogRecord,
   readCatalogCache
 } from './catalogCache';
-import { extractRecordIdentities } from './recordName';
+import {
+  ExportRecord,
+  readExportRecords,
+  SCAN_CONCURRENCY,
+  scanExportRecords
+} from './scanExports';
 import { RecordUsageStore, uriKey } from './usage';
 
 /** Selectable Records navigator sort modes. */
@@ -31,18 +35,6 @@ const SORT_BY_VALUES: readonly NavigatorSortBy[] = [
 ] as const;
 
 export { uriKey } from './usage';
-
-/**
- * Directories never worth walking for exports. Spelled out because passing any
- * explicit exclude to `findFiles` drops the `files.exclude` defaults.
- */
-const SCAN_EXCLUDE_BASE = ['**/node_modules/**', '**/.git/**'];
-
-/**
- * Files read in parallel during a scan. Reads are I/O bound rather than CPU
- * bound, so this sits well above core count.
- */
-const SCAN_CONCURRENCY = 64;
 
 /** One indexed ServiceNow record tied to its export file. */
 export interface CatalogRecord {
@@ -556,33 +548,8 @@ export class RecordCatalog implements vscode.Disposable {
   private async scanWorkspace(): Promise<CatalogRecord[]> {
     const ignoreGlobs = getIgnoreGlobs();
     const excludeDelete = this.excludeDelete();
-    // Ignored paths are dropped during the walk rather than after it, so the
-    // search never reports files the catalog would discard anyway.
-    const uris = await vscode.workspace.findFiles(
-      '**/*.xml',
-      `{${[...SCAN_EXCLUDE_BASE, ...ignoreGlobs].join(',')}}`
-    );
-    const out: CatalogRecord[] = [];
-
-    // Workers pull the next file as they finish rather than advancing in fixed
-    // batches, so one multi-megabyte export cannot idle the other slots.
-    let next = 0;
-    await Promise.all(
-      Array.from({ length: Math.min(SCAN_CONCURRENCY, uris.length) }, async () => {
-        while (next < uris.length) {
-          const records = await this.readCatalogRecords(
-            uris[next++],
-            ignoreGlobs,
-            excludeDelete
-          );
-          for (const record of records) {
-            out.push(record);
-          }
-        }
-      })
-    );
-
-    return out;
+    const records = await scanExportRecords({ ignoreGlobs, excludeDelete });
+    return records.map((record) => this.withUsage(record));
   }
 
   /**
@@ -593,41 +560,20 @@ export class RecordCatalog implements vscode.Disposable {
     ignoreGlobs = getIgnoreGlobs(),
     excludeDelete = this.excludeDelete()
   ): Promise<CatalogRecord[]> {
-    if (isPathIgnored(uri.fsPath, ignoreGlobs)) {
-      return [];
-    }
-    let text: string;
-    try {
-      // Local files skip `workspace.fs`, whose calls round-trip to the main
-      // process. A scan reads every export in the workspace, so that per-call
-      // overhead outweighed the parsing. Virtual schemes keep the provider API.
-      text =
-        uri.scheme === 'file'
-          ? await fs.readFile(uri.fsPath, 'utf8')
-          : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
-    } catch {
-      return [];
-    }
-    const identities = extractRecordIdentities(text, uri.fsPath);
-    const relativePath = vscode.workspace.asRelativePath(uri, false);
-    return identities
-      .filter((identity) => !excludeDelete || identity.action !== 'DELETE')
-      .map((identity) => {
-        const usage = this.usage.get(uri, identity.sysId);
-        return {
-          table: identity.table,
-          displayName: identity.displayName,
-          sysId: identity.sysId,
-          action: identity.action,
-          apiName: identity.apiName,
-          sysModCount: identity.sysModCount,
-          startOffset: identity.startOffset,
-          openCount: usage?.openCount ?? 0,
-          lastOpenedAt: usage?.lastOpenedAt,
-          uri,
-          relativePath
-        };
-      });
+    const records = await readExportRecords(uri, { ignoreGlobs, excludeDelete });
+    return records.map((record) => this.withUsage(record));
+  }
+
+  /**
+   * Attach open-count metrics from the usage store.
+   */
+  private withUsage(record: ExportRecord): CatalogRecord {
+    const usage = this.usage.get(record.uri, record.sysId);
+    return {
+      ...record,
+      openCount: usage?.openCount ?? 0,
+      lastOpenedAt: usage?.lastOpenedAt
+    };
   }
 
   /**

@@ -4,7 +4,11 @@
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { parseSnXml, encodeXmlEntities } from '../src/parseSnXml';
+import {
+  decodeXmlFieldText,
+  parseSnXml,
+  encodeXmlEntities
+} from '../src/parseSnXml';
 import {
   detectCommonIndent,
   encodeHit,
@@ -134,6 +138,32 @@ section('JSON-string hit is scriptAt only');
   const fields = listScriptFields(parseSnXml(xml));
   assert.equal(fields.filter((h) => h.role === 'scriptField').length, 0);
   assert.ok(!fields.some((h) => h.code.includes('evaluate')));
+}
+
+section('entity-encoded &#13; line endings collapse to single LF');
+{
+  assert.equal(decodeXmlFieldText('a&#13;\nb'), 'a\nb');
+  assert.equal(decodeXmlFieldText('line&#13;\n'), 'line\n');
+  const fixturePath = path.join(
+    fixtures,
+    'sys_hub_action_type_definition_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
+  );
+  const text = fs.readFileSync(fixturePath, 'utf8');
+  const doc = parseSnXml(text);
+  const scriptFields = doc.rows
+    .flatMap((row) => row.embeddedFields)
+    .filter((f) => f.language === 'javascript');
+  assert.equal(scriptFields.length, 1);
+  const decoded = scriptFields[0].decodedContent;
+  assert.ok(!decoded.includes('\r'), 'decoded script must not retain CR');
+  assert.ok(
+    decoded.includes('//---validation---\n    const inputTask'),
+    '&#13; plus XML newline must be one LF, not a blank line'
+  );
+  assert.ok(
+    decoded.includes('inputs.task;\n\n    if (!inputTask'),
+    'intentional blank line between statements is preserved'
+  );
 }
 
 section('indent strip/restore + encode of a given formatted string');

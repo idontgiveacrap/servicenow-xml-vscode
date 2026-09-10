@@ -81,6 +81,15 @@ const samples: Array<{ label: string; file: string; expect: string; required?: b
     required: true
   },
   {
+    label: 'Fixture flow action entity-encoded script step',
+    file: path.join(
+      __dirname,
+      '../fixtures/scoped_app_record_update/sys_hub_action_type_definition_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
+    ),
+    expect: 'scoped_app_record_update',
+    required: true
+  },
+  {
     label: 'Fixture dictionary export',
     file: path.join(
       __dirname,

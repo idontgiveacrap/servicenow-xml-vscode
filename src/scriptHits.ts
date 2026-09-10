@@ -12,17 +12,19 @@ import {
   encodeThroughLayers
 } from './embedded/layers';
 import { detectJsonStringAtOffset } from './jsonStringEditor/detect';
-import { buildDecodedToRawMap } from './jsonStringEditor/escape';
 import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from './kinds/types';
 import { detectSysAppMetadata, JavaScriptSupport } from './javascriptSupport';
 import {
   decodeXmlEntities,
+  decodeXmlFieldText,
   isPrimaryAction,
   isScriptTypedField,
+  normalizeDecodedLineEndings,
   offsetToPosition,
   parseSnXml,
   scanDirectChildElements
 } from './parseSnXml';
+import { buildNormalizedDecodedToRawMap } from './jsonStringEditor/escape';
 import {
   resolveRowTechnicalScope,
   rowDeclarationName
@@ -367,17 +369,19 @@ function payloadScriptFieldHits(
   }
 
   let toRawInPayload = (offset: number): number => offset;
-  if (!payload.isCdata) {
-    const decodedToRaw = buildDecodedToRawMap(
-      payload.rawBody,
-      decodeXmlEntities
-    );
-    if (!decodedToRaw) {
-      return [];
-    }
+  const payloadNorm = buildNormalizedDecodedToRawMap(
+    payload.rawBody,
+    payload.isCdata ? (s) => s : decodeXmlEntities
+  );
+  if (!payloadNorm) {
+    return [];
+  }
+  if (!payload.isCdata || payload.rawBody !== payload.decoded) {
     const rawLength = payload.rawBody.length;
     toRawInPayload = (offset) =>
-      offset < decodedToRaw.length ? decodedToRaw[offset] : rawLength;
+      offset < payloadNorm.normalizedToRaw.length
+        ? payloadNorm.normalizedToRaw[offset]
+        : rawLength;
   }
 
   const inner = parseSnXml(payload.decoded);
@@ -450,9 +454,10 @@ function locatePayloadBody(
     const cdataMatch = /^\s*<!\[CDATA\[([\s\S]*?)\]\]>\s*$/.exec(bodyRaw);
     if (cdataMatch) {
       const innerStart = bodyRaw.indexOf('<![CDATA[') + '<![CDATA['.length;
+      const rawCdata = cdataMatch[1];
       return {
-        decoded: cdataMatch[1],
-        rawBody: cdataMatch[1],
+        decoded: normalizeDecodedLineEndings(rawCdata),
+        rawBody: rawCdata,
         bodyAbs: rowStart + child.bodyStart + innerStart,
         isCdata: true
       };
@@ -461,7 +466,7 @@ function locatePayloadBody(
       return null;
     }
     return {
-      decoded: decodeXmlEntities(bodyRaw),
+      decoded: decodeXmlFieldText(bodyRaw),
       rawBody: bodyRaw,
       bodyAbs: rowStart + child.bodyStart,
       isCdata: false

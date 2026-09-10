@@ -3,14 +3,20 @@ import type { JSONVisitor } from 'jsonc-parser/lib/esm/main.js';
 import { visit } from 'jsonc-parser/lib/esm/main.js';
 import {
   decodeXmlEntities,
+  decodeXmlFieldText,
   extractRowElement,
   isPrimaryAction,
+  normalizeDecodedLineEndings,
   offsetToPosition,
   parseSnXml
 } from '../parseSnXml';
 import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from '../kinds/types';
 import type { EncodingLayer } from '../embedded/layers';
-import { buildDecodedToRawMap, stripJavascriptWrapper } from './escape';
+import {
+  buildNormalizedDecodedToRawMap,
+  rawOffsetToNormalized,
+  stripJavascriptWrapper
+} from './escape';
 
 export interface JsonStringHit {
   hostPath: string;
@@ -98,18 +104,19 @@ export function detectJsonStringAtOffset(
   const decoded = field.decodedContent;
   const offsetInDecoded = absoluteOffset - field.bodyStartOffset;
 
-  // When entity-encoded, absoluteOffset is in raw space — map to decoded.
+  // When raw differs from normalized field text, absoluteOffset is in raw space.
   let decodedOffset = offsetInDecoded;
-  let decodedToRaw: number[] | null = null;
+  let normalizedToRaw: number[] | null = null;
   if (field.content !== field.decodedContent) {
-    decodedToRaw = buildDecodedToRawMap(field.content, decodeXmlEntities);
-    if (!decodedToRaw) {
+    const norm = buildNormalizedDecodedToRawMap(field.content, decodeXmlEntities);
+    if (!norm) {
       return null;
     }
-    decodedOffset = rawOffsetToDecoded(decodedToRaw, offsetInDecoded);
+    decodedOffset = rawOffsetToNormalized(norm.normalizedToRaw, offsetInDecoded);
     if (decodedOffset < 0) {
       return null;
     }
+    normalizedToRaw = norm.normalizedToRaw;
   }
 
   const found = findStringLiteralAtDecodedOffset(decoded, decodedOffset);
@@ -122,9 +129,9 @@ export function detectJsonStringAtOffset(
 
   let rawStartInField = found.tokenStart;
   let rawEndInField = found.tokenEnd;
-  if (decodedToRaw) {
-    const mapped = mapTokenViaDecodedToRaw(
-      decodedToRaw,
+  if (normalizedToRaw) {
+    const mapped = mapTokenViaNormalizedToRaw(
+      normalizedToRaw,
       found.tokenStart,
       found.tokenEnd,
       field.content.length
@@ -216,8 +223,8 @@ function collectPayloadJsonFields(
     return [];
   }
   const payload = payloadEl.isCdata
-    ? payloadEl.content
-    : decodeXmlEntities(payloadEl.content);
+    ? normalizeDecodedLineEndings(payloadEl.content)
+    : decodeXmlFieldText(payloadEl.content);
   if (!payload.trim()) {
     return [];
   }
@@ -242,14 +249,19 @@ function collectPayloadJsonFields(
   // Getting this wrong points write-back at the wrong bytes, not just a bad
   // squiggle.
   let toRawInPayload = (offset: number): number => offset;
-  if (!payloadEl.isCdata) {
-    const decodedToRaw = buildDecodedToRawMap(payloadEl.content, decodeXmlEntities);
-    if (!decodedToRaw) {
-      return [];
-    }
+  const payloadNorm = buildNormalizedDecodedToRawMap(
+    payloadEl.content,
+    payloadEl.isCdata ? (s) => s : decodeXmlEntities
+  );
+  if (!payloadNorm) {
+    return [];
+  }
+  if (!payloadEl.isCdata || payloadEl.content !== payload) {
     const rawLength = payloadEl.content.length;
     toRawInPayload = (offset) =>
-      offset < decodedToRaw.length ? decodedToRaw[offset] : rawLength;
+      offset < payloadNorm.normalizedToRaw.length
+        ? payloadNorm.normalizedToRaw[offset]
+        : rawLength;
   }
 
   const inner = parseSnXml(payload);
@@ -457,12 +469,12 @@ function findStringByKeyPath(
   let rawStartInField = found.tokenStart;
   let rawEndInField = found.tokenEnd;
   if (field.content !== field.decodedContent) {
-    const decodedToRaw = buildDecodedToRawMap(field.content, decodeXmlEntities);
-    if (!decodedToRaw) {
+    const norm = buildNormalizedDecodedToRawMap(field.content, decodeXmlEntities);
+    if (!norm) {
       return null;
     }
-    const mapped = mapTokenViaDecodedToRaw(
-      decodedToRaw,
+    const mapped = mapTokenViaNormalizedToRaw(
+      norm.normalizedToRaw,
       found.tokenStart,
       found.tokenEnd,
       field.content.length
@@ -495,32 +507,22 @@ function findStringByKeyPath(
   };
 }
 
-function rawOffsetToDecoded(decodedToRaw: number[], rawOffset: number): number {
-  // Prefer the decoded index whose raw start equals rawOffset; else last where rawStart <= rawOffset.
-  let best = -1;
-  for (let i = 0; i < decodedToRaw.length; i++) {
-    if (decodedToRaw[i] === rawOffset) {
-      return i;
-    }
-    if (decodedToRaw[i] <= rawOffset) {
-      best = i;
-    }
-  }
-  return best;
-}
-
-function mapTokenViaDecodedToRaw(
-  decodedToRaw: number[],
+function mapTokenViaNormalizedToRaw(
+  normalizedToRaw: number[],
   tokenStart: number,
   tokenEnd: number,
   rawLength: number
 ): { rawStart: number; rawEnd: number } | null {
-  if (tokenStart < 0 || tokenEnd > decodedToRaw.length || tokenStart >= tokenEnd) {
+  if (
+    tokenStart < 0 ||
+    tokenEnd > normalizedToRaw.length ||
+    tokenStart >= tokenEnd
+  ) {
     return null;
   }
-  const rawStart = decodedToRaw[tokenStart];
+  const rawStart = normalizedToRaw[tokenStart];
   const rawEnd =
-    tokenEnd === decodedToRaw.length ? rawLength : decodedToRaw[tokenEnd];
+    tokenEnd === normalizedToRaw.length ? rawLength : normalizedToRaw[tokenEnd];
   if (rawStart == null || rawEnd == null || rawEnd < rawStart) {
     return null;
   }

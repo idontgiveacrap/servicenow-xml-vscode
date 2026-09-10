@@ -412,6 +412,12 @@ If the configured Python cannot `import mcp.server.fastmcp`, helper install runs
 
 A Cursor rule is included which references snc (ServiceNow CLI utility) I recommend installing it and pointing it to a PDI or non-production environment with non-sensitive data so Cursor can learn about ServiceNow the way you would and point you to exact URIs.
 
+### Prune redundant DELETE files
+
+**ServiceNow XML: Prune redundant DELETE files…** (Ctrl+Shift+P, also on Records navigator context menus) uses read-only `snc record query` to find `action="DELETE"` exports whose `sys_id` is not on the instance for the selected CLI profile, then prunes them from the repo. Files whose rows are all pruned are deleted; a file that mixes DELETE with other actions keeps the file and loses only the pruned DELETE rows. The command is hidden unless `snc` is on PATH (or `servicenowXml.snc.path`). It scans `author_elective_update` even when that folder is ignored for lint/navigator.
+
+Testing note: testing has not shown `snc` applying table ACL-style restrictions; results suggest the CLI may bypass ACLs. The command still warns that existence is only checked for the selected profile, and it will not delete files when a query errors or returns an unexpected shape.
+
 VS Code installs ignore this path entirely; lint/navigator behavior is unchanged.
 
 ## Fixtures

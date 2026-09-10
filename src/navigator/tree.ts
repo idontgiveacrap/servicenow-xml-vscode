@@ -534,6 +534,19 @@ export class RecordsTreeProvider
   }
 
   /**
+   * Catalog rows represented by a tree node (a record leaf or a table's visible children).
+   */
+  getRecordsForNode(node: TreeNode): CatalogRecord[] {
+    if (node.kind === 'record') {
+      return [node.record];
+    }
+    if (node.kind === 'table') {
+      return this.filteredRecordsForTable(node.table);
+    }
+    return [];
+  }
+
+  /**
    * Records under a table, optionally narrowed by the active filter query.
    */
   private filteredRecordsForTable(table: string): CatalogRecord[] {

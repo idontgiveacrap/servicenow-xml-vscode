@@ -1,7 +1,9 @@
 import type { Linter as LinterType, Rule, Scope } from 'eslint';
+import { buildNormalizedDecodedToRawMap } from './jsonStringEditor/escape';
 import { ScriptRegion, mapScriptOffsetToXml } from './scriptRegions';
 import { SnDiagnostic } from './kinds/types';
 import { JavaScriptSupport } from './javascriptSupport';
+import { decodeXmlEntities } from './parseSnXml';
 import {
   globalsForDeclarations,
   ScopeList,
@@ -521,9 +523,29 @@ function configFor(
 }
 
 /**
+ * Map a 0-based offset in normalized field text back into the raw XML body.
+ */
+function normalizedDecodedOffsetToRawOffset(
+  encoded: string,
+  normalizedOffset: number
+): number {
+  if (normalizedOffset <= 0) {
+    return 0;
+  }
+  const norm = buildNormalizedDecodedToRawMap(encoded, decodeXmlEntities);
+  if (!norm) {
+    return legacyDecodedOffsetToRawOffset(encoded, normalizedOffset);
+  }
+  if (normalizedOffset >= norm.normalized.length) {
+    return encoded.length;
+  }
+  return norm.normalizedToRaw[normalizedOffset];
+}
+
+/**
  * Map a 0-based offset in entity-decoded script text back into the raw XML body.
  */
-function decodedOffsetToRawOffset(encoded: string, decodedOffset: number): number {
+function legacyDecodedOffsetToRawOffset(encoded: string, decodedOffset: number): number {
   if (decodedOffset <= 0) {
     return 0;
   }
@@ -598,7 +620,10 @@ function mapDecodedLintPosToXml(
     return mapScriptOffsetToXml(region, lineInDecoded, columnInDecoded);
   }
 
-  const rawOffset = decodedOffsetToRawOffset(region.content, offsetInDecoded);
+  const rawOffset = normalizedDecodedOffsetToRawOffset(
+    region.content,
+    offsetInDecoded
+  );
   let xmlLine = region.bodyStartLine;
   let xmlChar = region.bodyStartCharacter;
   for (let i = 0; i < rawOffset && i < region.content.length; i++) {

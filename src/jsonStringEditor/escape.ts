@@ -71,6 +71,61 @@ export function wouldBreakCdata(replacement: string): boolean {
 }
 
 /**
+ * Build a normalized→raw offset map after entity decode and CRLF collapse.
+ * normalizedToRaw[i] is the start index in raw of normalized character i.
+ * Returns null if the decode round-trip does not match decode(raw).
+ */
+export function buildNormalizedDecodedToRawMap(
+  raw: string,
+  decode: (s: string) => string
+): { normalized: string; normalizedToRaw: number[] } | null {
+  const decodedToRaw = buildDecodedToRawMap(raw, decode);
+  if (!decodedToRaw) {
+    return null;
+  }
+  const decoded = decode(raw);
+  const normalizedChars: string[] = [];
+  const normalizedToRaw: number[] = [];
+  for (let di = 0; di < decoded.length; di++) {
+    if (decoded.charCodeAt(di) === 13) {
+      const rawStart = decodedToRaw[di];
+      while (di < decoded.length && decoded.charCodeAt(di) === 13) {
+        di++;
+      }
+      if (di < decoded.length && decoded.charCodeAt(di) === 10) {
+        di++;
+      }
+      normalizedChars.push('\n');
+      normalizedToRaw.push(rawStart);
+      continue;
+    }
+    normalizedChars.push(decoded[di]);
+    normalizedToRaw.push(decodedToRaw[di]);
+  }
+  return { normalized: normalizedChars.join(''), normalizedToRaw };
+}
+
+/**
+ * Largest normalized index whose raw start is at or before `rawOffset`.
+ */
+export function rawOffsetToNormalized(
+  normalizedToRaw: number[],
+  rawOffset: number
+): number {
+  let best = -1;
+  for (let i = 0; i < normalizedToRaw.length; i++) {
+    if (normalizedToRaw[i] === rawOffset) {
+      return i;
+    }
+    if (normalizedToRaw[i] > rawOffset) {
+      break;
+    }
+    best = i;
+  }
+  return best;
+}
+
+/**
  * Build a decoded→raw offset map for entity-encoded XML text.
  * decodedToRaw[i] is the start index in raw of the character at decoded[i].
  * Returns null if the decode round-trip does not match decodeXmlEntities(raw).

@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.9.8",
+  "version": "2.10.2",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -83,6 +83,10 @@
       {
         "command": "servicenowXml.manageJsonStringDrafts",
         "title": "ServiceNow XML: Manage Embedded Script Drafts…"
+      },
+      {
+        "command": "servicenowXml.pruneRedundantDeletes",
+        "title": "ServiceNow XML: Prune redundant DELETE files…"
       }
     ],
     "viewsContainers": {
@@ -117,6 +121,12 @@
       ]
     },
     "menus": {
+      "commandPalette": [
+        {
+          "command": "servicenowXml.pruneRedundantDeletes",
+          "when": "servicenowXml.hasSnc"
+        }
+      ],
       "view/title": [
         {
           "command": "servicenowXml.navigator.filter",
@@ -149,6 +159,11 @@
           "command": "servicenowXml.revealInFileExplorer",
           "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
           "group": "navigation@2"
+        },
+        {
+          "command": "servicenowXml.pruneRedundantDeletes",
+          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record || viewItem == servicenowXml.table)",
+          "group": "1_modification@1"
         }
       ],
       "editor/context": [
@@ -250,6 +265,11 @@
           "type": "string",
           "default": "python",
           "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference), and sessionStart hook."
+        },
+        "servicenowXml.snc.path": {
+          "type": "string",
+          "default": "snc",
+          "description": "ServiceNow CLI executable used to query the instance when pruning redundant DELETE exports. Leave as snc when the CLI is on PATH."
         }
       }
     },
@@ -278,7 +298,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",
