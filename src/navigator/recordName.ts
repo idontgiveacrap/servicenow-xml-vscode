@@ -1,5 +1,9 @@
 import { parseExportFileName } from '../fileName';
-import { decodeXmlEntities, scanActionRowBounds } from '../parseSnXml';
+import {
+  decodeXmlEntities,
+  extractRowFieldText,
+  scanActionRowBounds
+} from '../parseSnXml';
 
 /** Lightweight record identity extracted from a ServiceNow export XML. */
 export interface RecordIdentity {
@@ -80,23 +84,25 @@ function buildIdentity(
   }
 
   const sysId =
-    extractElementText(recordText, 'sys_id') || fallbackSysId || undefined;
+    extractRowFieldText(recordText, 'sys_id') || fallbackSysId || undefined;
 
-  const name = extractElementText(recordText, 'name');
-  const label = extractElementText(recordText, 'label');
-  const displayValue = extractElementText(recordText, 'display_value');
-  const sysName = extractElementText(recordText, 'sys_name');
-  const apiName = extractElementText(recordText, 'api_name');
+  const name = extractRowFieldText(recordText, 'name');
+  const label = extractRowFieldText(recordText, 'label');
+  const title = extractRowFieldText(recordText, 'title');
+  const displayValue = extractRowFieldText(recordText, 'display_value');
+  const sysName = extractRowFieldText(recordText, 'sys_name');
+  const apiName = extractRowFieldText(recordText, 'api_name');
   const targetName =
     table === 'sys_update_xml'
-      ? extractElementText(recordText, 'target_name')
+      ? extractRowFieldText(recordText, 'target_name')
       : undefined;
   const sysModCount = parseSysModCount(
-    extractElementText(recordText, 'sys_mod_count')
+    extractRowFieldText(recordText, 'sys_mod_count')
   );
 
   // Prefer the human-facing fields; `sys_name` is export-derived and stays last.
-  let displayName = targetName || displayValue || label || name || sysName;
+  // Consider adding display_value attribute parsing and contextual names, but this handles most cases.
+  let displayName = targetName || displayValue || label || title || name || sysId || sysName;
   if (!displayName && apiName) {
     const dot = apiName.lastIndexOf('.');
     displayName = dot >= 0 ? apiName.slice(dot + 1) : apiName;
@@ -230,22 +236,6 @@ function findPrimaryRows(text: string): PrimaryRowHit[] {
     });
   }
   return rows;
-}
-
-/**
- * Return decoded text or CDATA content of the first matching simple element.
- */
-function extractElementText(text: string, elementName: string): string | undefined {
-  const re = new RegExp(
-    `<\\s*${escapeRegExp(elementName)}\\b[^>]*>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([^<]*))\\s*</\\s*${escapeRegExp(elementName)}\\s*>`,
-    'i'
-  );
-  const m = text.match(re);
-  if (!m) {
-    return undefined;
-  }
-  const value = (m[1] ?? decodeXmlEntities(m[2] ?? '')).trim();
-  return value || undefined;
 }
 
 function escapeRegExp(s: string): string {

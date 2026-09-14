@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
+import { sncCliExists } from './snc/cli';
 
 const execFileAsync = promisify(execFile);
 
@@ -49,7 +50,8 @@ export const MCP_SERVERS = {
   docs: `${PLUGIN_ID}-docs`,
   uiExamples: `${PLUGIN_ID}-ui-examples`,
   dbSchema: `${PLUGIN_ID}-db-schema`,
-  scripting: `${PLUGIN_ID}-scripting`
+  scripting: `${PLUGIN_ID}-scripting`,
+  liveInstance: `${PLUGIN_ID}-instance`
 } as const;
 
 /** Prior MCP ids / display names — unregistered and removed from mcp.json on install. */
@@ -260,6 +262,14 @@ async function installCursorHelpersCore(
     path.join(scriptsDest, 'scripting_mcp_server.py')
   );
   syncedFiles += syncFile(
+    path.join(bundleRoot, 'scripts', 'instance_mcp_server.py'),
+    path.join(scriptsDest, 'instance_mcp_server.py')
+  );
+  syncedFiles += syncFile(
+    path.join(bundleRoot, 'scripts', 'mcp_usage_log.py'),
+    path.join(scriptsDest, 'mcp_usage_log.py')
+  );
+  syncedFiles += syncFile(
     path.join(bundleRoot, 'hooks', 'session_start_index.py'),
     path.join(hooksDest, 'session_start_index.py')
   );
@@ -340,6 +350,15 @@ async function installCursorHelpersCore(
     messages.push('sessionStart index hook skipped (no Python)');
   }
 
+  const sncPath = cfg.get<string>('snc.path', 'snc') || 'snc';
+  const includeInstance =
+    pythonOk && mcpPkgOk && (await sncCliExists(sncPath));
+  if (pythonOk && mcpPkgOk && !includeInstance) {
+    messages.push(
+      `snc not available (${sncPath}); skipping ${MCP_SERVERS.liveInstance}.`
+    );
+  }
+
   const { registered, unregistered } = registerMcpServers({
     pythonPath,
     schemaServerScript: path.join(scriptsDest, 'db_schema_mcp_server.py'),
@@ -348,7 +367,15 @@ async function installCursorHelpersCore(
     scriptingServerScript: path.join(scriptsDest, 'scripting_mcp_server.py'),
     scriptingRefPath: scriptingRefGz,
     jsPerformancePath: fs.existsSync(jsPerformanceRef) ? jsPerformanceRef : '',
-    includeScripting: pythonOk && mcpPkgOk && fs.existsSync(scriptingRefGz)
+    includeScripting: pythonOk && mcpPkgOk && fs.existsSync(scriptingRefGz),
+    instanceServerScript: path.join(scriptsDest, 'instance_mcp_server.py'),
+    sncPath,
+    sncProfileAllowlist: JSON.stringify(
+      (cfg.get<string[]>('snc.mcpProfiles', []) || [])
+        .map((name) => name.trim())
+        .filter(Boolean)
+    ),
+    includeInstance
   });
 
   const pluginPath = registerPluginPath(pluginDest);
@@ -486,7 +513,7 @@ async function ensurePythonMcpPackage(
 
   if (options.interactive) {
     const choice = await vscode.window.showInformationMessage(
-      `Python package "mcp" is required for local MCP servers (${MCP_SERVERS.dbSchema}, ${MCP_SERVERS.scripting}). Install with ${pythonPath} -m pip install mcp?`,
+      `Python package "mcp" is required for local MCP servers (${MCP_SERVERS.dbSchema}, ${MCP_SERVERS.scripting}, ${MCP_SERVERS.liveInstance}). Install with ${pythonPath} -m pip install mcp?`,
       'Install',
       'Skip'
     );
@@ -573,6 +600,10 @@ function registerMcpServers(args: {
   scriptingRefPath: string;
   jsPerformancePath: string;
   includeScripting: boolean;
+  instanceServerScript: string;
+  sncPath: string;
+  sncProfileAllowlist: string;
+  includeInstance: boolean;
 }): { registered: string[]; unregistered: string[] } {
   const cursor = getCursorApi();
   const registered: string[] = [];
@@ -650,6 +681,28 @@ function registerMcpServers(args: {
     } catch (error) {
       console.warn(
         '[servicenow-xml] Scripting MCP register failed (non-fatal):',
+        error
+      );
+    }
+  }
+
+  if (args.includeInstance) {
+    try {
+      cursor.mcp.registerServer({
+        name: MCP_SERVERS.liveInstance,
+        server: {
+          command: args.pythonPath,
+          args: [args.instanceServerScript],
+          env: {
+            SNC_PATH: args.sncPath,
+            SNC_PROFILE_ALLOWLIST: args.sncProfileAllowlist
+          }
+        }
+      });
+      registered.push(MCP_SERVERS.liveInstance);
+    } catch (error) {
+      console.warn(
+        '[servicenow-xml] Instance MCP register failed (non-fatal):',
         error
       );
     }
@@ -810,6 +863,8 @@ function writeManifest(
     path.join(paths.scriptsDest, 'servicenow_repo_index.py'),
     path.join(paths.scriptsDest, 'db_schema_mcp_server.py'),
     path.join(paths.scriptsDest, 'scripting_mcp_server.py'),
+    path.join(paths.scriptsDest, 'instance_mcp_server.py'),
+    path.join(paths.scriptsDest, 'mcp_usage_log.py'),
     path.join(paths.hooksDest, 'session_start_index.py'),
     paths.schemaCsvGz,
     paths.scriptingRefGz,

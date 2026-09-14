@@ -414,8 +414,8 @@ function scanRecordRows(text: string): RecordRow[] {
       text,
       bounds.tableName
     );
-    const sysScopeValue = extractReferenceFieldValue(rowXml, 'sys_scope');
-    const sysPackageValue = extractReferenceFieldValue(rowXml, 'sys_package');
+    const sysScopeValue = extractRowFieldText(rowXml, 'sys_scope');
+    const sysPackageValue = extractRowFieldText(rowXml, 'sys_package');
 
     rows.push({
       tableName: bounds.tableName,
@@ -441,9 +441,9 @@ function scanRecordRows(text: string): RecordRow[] {
 }
 
 /**
- * Read the body text of a reference-like field (`sys_scope`, `sys_package`, …).
+ * Decoded text of the first matching simple child element in `rowXml`.
  */
-function extractReferenceFieldValue(
+export function extractRowFieldText(
   rowXml: string,
   fieldName: string
 ): string | undefined {
@@ -452,7 +452,7 @@ function extractReferenceFieldValue(
     return undefined;
   }
   const value = (el.isCdata ? el.content : decodeXmlEntities(el.content)).trim();
-  return value.length > 0 ? value : undefined;
+  return value || undefined;
 }
 
 /**

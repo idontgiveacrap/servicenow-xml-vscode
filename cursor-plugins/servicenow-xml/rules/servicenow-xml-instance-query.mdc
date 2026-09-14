@@ -1,23 +1,24 @@
 ---
-description: When and how to query the live ServiceNow instance via the snc CLI (read-only by default)
-globs: "**/update/**/*.xml,**/sys_app_*.xml"
-alwaysApply: false
+description: When and how to query the live ServiceNow instance via the servicenow-xml-instance MCP (read-only)
+alwaysApply: true
 ---
 <!-- managed-by: servicenow-xml -->
 
-# ServiceNow instance queries (`snc`)
+# ServiceNow instance queries (`servicenow-xml-instance`)
 
-When answering questions or debugging, prefer the **repo** for exported source and the **servicenow-xml-docs** MCP for platform behavior. When those sources are insufficient, **suggest querying the live instance** with the ServiceNow CLI (`snc`) and run **read-only** queries when they would unblock the task.
+When answering questions or debugging, prefer the **repo** for exported source and the **servicenow-xml-docs** MCP for platform behavior. When those sources are insufficient, **suggest querying the live instance** with the **servicenow-xml-instance** MCP and run **read-only** tools when they would unblock the task.
+
+Do not shell out to `snc` for reads. Use the MCP tools instead. Command: **`snc`** (ServiceNow CLI), not `@servicenow/cli` (Now CLI for component build/deploy).
 
 ## Read-only by default
 
-- Only `query` and `get` (record reads) may be run without explicit user approval.
-- **Any** operation that could change instance data or configuration — `create`, `update`, `delete`, `import`, `upload`, or executing scripts that write — must be **explicitly requested by the user** for that specific change. Do not run mutating commands to "unblock" a task on your own initiative.
+- MCP tools are `list_profiles`, `record_query`, and `record_get` only.
+- **Any** operation that could change instance data or configuration — `snc` `create`, `update`, `delete`, `import`, `upload`, or executing scripts that write — must be **explicitly requested by the user** for that specific change. Do not run mutating commands to "unblock" a task on your own initiative.
 - When a task seems to need a write, describe the exact command and records it would affect and **ask first**.
 
 ## When to query the instance (reads)
 
-Suggest or run `snc record query` / `get` when you need:
+Use `record_query` / `record_get` when you need:
 
 - **Live record data** — task state, entity rows, approval status, field values on real records
 - **Runtime configuration** — config unavailable in repo
@@ -27,19 +28,13 @@ Suggest or run `snc record query` / `get` when you need:
 
 Do **not** query the instance when the repo or docs already answer the question.
 
-## CLI and profile
+## Profiles
 
-- Command: **`snc`** (ServiceNow CLI), not `@servicenow/cli` (Now CLI for component build/deploy)
-- Default profile: `snc configure profile list`
-- Read commands: `query`, `get`
-- Write commands (**explicit user request only**): `create`, `update`, `delete`
+Call `list_profiles` to see which instances the MCP may use (name, host, username, `is_default`).
 
-```powershell
-snc record query -t <table> --fields "col1,col2" -q "<encoded_query>" --limit 10
-snc record get -t <table> -s <sys_id>
-```
-
-Use `-o table` for readable output; default is JSON.
+- Omit `profile` on query/get to use the CLI default profile.
+- Pass `profile` when querying a non-default instance. Prefer the most relevant instance for the question.
+- If `servicenowXml.snc.mcpProfiles` is set, only those names appear and are queryable. Omit-profile fails unless the CLI default is on that allowlist.
 
 ## Finding the right table
 
@@ -47,16 +42,18 @@ This rule is generic — do not assume any specific scoped-app tables. Discover 
 
 - **App scope / tables**: the export marker `{sys_id}/sys_app_{sys_id}.xml` and `sys_scope` / `sys_db_object` rows in the repo name the application's tables.
 - **Custom class rows**: many app records are stored on a base table (e.g. `task`) with `sys_class_name=<scoped_table>`; if a direct query on the scoped table fails ACL, query the base table filtered by `sys_class_name` instead.
-- **Schema**: use the **servicenow-xml-db-schema** MCP (bundled `sys_dictionary` CSV) for offline field/table lookups, or `snc` against `sys_dictionary` / `sys_db_object` for live schema.
+- **Schema**: use the **servicenow-xml-db-schema** MCP (bundled `sys_dictionary` CSV) for offline field/table lookups, or `record_query` against `sys_dictionary` / `sys_db_object` for live schema.
+
+Pass only the `fields` you need on `record_query` (limit is capped at 100).
 
 ## Source priority
 
 1. **Repo** — implementation, dictionary, exported ACL/XML
 2. **servicenow-xml-docs** MCP — platform APIs and product behavior
 3. **servicenow-xml-db-schema** MCP — offline table/field schema from the bundled `sys_dictionary` CSV
-4. **`snc` instance** — live data, runtime config, ACL outcomes, deployment state (reads by default)
+4. **servicenow-xml-instance** MCP — live data, runtime config, ACL outcomes, deployment state (reads by default)
 
-State which source answered the question. Use `snc` against `sys_dictionary` / `sys_db_object` when you need **live** instance schema.
+State which source answered the question, including the profile/host when the instance MCP was used.
 
 To refresh the bundled CSV on an instance:
 
@@ -66,6 +63,6 @@ To refresh the bundled CSV on an instance:
 
 ## Limitations
 
-- Results reflect the **configured profile user** (ACL-bound)
-- No aggregations — use `--limit`/`--offset`; post-process counts if needed
+- Results reflect the **CLI profile user**. Tests suggest `snc` may not apply table ACL-style restrictions the way the UI does.
+- No aggregations — use `limit`/`offset`; post-process counts if needed
 - Not a substitute for reading script bodies in the repo

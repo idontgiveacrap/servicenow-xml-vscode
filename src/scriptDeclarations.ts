@@ -4,6 +4,7 @@ import { ParsedDocument, RecordRow, SYS_ID_RE } from './kinds/types';
 import {
   decodeXmlEntities,
   extractRowElement,
+  extractRowFieldText,
   isPrimaryAction,
   parseSnXml
 } from './parseSnXml';
@@ -95,7 +96,7 @@ export function resolveRowTechnicalScope(
 ): string | undefined {
   return resolveTechnicalScope({
     ...apps,
-    apiName: rowFieldText(rowXml, 'api_name'),
+    apiName: extractRowFieldText(rowXml, 'api_name'),
     packageSource: packageSource(rowXml),
     sysScopeValue
   });
@@ -117,7 +118,12 @@ export function resolveTechnicalScope(
   }
   const sysScope = input.sysScopeValue?.trim();
   if (!sysScope) {
-    return undefined;
+    // Some rows carry no scope fields at all — a flow's `sys_variable_value`
+    // script row is the common case. In-scope Script Includes are called by
+    // bare name, so an export that belongs to an app resolves to that app
+    // rather than falling through to global, where only `<scope>.<Name>` works.
+    const appScope = input.workspaceAppScope ?? input.documentAppScope;
+    return appScope && JS_IDENTIFIER_RE.test(appScope) ? appScope : undefined;
   }
   if (sysScope.toLowerCase() === 'global') {
     return 'global';
@@ -240,8 +246,8 @@ export function rowDeclarationName(
     return undefined;
   }
   return declarationName(
-    rowFieldText(rowXml, 'name'),
-    rowFieldText(rowXml, 'api_name')
+    extractRowFieldText(rowXml, 'name'),
+    extractRowFieldText(rowXml, 'api_name')
   );
 }
 
@@ -291,12 +297,12 @@ function declarationFromRow(
   rowXml: string,
   scopeInput: ResolveScopeInput
 ): ScriptDeclaration | undefined {
-  const active = rowFieldText(rowXml, 'active');
+  const active = extractRowFieldText(rowXml, 'active');
   if (active && active.toLowerCase() !== 'true') {
     return undefined;
   }
-  const apiName = rowFieldText(rowXml, 'api_name');
-  const name = declarationName(rowFieldText(rowXml, 'name'), apiName);
+  const apiName = extractRowFieldText(rowXml, 'api_name');
+  const name = declarationName(extractRowFieldText(rowXml, 'name'), apiName);
   if (!name) {
     return undefined;
   }
@@ -329,15 +335,6 @@ function declarationName(
   const dot = apiName.lastIndexOf('.');
   const className = dot >= 0 ? apiName.slice(dot + 1) : apiName;
   return JS_IDENTIFIER_RE.test(className) ? className : undefined;
-}
-
-function rowFieldText(rowXml: string, fieldName: string): string | undefined {
-  const el = extractRowElement(rowXml, fieldName);
-  if (!el) {
-    return undefined;
-  }
-  const value = (el.isCdata ? el.content : decodeXmlEntities(el.content)).trim();
-  return value || undefined;
 }
 
 function packageSource(rowXml: string): string | undefined {
@@ -405,6 +402,11 @@ function serverDeclarationGlobals(
   const globals: Record<string, 'readonly'> = {};
   if (callerScope !== 'global') {
     globals.global = 'readonly';
+    // Same-scope callers use bare names (`new CompareTask()`) and may also use
+    // the scope prefix (`x_app.CompareTask`). Both are valid on the platform.
+    if (JS_IDENTIFIER_RE.test(callerScope)) {
+      globals[callerScope] = 'readonly';
+    }
   }
   for (const [scope, names] of namesByScope) {
     if (scope === callerScope) {
@@ -419,9 +421,8 @@ function serverDeclarationGlobals(
   }
 
   // A scope that owns no Script Include in the whitelist is still a namespace
-  // the platform binds, so `<scope>.<Name>` resolves its prefix. `global` and
-  // the caller's own scope are excluded: both are handled above, where the
-  // reachable names decide whether the namespace exists at all.
+  // the platform binds, so `<scope>.<Name>` resolves its prefix. `global` is
+  // excluded: it is handled above. The caller's own scope is already bound.
   for (const scope of bundledScopes?.scopes ?? []) {
     if (scope === 'global' || scope === callerScope) {
       continue;

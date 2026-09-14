@@ -28,20 +28,29 @@ interface MessageNode {
 }
 
 /**
- * Resolve a record URI from a Records tree context-menu element.
+ * Resolve a catalog record from a Records tree context-menu element.
  */
-export function getRecordUriFromTreeElement(
+export function getCatalogRecordFromTreeElement(
   element: unknown
-): vscode.Uri | undefined {
+): CatalogRecord | undefined {
   if (
     element &&
     typeof element === 'object' &&
     'kind' in element &&
     (element as TreeNode).kind === 'record'
   ) {
-    return (element as RecordNode).record.uri;
+    return (element as RecordNode).record;
   }
   return undefined;
+}
+
+/**
+ * Resolve a record URI from a Records tree context-menu element.
+ */
+export function getRecordUriFromTreeElement(
+  element: unknown
+): vscode.Uri | undefined {
+  return getCatalogRecordFromTreeElement(element)?.uri;
 }
 
 /**
@@ -381,7 +390,11 @@ export class RecordsTreeProvider
       title: 'Open',
       arguments: [r]
     };
-    item.contextValue = 'servicenowXml.record';
+    // Suffix lets context menus show Delete only for INSERT_OR_UPDATE rows.
+    item.contextValue =
+      r.action === 'INSERT_OR_UPDATE'
+        ? 'servicenowXml.record.insertOrUpdate'
+        : 'servicenowXml.record';
     // The accent is the whole active-file marker: selection stays the user's,
     // and one file can export several records anyway.
     item.iconPath = new vscode.ThemeIcon(

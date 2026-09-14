@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp_usage_log import log_use
 
 
 @dataclass
@@ -290,6 +291,7 @@ def _build_server() -> FastMCP:
         return "\n".join(index.list_tables())
 
     @mcp.tool()
+    @log_use("servicenow-xml-db-schema")
     def list_tables(query: str = "") -> list[str]:
         """
         List table names from the bundled sys_dictionary CSV.
@@ -300,6 +302,7 @@ def _build_server() -> FastMCP:
         return index.list_tables(query.strip() or None)
 
     @mcp.tool()
+    @log_use("servicenow-xml-db-schema")
     def get_table(table_name: str) -> str:
         """
         Return normalized JSON for one table: label (if known) and field list
@@ -311,6 +314,7 @@ def _build_server() -> FastMCP:
         return json.dumps(data, ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-db-schema")
     def list_columns(table_name: str) -> list[str]:
         """List field/element names for one table."""
         columns = index.list_columns(table_name)
@@ -319,6 +323,7 @@ def _build_server() -> FastMCP:
         return columns
 
     @mcp.tool()
+    @log_use("servicenow-xml-db-schema")
     def get_dictionary_rows(table_name: str, element: str = "") -> str:
         """
         Return original CSV row object(s) for a table (and optional element).
@@ -332,6 +337,7 @@ def _build_server() -> FastMCP:
         return json.dumps(rows, ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-db-schema")
     def search_schema(query: str, max_matches: int = 25) -> list[dict[str, Any]]:
         """Search table/field names and labels; return compact match objects."""
         limit = _safe_int(max_matches, 25, lo=1, hi=200)

@@ -1,4 +1,6 @@
 import { execFile } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { promisify } from 'util';
 import * as vscode from 'vscode';
 import {
@@ -41,6 +43,33 @@ export async function sncIsAvailable(sncPath = getSncPath()): Promise<boolean> {
   } catch (error) {
     const code = (error as { code?: string | number }).code;
     return code !== 'ENOENT' && code !== 'EACCES';
+  }
+}
+
+/**
+ * True when the configured snc executable is on disk or PATH.
+ * Used to gate instance MCP install without spawning `snc --help`.
+ */
+export async function sncCliExists(sncPath = getSncPath()): Promise<boolean> {
+  const configured = sncPath.trim();
+  if (!configured) {
+    return false;
+  }
+  if (path.isAbsolute(configured) || /[\\/]/.test(configured)) {
+    return fs.existsSync(configured);
+  }
+  try {
+    if (process.platform === 'win32') {
+      await execFileAsync('where.exe', [configured], {
+        timeout: 10_000,
+        windowsHide: true
+      });
+    } else {
+      await execFileAsync('which', [configured], { timeout: 10_000 });
+    }
+    return true;
+  } catch {
+    return false;
   }
 }
 

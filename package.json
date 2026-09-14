@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.10.2",
+  "version": "2.13.0",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -65,6 +65,10 @@
         "title": "Reveal in File Explorer"
       },
       {
+        "command": "servicenowXml.changeActionToDelete",
+        "title": "Delete"
+      },
+      {
         "command": "servicenowXml.cursor.installHelpers",
         "title": "ServiceNow XML: Install Cursor Helpers"
       },
@@ -125,6 +129,10 @@
         {
           "command": "servicenowXml.pruneRedundantDeletes",
           "when": "servicenowXml.hasSnc"
+        },
+        {
+          "command": "servicenowXml.changeActionToDelete",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -152,18 +160,23 @@
       "view/item/context": [
         {
           "command": "servicenowXml.revealInExplorer",
-          "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
+          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
           "group": "navigation@1"
         },
         {
           "command": "servicenowXml.revealInFileExplorer",
-          "when": "view == servicenowXml.records && viewItem == servicenowXml.record",
+          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
           "group": "navigation@2"
         },
         {
           "command": "servicenowXml.pruneRedundantDeletes",
-          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record || viewItem == servicenowXml.table)",
+          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate || viewItem == servicenowXml.table)",
           "group": "1_modification@1"
+        },
+        {
+          "command": "servicenowXml.changeActionToDelete",
+          "when": "view == servicenowXml.records && viewItem == servicenowXml.record.insertOrUpdate",
+          "group": "7_modification@1"
         }
       ],
       "editor/context": [
@@ -264,12 +277,20 @@
         "servicenowXml.cursorHelpers.pythonPath": {
           "type": "string",
           "default": "python",
-          "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference), and sessionStart hook."
+          "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference, instance), and sessionStart hook."
         },
         "servicenowXml.snc.path": {
           "type": "string",
           "default": "snc",
-          "description": "ServiceNow CLI executable used to query the instance when pruning redundant DELETE exports. Leave as snc when the CLI is on PATH."
+          "description": "ServiceNow CLI executable for pruning redundant DELETE exports and the Cursor instance MCP. Leave as snc when the CLI is on PATH."
+        },
+        "servicenowXml.snc.mcpProfiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Cursor instance MCP allowlist of snc profile names. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
         }
       }
     },

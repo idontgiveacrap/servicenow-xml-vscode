@@ -7,11 +7,13 @@ import {
   RecordCatalog
 } from './navigator/catalog';
 import {
+  getCatalogRecordFromTreeElement,
   getRecordUriFromTreeElement,
   RecordsDragAndDropController,
   RecordsTreeProvider,
   TreeNode
 } from './navigator/tree';
+import { changeActionToDelete } from './navigator/changeActionToDelete';
 import { registerGoToRecord } from './navigator/goToRecord';
 import { ActiveRecordSync } from './navigator/activeRecord';
 import {
@@ -438,6 +440,56 @@ function activateDiagnosticsAndCommands(
         await vscode.commands.executeCommand('revealFileInOS', uri);
       }
     ),
+    vscode.commands.registerCommand(
+      'servicenowXml.changeActionToDelete',
+      async (element?: unknown) => {
+        const record = getCatalogRecordFromTreeElement(element);
+        if (!record || record.action !== 'INSERT_OR_UPDATE') {
+          return;
+        }
+        const confirm = await vscode.window.showWarningMessage(
+          `Change action of "${record.displayName}" (${record.table}) from INSERT_OR_UPDATE to DELETE?`,
+          { modal: true },
+          'Change to DELETE'
+        );
+        if (confirm !== 'Change to DELETE') {
+          return;
+        }
+        try {
+          const document = await vscode.workspace.openTextDocument(record.uri);
+          const result = changeActionToDelete(
+            document.getText(),
+            record.uri.fsPath,
+            record
+          );
+          if (!result.ok) {
+            void vscode.window.showErrorMessage(
+              `Could not change action to DELETE: ${result.reason}.`
+            );
+            return;
+          }
+          const edit = new vscode.WorkspaceEdit();
+          const fullRange = new vscode.Range(
+            document.positionAt(0),
+            document.positionAt(document.getText().length)
+          );
+          edit.replace(record.uri, fullRange, result.text);
+          const applied = await vscode.workspace.applyEdit(edit);
+          if (!applied) {
+            void vscode.window.showErrorMessage(
+              'Could not apply action=DELETE change to the file.'
+            );
+            return;
+          }
+          await document.save();
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          void vscode.window.showErrorMessage(
+            `Could not change action to DELETE: ${detail}`
+          );
+        }
+      }
+    ),
     vscode.commands.registerCommand('servicenowXml.cursor.installHelpers', async () => {
       const result = await installCursorHelpers(context, { force: true });
       registerCursorHelpersDisposal(context, result.pluginPath);
@@ -519,15 +571,22 @@ function activateDiagnosticsAndCommands(
       if (e.affectsConfiguration('servicenowXml.snc.path')) {
         void refreshSncContext();
       }
-      if (
-        isCursorHost() &&
-        (e.affectsConfiguration('servicenowXml.cursorHelpers.enable') ||
-          e.affectsConfiguration('servicenowXml.cursorHelpers.installIndexHook') ||
-          e.affectsConfiguration('servicenowXml.cursorHelpers.pythonPath'))
-      ) {
+      const cursorHelpersCfg =
+        e.affectsConfiguration('servicenowXml.cursorHelpers.enable') ||
+        e.affectsConfiguration('servicenowXml.cursorHelpers.installIndexHook') ||
+        e.affectsConfiguration('servicenowXml.cursorHelpers.pythonPath') ||
+        e.affectsConfiguration('servicenowXml.snc.path') ||
+        e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
+      if (isCursorHost() && cursorHelpersCfg) {
         void installCursorHelpers(context).then((result) => {
           registerCursorHelpersDisposal(context, result.pluginPath);
-          if (cursorHelpersNeedReload(result)) {
+          const sncMcpCfg =
+            e.affectsConfiguration('servicenowXml.snc.path') ||
+            e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
+          if (
+            cursorHelpersNeedReload(result) ||
+            (result.installed && sncMcpCfg)
+          ) {
             void suggestReloadAfterCursorHelpers('Cursor helpers updated.');
           }
         });

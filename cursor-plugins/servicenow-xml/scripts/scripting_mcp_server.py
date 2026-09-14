@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp_usage_log import log_use
 
 SECTION_KEYS = (
     "runtime_catalog",
@@ -371,16 +372,19 @@ def _build_server() -> FastMCP:
         return json.dumps(performance_index.meta(), ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def get_scripting_meta() -> str:
         """Return title, warnings, section list, and entry counts for the bundled scripting reference."""
         return json.dumps(index.meta(), ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def list_scripting_sections() -> list[str]:
         """List available scripting-reference section ids."""
         return list(SECTION_KEYS)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def get_scripting_section(section: str) -> str:
         """
         Return one full section as JSON.
@@ -393,11 +397,13 @@ def _build_server() -> FastMCP:
         return json.dumps(data, ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def lookup_scripting_name(name: str) -> str:
         """Exact-name lookup across server globals, runtime items, and undocumented APIs."""
         return json.dumps(index.lookup_name(name), ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def search_scripting_reference(
         query: str, section: str = "", max_matches: int = 25
     ) -> list[dict[str, Any]]:
@@ -414,6 +420,7 @@ def _build_server() -> FastMCP:
         )
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def list_runtime_items(
         owner: str = "",
         family: str = "",
@@ -445,6 +452,7 @@ def _build_server() -> FastMCP:
         return out
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def get_js_performance_meta() -> str:
         """
         Return benchmark scope, method, environment, ratio semantics, and ids.
@@ -462,6 +470,7 @@ def _build_server() -> FastMCP:
         return json.dumps(performance_index.meta(), ensure_ascii=False, indent=2)
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def lookup_js_performance(construct: str) -> str:
         """
         Return full benchmark evidence for an exact comparison id, alias, or label.
@@ -476,6 +485,7 @@ def _build_server() -> FastMCP:
         )
 
     @mcp.tool()
+    @log_use("servicenow-xml-scripting")
     def search_js_performance(
         query: str = "",
         javascript_support: str = "",

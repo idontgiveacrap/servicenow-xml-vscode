@@ -367,6 +367,8 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.cursorHelpers.enable` | `true` | **Cursor only.** On activate, idempotently install ServiceNow MCP servers, user rules, and the Python repo indexer. No-op in VS Code. |
 | `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that refreshes `index.json` when stale for ServiceNow export workspaces. |
 | `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, local MCP servers, and sessionStart hook. |
+| `servicenowXml.snc.path` | `snc` | ServiceNow CLI executable for prune-redundant-DELETE and the Cursor instance MCP. |
+| `servicenowXml.snc.mcpProfiles` | `[]` | **Cursor only.** Allowlist of snc profile names for `servicenow-xml-instance`. Empty means every snc profile is available to the MCP. Does not change the prune UI. |
 
 ## Cursor helpers (Cursor only)
 
@@ -377,12 +379,14 @@ On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the
 | **Indexer** | `scripts/servicenow_repo_index.py` |
 | **DB schema MCP script** | `scripts/db_schema_mcp_server.py` |
 | **Scripting MCP script** | `scripts/scripting_mcp_server.py` |
+| **Instance MCP script** | `scripts/instance_mcp_server.py` (spawns `snc`; skipped if snc is missing) |
+| **MCP usage log** | `mcp-usage.log` (one UTC line per local MCP tool call: timestamp, server id, tool name) |
 | **DB schema data** | `data/sys_dictionary.csv.gz` (copied from the VSIX; see refresh URL below) |
 | **Scripting reference data** | `data/scripting_reference.json.gz` (packed from the scripting workbook) |
 | **JavaScript performance data** | `data/js_performance.json` (scoped ES12 server benchmarks with raw runs and limitations) |
 | **sessionStart hook** | `hooks/session_start_index.py` |
 | **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
-| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting` |
+| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting`, `servicenow-xml-instance` |
 | **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
 | **Cursor plugin** | `plugin/` registered as `servicenow-xml` |
 
@@ -406,11 +410,30 @@ Writes `cursor-plugins/servicenow-xml/data/scripting_reference.json.gz`. Rebuild
 
 The scripting MCP also reads `data/js_performance.json`. Its performance tools expose the benchmark scope and limitations before compact search results, with exact lookup available for raw runs. The bundled measurements apply only to scoped `es_latest` server execution; they do not measure ES5-mode, global-scope transpilation, or browser performance.
 
-Helpers may be installed with the (Ctrl+Shift+P) command **ServiceNow XML: Install Cursor Helpers**. After install (or when helpers change on activation), the extension suggests **Developer: Reload Window** (Ctrl+Shift+P) so MCP servers and rules take effect.
+### Install / reinstall Cursor helpers
+
+**How:** Command Palette → **ServiceNow XML: Install Cursor Helpers**, then **Developer: Reload Window** (the extension prompts for reload). The same copy/register path runs on Cursor activation when `servicenowXml.cursorHelpers.enable` is true.
+
+**What it does:** copies scripts, data, and rules under `~/.cursor/servicenow-xml/`, re-registers MCP ids (`servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting`, `servicenow-xml-instance`), and syncs user rules (`<!-- managed-by: servicenow-xml -->`).
+
+**When to re-run:**
+
+- VSIX / extension upgrade that changed helper scripts, rules, or bundled data
+- MCP servers missing, duplicated, or stale after a Cursor update
+- `servicenowXml.snc.path`, `servicenowXml.snc.mcpProfiles`, or `servicenowXml.cursorHelpers.pythonPath` did not take effect (activation also re-registers when those settings change; reload is still required so Cursor picks up MCP env)
+- Python `mcp` package missing or broken (`python -m pip install --user mcp`)
+- Corrupted or deleted `~/.cursor/servicenow-xml/`
+- New snc profiles do **not** need a reinstall: `list_profiles` reads live `snc configure profile list`. Reinstall (or change `mcpProfiles`) only if you are tightening the allowlist
 
 If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the local MCP servers / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
 
-A Cursor rule is included which references snc (ServiceNow CLI utility) I recommend installing it and pointing it to a PDI or non-production environment with non-sensitive data so Cursor can learn about ServiceNow the way you would and point you to exact URIs.
+### Instance MCP (`servicenow-xml-instance`)
+
+Read-only tools `list_profiles`, `record_query`, and `record_get` wrap ServiceNow CLI (`snc`). Point snc at a PDI or other non-production instance with non-sensitive data. Unset `servicenowXml.snc.mcpProfiles` exposes **every** snc profile to the agent, including production if that profile exists. A non-empty allowlist restricts list and query/get to those names. Omit `profile` on tools to use the CLI default; if an allowlist is set, that default must be on the list.
+
+Results are for the CLI user. Testing has not shown `snc` applying table ACL-style restrictions the way the UI does.
+
+The instance MCP is skipped when `snc` is not on PATH (or `servicenowXml.snc.path`).
 
 ### Prune redundant DELETE files
 
@@ -458,10 +481,12 @@ Known limitations to accept or solve first:
 - **Usage sorting degrades.** `RecordUsageStore` persists to `workspaceState`, which is per-window when no folder is open, so open counts do not carry over and the default `mostOpened` order is effectively arbitrary there.
 - **Value is uneven.** A retrieved update set has many `sys_update_xml` rows and makes a genuinely useful member browser; a single-record export produces a one-leaf tree that adds nothing over the status bar and Problems panel.
 
+### Add service portal variable/function awareness
+
 ## Non-goals (v1)
 
 - Renaming Explorer filenames or editor tabs
-- Live instance schema (use `snc` or refresh the bundled CSV export)
+- Live instance schema (use the instance MCP or refresh the bundled CSV export)
 - Macroponent JSON semantic validation
 - Marketplace publish
 - Depending on repo `index.json` for the navigator

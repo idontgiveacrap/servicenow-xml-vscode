@@ -4,6 +4,8 @@
  * Compatibility mode is treated as ES5 for linting. It supports no more modern
  * syntax than ES5, and ES5 is the required fallback when metadata is absent.
  */
+import { extractRowFieldText } from './parseSnXml';
+
 export type JavaScriptSupport = 'ES5' | 'ES12';
 
 const ES12_VALUES = new Set([
@@ -62,9 +64,9 @@ export function detectSysAppMetadata(xml: string): SysAppMetadata | undefined {
   if (!appRow) {
     return undefined;
   }
-  const sysId = elementText(appRow, 'sys_id');
-  const scope = elementText(appRow, 'scope');
-  const jsLevel = normalizeJavaScriptSupport(elementText(appRow, 'js_level'));
+  const sysId = extractRowFieldText(appRow, 'sys_id');
+  const scope = extractRowFieldText(appRow, 'scope');
+  const jsLevel = normalizeJavaScriptSupport(extractRowFieldText(appRow, 'js_level'));
   if (!sysId && !scope && !jsLevel) {
     return {};
   }
@@ -95,18 +97,4 @@ export function detectJavaScriptSupport(
   }
   const scope = meta.scope?.trim().toLowerCase();
   return scope && scope !== 'global' ? 'ES12' : fallback;
-}
-
-/**
- * Return decoded text of the first matching simple element in `xml`.
- */
-function elementText(xml: string, fieldName: string): string | undefined {
-  const match = xml.match(
-    new RegExp(
-      `<\\s*${fieldName}\\b[^>]*>\\s*(?:<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>|([^<]*))\\s*</\\s*${fieldName}\\s*>`,
-      'i'
-    )
-  );
-  const value = (match?.[1] ?? match?.[2])?.trim();
-  return value || undefined;
 }
