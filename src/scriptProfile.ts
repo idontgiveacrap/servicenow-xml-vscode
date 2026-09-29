@@ -1,4 +1,4 @@
-import { CLIENT_SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
+import { isClientScriptPair } from './registry/fieldKinds';
 
 const CLIENT_TABLES = new Set([
   'sys_ux_client_script',
@@ -24,7 +24,7 @@ export function resolveScriptProfile(
   tableName: string,
   fieldName: string
 ): 'server' | 'client' {
-  if (CLIENT_SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) {
+  if (isClientScriptPair(tableName, fieldName)) {
     return 'client';
   }
   if (CLIENT_FIELDS.has(fieldName)) {

@@ -1,6 +1,6 @@
 /**
- * XML document formatter: other XML providers via reentry, then JS format of
- * script-typed fields through encodeThroughLayers.
+ * XML document formatter: other XML providers via reentry, then JS and JSON
+ * format of script- and JSON-typed fields through encodeThroughLayers.
  */
 
 import * as vscode from 'vscode';
@@ -8,6 +8,7 @@ import { looksLikeSnExportDocument } from './snDocumentShape';
 import { parseSnXml } from './parseSnXml';
 import {
   encodeHit,
+  listJsonFields,
   listScriptFields,
   restoreIndent,
   scriptAt,
@@ -66,7 +67,19 @@ async function formatSnXmlRange(
   const hit = scriptAt(text, offset);
   if (hit?.role === 'scriptField') {
     const original = text.slice(hit.hostStart, hit.hostEnd);
-    const formatted = await formatOneScriptHit(hit, options, token);
+    const scratchDocs: vscode.TextDocument[] = [];
+    let formatted: string | undefined;
+    try {
+      formatted = await formatOneHit(
+        hit,
+        'javascript',
+        options,
+        token,
+        scratchDocs
+      );
+    } finally {
+      await closeScratchTabs(scratchDocs);
+    }
     if (formatted === undefined || formatted === original) {
       return [];
     }
@@ -110,6 +123,7 @@ async function formatSnXmlDocument(
 
   const config = vscode.workspace.getConfiguration('servicenowXml', document);
   const formatJs = config.get<boolean>('formatJavaScript', true);
+  const formatJson = config.get<boolean>('formatJson', true);
   const formatXmlFirst = config.get<boolean>('formatXmlFirst', true);
 
   // Every edit below is expressed against this snapshot, so a buffer that moves
@@ -137,7 +151,7 @@ async function formatSnXmlDocument(
     }
   }
 
-  if (!formatJs) {
+  if (!formatJs && !formatJson) {
     if (text === original) {
       return [];
     }
@@ -145,20 +159,42 @@ async function formatSnXmlDocument(
   }
 
   const parsed = parseSnXml(text, document.uri.fsPath);
-  const hits = listScriptFields(parsed);
+  const targets: Array<{ hit: ScriptHit; language: 'javascript' | 'json' }> = [];
+  if (formatJs) {
+    for (const hit of listScriptFields(parsed)) {
+      targets.push({ hit, language: 'javascript' });
+    }
+  }
+  if (formatJson) {
+    for (const hit of listJsonFields(parsed)) {
+      targets.push({ hit, language: 'json' });
+    }
+  }
+
   const offsetEdits: Array<{ start: number; end: number; text: string }> = [];
-  for (const hit of hits) {
-    if (token.isCancellationRequested) {
-      return undefined;
+  const scratchDocs: vscode.TextDocument[] = [];
+  try {
+    for (const { hit, language } of targets) {
+      if (token.isCancellationRequested) {
+        return undefined;
+      }
+      const encoded = await formatOneHit(
+        hit,
+        language,
+        options,
+        token,
+        scratchDocs
+      );
+      if (encoded === undefined) {
+        continue;
+      }
+      const current = text.slice(hit.hostStart, hit.hostEnd);
+      if (encoded !== current) {
+        offsetEdits.push({ start: hit.hostStart, end: hit.hostEnd, text: encoded });
+      }
     }
-    const encoded = await formatOneScriptHit(hit, options, token);
-    if (encoded === undefined) {
-      continue;
-    }
-    const current = text.slice(hit.hostStart, hit.hostEnd);
-    if (encoded !== current) {
-      offsetEdits.push({ start: hit.hostStart, end: hit.hostEnd, text: encoded });
-    }
+  } finally {
+    await closeScratchTabs(scratchDocs);
   }
 
   text = applyOffsetEdits(text, offsetEdits);
@@ -181,13 +217,27 @@ function isSnXmlFormatTarget(
   return isValidationAllowed(document) || looksLikeSnExportDocument(document);
 }
 
-async function formatOneScriptHit(
+async function formatOneHit(
   hit: ScriptHit,
+  language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
-  token: vscode.CancellationToken
+  token: vscode.CancellationToken,
+  scratchDocs: vscode.TextDocument[]
 ): Promise<string | undefined> {
+  // A JSON formatter given a malformed document can drop or reorder the text it
+  // cannot parse, which would silently destroy the field. Invalid JSON is
+  // already surfaced by the JSON lint pass, so leave it untouched here.
+  if (language === 'json' && !isParseableJson(hit.code)) {
+    return undefined;
+  }
   const stripped = stripIndent(hit.code, hit.indent);
-  const formatted = await formatJavaScript(stripped, options, token);
+  const formatted = await formatThroughProvider(
+    stripped,
+    language,
+    options,
+    token,
+    scratchDocs
+  );
   if (formatted === undefined) {
     return undefined;
   }
@@ -199,10 +249,30 @@ async function formatOneScriptHit(
   return encoded.text;
 }
 
-async function formatJavaScript(
+function isParseableJson(code: string): boolean {
+  try {
+    JSON.parse(code);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Format `code` with whichever provider is registered for `language`, by way of
+ * an in-memory document. Picks up Prettier and friends the same way the editor
+ * would for a real file of that language.
+ *
+ * The scratch document is created with its final content and never edited, so
+ * it stays clean: a dirty untitled document cannot be closed again without the
+ * editor asking the user to save it.
+ */
+async function formatThroughProvider(
   code: string,
+  language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
-  token: vscode.CancellationToken
+  token: vscode.CancellationToken,
+  scratchDocs: vscode.TextDocument[]
 ): Promise<string | undefined> {
   if (token.isCancellationRequested) {
     return undefined;
@@ -210,12 +280,13 @@ async function formatJavaScript(
   let doc: vscode.TextDocument;
   try {
     doc = await vscode.workspace.openTextDocument({
-      language: 'javascript',
+      language,
       content: code
     });
   } catch {
     return code;
   }
+  scratchDocs.push(doc);
   const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
     'vscode.executeFormatDocumentProvider',
     doc.uri,
@@ -225,6 +296,29 @@ async function formatJavaScript(
     return code;
   }
   return applyTextEdits(code, edits, doc);
+}
+
+/**
+ * Close tabs the scratch formatter documents opened, so Format Document does
+ * not leave an untitled JS/JSON tab behind per embedded field.
+ */
+async function closeScratchTabs(
+  scratchDocs: vscode.TextDocument[]
+): Promise<void> {
+  if (scratchDocs.length === 0) {
+    return;
+  }
+  const uris = new Set(scratchDocs.map((doc) => doc.uri.toString()));
+  const tabs = vscode.window.tabGroups.all
+    .flatMap((group) => group.tabs)
+    .filter(
+      (tab) =>
+        tab.input instanceof vscode.TabInputText &&
+        uris.has(tab.input.uri.toString())
+    );
+  if (tabs.length > 0) {
+    await vscode.window.tabGroups.close(tabs, true);
+  }
 }
 
 function applyTextEdits(

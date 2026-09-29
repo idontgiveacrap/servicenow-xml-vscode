@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { classifyAndValidate } from './kinds';
 import { SnDiagnostic } from './kinds/types';
-import { parseSnXml } from './parseSnXml';
+import { getOrParseXml } from './registry/lazyParse';
+import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
 import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
@@ -102,6 +103,7 @@ export class DiagnosticsController implements vscode.Disposable {
       this.timers.delete(key);
     }
     this.collection.delete(document.uri);
+    getWorkspaceRegistryService().registry.invalidateParse(document.uri.toString());
   }
 
   /**
@@ -131,7 +133,13 @@ export class DiagnosticsController implements vscode.Disposable {
     const filePath = document.uri.fsPath;
     const workspaceAppSysId = this.getWorkspaceAppSysId();
     const workspaceAppScope = this.getWorkspaceAppScope();
-    const parsed = parseSnXml(text, filePath);
+    const parsed = getOrParseXml(
+      getWorkspaceRegistryService().registry,
+      document.uri.toString(),
+      version,
+      text,
+      filePath
+    );
     const classification = classifyAndValidate(parsed, {
       workspaceAppSysId,
       requireRecordSysIds: this.requiresRecordSysId(document)

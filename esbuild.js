@@ -24,7 +24,7 @@ if (!fs.existsSync(eslintLinterEntry)) {
 }
 
 /** @type {import('esbuild').BuildOptions} */
-const options = {
+const extensionOptions = {
   entryPoints: ['src/extension.ts'],
   bundle: true,
   outfile: 'dist/extension.js',
@@ -39,13 +39,51 @@ const options = {
   logLevel: 'info'
 };
 
+/** @type {import('esbuild').BuildOptions} */
+const mcpOptions = {
+  entryPoints: ['src/registry/mcpServer.ts'],
+  bundle: true,
+  outfile: 'dist/registryMcp.js',
+  format: 'cjs',
+  platform: 'node',
+  target: 'node18',
+  sourcemap: !production,
+  minify: production,
+  legalComments: 'none',
+  logLevel: 'info'
+};
+
 async function main() {
+  // Schema packs stay external (gzipped fields are ~12MB uncompressed).
+  const dataSrc = path.join(__dirname, 'src', 'data');
+  const dataDest = path.join(__dirname, 'dist', 'data');
+  fs.mkdirSync(dataDest, { recursive: true });
+  for (const name of [
+    'dictionaryTables.json',
+    'dictionaryFields.json.gz',
+    'fieldKinds.json',
+    'platformGlobals.json',
+    'scriptIncludes.json',
+    'scopes.json',
+    'scripting_reference.json.gz',
+    'js_performance.json'
+  ]) {
+    const from = path.join(dataSrc, name);
+    if (fs.existsSync(from)) {
+      fs.copyFileSync(from, path.join(dataDest, name));
+    }
+  }
+
   if (watch) {
-    const ctx = await esbuild.context(options);
-    await ctx.watch();
+    const ctx = await esbuild.context(extensionOptions);
+    const mcpCtx = await esbuild.context(mcpOptions);
+    await Promise.all([ctx.watch(), mcpCtx.watch()]);
     console.log('watching…');
   } else {
-    await esbuild.build(options);
+    await Promise.all([
+      esbuild.build(extensionOptions),
+      esbuild.build(mcpOptions)
+    ]);
   }
 }
 
@@ -57,4 +95,4 @@ if (require.main === module) {
 }
 
 // Exported so smoke tests can bundle single modules with the shipping settings.
-module.exports = { options };
+module.exports = { options: extensionOptions };

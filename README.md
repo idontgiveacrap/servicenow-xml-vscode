@@ -88,14 +88,16 @@ If write-back fails (stale host, encoding, etc.), the edited script is stored un
 This extension registers as the default XML formatter (`local.servicenow-xml`). **Format Document** / format on save:
 
 1. Calls the next XML formatter (Red Hat XML, XML Tools, …) via a reentrancy guard (`undefined`, not an empty edit list, so the chain continues)
-2. Re-discovers script-typed fields on the result (including inside `<payload>`)
-3. Formats each decoded body with the editor’s JavaScript formatter, restores XML-relative indent, and encodes through the same layer stack
+2. Re-discovers script-typed and JSON-typed fields on the result (including inside `<payload>`)
+3. Formats each decoded body with the editor’s JavaScript or JSON formatter, restores XML-relative indent, and encodes through the same layer stack
 
-Non-ServiceNow XML documents return `undefined` so another XML formatter still runs. Pinning Red Hat (or another extension) as `editor.defaultFormatter` for `[xml]` skips the JS pass.
+Non-ServiceNow XML documents return `undefined` so another XML formatter still runs. Pinning Red Hat (or another extension) as `editor.defaultFormatter` for `[xml]` skips the embedded passes.
 
-XML formatters can rewrite CDATA and entity-encoded payloads. The JS pass formats whatever remains; it cannot repair a formatter that mangles script bodies. Set `servicenowXml.formatXmlFirst` to `false` to skip pass 1. Format Selection inside a script-typed field runs the JS pass only.
+XML formatters can rewrite CDATA and entity-encoded payloads. The embedded passes format whatever remains; they cannot repair a formatter that mangles script bodies. Set `servicenowXml.formatXmlFirst` to `false` to skip pass 1. Format Selection inside a script-typed field runs the JS pass only.
 
-JSON/CSS pretty-print and formatting JS inside JSON strings are not included.
+The JSON pass covers the same JSON-typed fields the JSON lint uses: `composition`, `layout`, `props`, `style_config`, `output_schema`, `bundles`, `data`, `state_properties`, `required_translations`, `component_dependencies`, and `associated_types`. A field that does not parse as JSON is left untouched, since a formatter handed malformed input can drop the part it cannot read; `servicenowXml.lintJson` reports those instead. Because an entity-encoded field is decoded and re-encoded, reformatting rewrites its `&#13;` line-ending markers as plain newlines — the same round-trip the JS pass already performs on entity-encoded scripts. Set `servicenowXml.formatJson` to `false` to skip the JSON pass.
+
+CSS pretty-print and formatting JS inside JSON strings are not included.
 
 ## Records navigator (optional, lazy)
 
@@ -144,15 +146,35 @@ Open counts / last-opened times persist in workspace state. Missing metrics sort
 
 `DELETE` rows are shown by default (trash icon, struck-through label, `DELETE · {table}` description). Set `servicenowXml.navigator.excludeDelete` to `true` to hide them. Paths matching `servicenowXml.ignoreGlobs` (default: `author_elective_update`) are skipped.
 
+### Authoring a deletion
+
+**Convert record to DELETE…** on an `INSERT_OR_UPDATE` record row rewrites that row's `action` to `DELETE` and moves the file from `update/` to the sibling `author_elective_update/`, keeping the file name. Both halves matter: the `DELETE` row is what removes the record on install, and `update/` is read as live source, so a `DELETE` left there makes later review and indexing treat a deleted row as current config.
+
+**Delete from disk…** is the other half of the menu, and records no intent to remove anything on the instance: the export simply stops existing in the repo. What it removes depends on the file. A file that exports only the selected record (or only that record plus its companion `sys_update_version` / `sys_metadata_delete` / `delete_multiple` rows) goes to the OS trash; a file that exports several unrelated records loses the selected record and those companions, since deleting the file would take other live siblings with it. The confirmation says which of the two will happen.
+
+The move prefers `git mv`, so the rename is staged and history follows the record even when the rewrite drops the file below git's rename-similarity threshold. Outside a repo, with no git on PATH, or for an untracked file, it falls back to a plain rename. An editor open on the file is closed and reopened at the new path, so a stale tab cannot recreate the record in `update/` on the next save.
+
+The action flip always applies; only the move can be skipped:
+
+| Case | Behavior |
+|------|----------|
+| File exports more than one record | Flip only — moving would drag the sibling rows out of `update/` while they are still live |
+| File has no `update/` ancestor (standalone export, or already under `author_elective_update/`) | Flip only |
+| Destination file already exists | Flip only, reported as an error rather than overwriting |
+
+`author_elective_update` is in the default `ignoreGlobs`, so a moved record drops out of the navigator once the catalog catches up.
+
 ### Active editor tracking
 
-Switching tabs marks the records that came from the active file: every matching row gets an accented icon and an `In the active editor` hover line, and the first one is scrolled into view with its table folder expanded.
+Switching tabs selects the active file's first record, scrolls it into view with its table folder expanded, and accents the icon of every row that file exports, each with an `In the active editor` hover line.
 
-The accented icon is the whole marker — tracking never changes the tree selection. `reveal` cannot set a multi-item selection anyway (so files exporting several records would need the accent regardless), and selecting on every editor change put three writers on one piece of state: this extension, your clicks, and the selection VS Code re-applies after a refresh. That last one lands up to 200 ms late through the extension-host debounce ([microsoft/vscode#192055](https://github.com/microsoft/vscode/issues/192055)), so the marker flickered back to the previously active file.
+Selection is the primary indicator, following `explorer.autoReveal` and the Outline view. It is VS Code's own list selection, so it reads `list.activeSelectionBackground` (blue in the default dark themes) while the Records view has focus and `list.inactiveSelectionBackground` (grey) once focus is in the editor. Reveal never takes focus, so a tab switch leaves the grey highlight on the active file's record.
 
-Moving the marker repaints only the rows that gained or lost it, rather than refreshing the whole tree. Element-level refresh resolves elements by object identity ([microsoft/vscode#137251](https://github.com/microsoft/vscode/issues/137251)), so the provider hands back memoized node instances and drops them whenever the rows are rebuilt.
+The accented icon is secondary: `reveal` can only select one node, so the accent is what shows the remaining rows of a file that exports several. On a single-record file the two land on the same row.
 
-Row background colors are VS Code's own list selection, not a marker: `list.activeSelectionBackground` (blue in the default dark themes) while the Records view has focus, `list.inactiveSelectionBackground` (grey) once focus is in the editor. So the row you last clicked reads blue until focus moves, and nothing highlights a row you never clicked.
+Selection moves only when the active file changes, not on catalog rebuilds or filter changes. Re-selecting on every refresh is what previously put three writers on one piece of state — this extension, your clicks, and the selection VS Code re-applies after a refresh, which lands up to 200 ms late through the extension-host debounce ([microsoft/vscode#192055](https://github.com/microsoft/vscode/issues/192055)). A tab switch also leaves an existing multi-selection alone, since prune reads that selection as its scope when it is started from the context menu.
+
+Moving the accent repaints only the rows that gained or lost it, rather than refreshing the whole tree. Element-level refresh resolves elements by object identity ([microsoft/vscode#137251](https://github.com/microsoft/vscode/issues/137251)), so the provider hands back memoized node instances and drops them whenever the rows are rebuilt.
 
 Clicking a record opens the XML at that record row. The row is resolved again from the current editor text, so unsaved edits above it do not shift the destination.
 
@@ -197,17 +219,17 @@ Hovering a record spells the counts out (`Problems in this file: 2 warnings — 
 
 ### Which fields get linted
 
-Background lint covers the four always-on names (`script`, `client_script_v2`, `script_true`, `script_false`) plus every script-typed field in `src/kinds/scriptFields.generated.ts` — 441 `table.field` pairs over 207 distinct field names, derived from a `sys_dictionary` export.
+Background lint covers the four always-on names (`script`, `client_script_v2`, `script_true`, `script_false`) plus every script-typed field in `src/data/fieldKinds.json` (packed from the dictionary export via `scripts/pack-dictionary.js` → `pack-field-kinds.js`).
 
 The table is keyed by `table.field` rather than by field name because the same name is code on one table and data on another: `value` is a script on some tables and an integer on `sys_properties`, and `layout` is a script on some tables and JSON on the `sys_ux_*` ones.
 
-Regenerate it after re-exporting the dictionary:
+Regenerate field kinds after re-exporting the dictionary:
 
 ```bash
-node scripts/pack-script-fields.js "path/to/sys_dictionary.csv"
+node scripts/pack-dictionary.js "path/to/sys_dictionary.csv"
 ```
 
-Export with `internal_typeSTARTSWITHscript`; the script needs the `name`, `element`, and `internal_type` columns. Syntax colorizing is unaffected — the TextMate injection still keys off the four base names, since a grammar has no table context and would light up unrelated `<value>` fields.
+Syntax colorizing is unaffected — the TextMate injection still keys off the four base names, since a grammar has no table context and would light up unrelated `<value>` fields.
 
 Embedded-JS lint does not flag platform entry points as unused: script fields are called by ServiceNow, not from inside the field, so top-level declarations (`handler` in a UX client script, `onBefore` in a business rule, the `var X = Class.create()` a Script Include exports) and platform-supplied parameters are exempt from `no-unused-vars`. Unused locals inside functions are still reported.
 
@@ -302,6 +324,7 @@ Then:
 
 ```bash
 node scripts/pack-script-includes.js "path/to/sys_script_include.csv"
+node scripts/pack-dictionary.js "path/to/sys_dictionary.csv"
 npm run build
 ```
 
@@ -338,9 +361,9 @@ The two exports are independent snapshots and neither is a superset of the other
 
 | Kind | Recognition (v1) | Validation |
 |------|------------------|------------|
-| `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action must be `INSERT_OR_UPDATE` or `DELETE` (error); `sys_id`; filename match; script CDATA; `sys_scope` / `sys_package` vs workspace app id (warning) |
+| `scoped_app_record_update` | `<record_update>` / scoped unload + app metadata (`sys_scope` / `sys_update_name` / `sys_package`) | Action must be `INSERT_OR_UPDATE` or `DELETE` (error); `sys_id`; filename and `sys_update_name` match the source record (`sys_metadata_delete` uses the deleted file's name; `sys_update_version` has none); script CDATA; `sys_scope` / `sys_package` vs workspace app id (warning) |
 | `data_record_export` | Record rows **without** app metadata | `sys_id` presence/format; refine further with more samples |
-| `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Wrapper action must be `INSERT_OR_UPDATE` or `DELETE` (error); name/type/payload; update-set `<application>` must match member updates and payload `sys_scope` / `sys_package` (warning) |
+| `customer_update` | `sys_update_xml` / `sys_remote_update_set` / `sys_update_set` | Wrapper action must be `INSERT_OR_UPDATE` or `DELETE` (error); name/type/payload; payload `sys_update_name` must match its record; update-set `<application>` must match member updates and payload `sys_scope` / `sys_package` (warning) |
 | `dictionary_export` | `<database>` root (Studio table-schema export under `{app_sys_id}/dictionary/`) | Root must hold a named table `<element>` (error); no `action=` rows mixed in (warning). No script or JSON lint — these files carry neither |
 | `unknown_sn_xml` | Well-formed XML, no kind match | Warning only |
 | `not_xml` | Parse failure | XML well-formedness error |
@@ -357,7 +380,8 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.enabledForAllWindows` | `false` | Bypass the workspace gate so diagnostics run for **every** XML file in the window, not just export-shaped ones, and the Records view stays visible. Export-shaped single files already work without this via the document gate. |
 | `servicenowXml.lintJavaScript` | `true` | Lint embedded JavaScript in script-typed XML fields (including payload-nested scripts). |
 | `servicenowXml.formatJavaScript` | `true` | After XML format, format those script fields with the editor’s JavaScript formatter. |
-| `servicenowXml.formatXmlFirst` | `true` | Invoke the next XML formatter before the JS pass when this extension is the default XML formatter. |
+| `servicenowXml.formatJson` | `true` | After XML format, format JSON-typed fields (`output_schema`, `props`, …) with the editor’s JSON formatter. Fields that do not parse as JSON are skipped. |
+| `servicenowXml.formatXmlFirst` | `true` | Invoke the next XML formatter before the embedded JS/JSON passes when this extension is the default XML formatter. |
 | `servicenowXml.lintJson` | `true` | Lint JSON embedded in known ServiceNow XML fields. |
 | `servicenowXml.ignoreGlobs` | `["**/author_elective_update/**"]` | Glob patterns for XML paths to skip (validation, lint, declaration index, navigator, and gate marker). |
 | `servicenowXml.debounceMs` | `400` | Debounce delay (ms) before re-validating on edit. |
@@ -376,29 +400,28 @@ On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the
 
 | Piece | Path under `~/.cursor/servicenow-xml/` |
 |-------|----------------------------------------|
-| **Indexer** | `scripts/servicenow_repo_index.py` |
-| **DB schema MCP script** | `scripts/db_schema_mcp_server.py` |
-| **Scripting MCP script** | `scripts/scripting_mcp_server.py` |
+| **Registry MCP script** | `scripts/registryMcp.js` (Node; schema + scripting/performance + workspace discovery) |
+| **Registry data** | `data/` (packed dictionary, fieldKinds, Script Includes, scopes, platform globals, scripting reference, JS performance) |
+| **Indexer** | `scripts/servicenow_repo_index.py` (fallback; prefer Registry MCP `search_records` / `lookup_by_name`) |
 | **Instance MCP script** | `scripts/instance_mcp_server.py` (spawns `snc`; skipped if snc is missing) |
 | **MCP usage log** | `mcp-usage.log` (one UTC line per local MCP tool call: timestamp, server id, tool name) |
-| **DB schema data** | `data/sys_dictionary.csv.gz` (copied from the VSIX; see refresh URL below) |
-| **Scripting reference data** | `data/scripting_reference.json.gz` (packed from the scripting workbook) |
-| **JavaScript performance data** | `data/js_performance.json` (scoped ES12 server benchmarks with raw runs and limitations) |
-| **sessionStart hook** | `hooks/session_start_index.py` |
+| **sessionStart hook** | `hooks/session_start_index.py` (skips Python scan when Registry cache is fresh) |
 | **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
-| **MCP servers** | Registered in-process as `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting`, `servicenow-xml-instance` |
+| **MCP servers** | `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry` (always when bundle exists), `servicenow-xml-instance` (only when Python + `mcp` + `snc` exist). Python `servicenow-xml-db-schema` / `servicenow-xml-scripting` are removed. |
 | **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
 | **Cursor plugin** | `plugin/` registered as `servicenow-xml` |
 
-### DB schema CSV refresh URL
+### Dictionary pack refresh
 
-The schema MCP is backed by a `sys_dictionary` list CSV export. To refresh the bundled file from an instance:
+Registry schema tools are backed by packed dictionary JSON under `src/data/`, not a runtime CSV MCP. To refresh from an instance:
 
 ```text
 /sys_dictionary_list.do?sysparm_query=sys_scope.sys_class_name!=sys_app^ORsys_scopeISEMPTY&CSV&sysparm_default_export_fields=all
 ```
 
-Replace `{custom scope names}` with comma-separated scope values to exclude. Keep `ORsys_scopeISEMPTY` so global dictionary rows remain. Gzip the downloaded CSV to `cursor-plugins/servicenow-xml/data/sys_dictionary.csv.gz`, then rebuild/reinstall helpers.
+```bash
+node scripts/pack-dictionary.js "path/to/sys_dictionary.csv"
+```
 
 ### Scripting reference pack
 
@@ -406,26 +429,24 @@ Replace `{custom scope names}` with comma-separated scope values to exclude. Kee
 python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting reference.xlsx"
 ```
 
-Writes `cursor-plugins/servicenow-xml/data/scripting_reference.json.gz`. Rebuild/reinstall helpers afterward.
-
-The scripting MCP also reads `data/js_performance.json`. Its performance tools expose the benchmark scope and limitations before compact search results, with exact lookup available for raw runs. The bundled measurements apply only to scoped `es_latest` server execution; they do not measure ES5-mode, global-scope transpilation, or browser performance.
+Writes `src/data/scripting_reference.json.gz`. Rebuild/reinstall helpers afterward. Registry MCP also reads `src/data/js_performance.json` for performance tools (scoped `es_latest` server measurements only).
 
 ### Install / reinstall Cursor helpers
 
 **How:** Command Palette → **ServiceNow XML: Install Cursor Helpers**, then **Developer: Reload Window** (the extension prompts for reload). The same copy/register path runs on Cursor activation when `servicenowXml.cursorHelpers.enable` is true.
 
-**What it does:** copies scripts, data, and rules under `~/.cursor/servicenow-xml/`, re-registers MCP ids (`servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-db-schema`, `servicenow-xml-scripting`, `servicenow-xml-instance`), and syncs user rules (`<!-- managed-by: servicenow-xml -->`).
+**What it does:** copies scripts, `dist/data` packs, and rules under `~/.cursor/servicenow-xml/`, re-registers MCP ids (`servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry`, and `servicenow-xml-instance` when snc is available), and syncs user rules (`<!-- managed-by: servicenow-xml -->`).
 
 **When to re-run:**
 
 - VSIX / extension upgrade that changed helper scripts, rules, or bundled data
 - MCP servers missing, duplicated, or stale after a Cursor update
 - `servicenowXml.snc.path`, `servicenowXml.snc.mcpProfiles`, or `servicenowXml.cursorHelpers.pythonPath` did not take effect (activation also re-registers when those settings change; reload is still required so Cursor picks up MCP env)
-- Python `mcp` package missing or broken (`python -m pip install --user mcp`)
+- Python `mcp` package missing or broken when using instance MCP (`python -m pip install --user mcp`)
 - Corrupted or deleted `~/.cursor/servicenow-xml/`
 - New snc profiles do **not** need a reinstall: `list_profiles` reads live `snc configure profile list`. Reinstall (or change `mcpProfiles`) only if you are tightening the allowlist
 
-If the configured Python cannot `import mcp.server.fastmcp`, helper install runs `python -m pip install --user mcp` (prompts when you use **Install Cursor Helpers**; auto-installs on normal activation). If Python itself is missing, those steps and the local MCP servers / index hook are skipped; lint, colorize, and the Records navigator keep working. Python 3 is a prerequisite for a custom MCP server and a repo indexer script that intends to save tokens on repo questions.
+Registry MCP install does **not** require Python or `pip install mcp`. When snc is present, helper install may install the Python `mcp` package for the instance MCP only. If Python is missing, instance MCP and the index hook are skipped; Registry MCP, lint, colorize, and the Records navigator keep working.
 
 ### Instance MCP (`servicenow-xml-instance`)
 
@@ -437,9 +458,31 @@ The instance MCP is skipped when `snc` is not on PATH (or `servicenowXml.snc.pat
 
 ### Prune redundant DELETE files
 
-**ServiceNow XML: Prune redundant DELETE files…** (Ctrl+Shift+P, also on Records navigator context menus) uses read-only `snc record query` to find `action="DELETE"` exports whose `sys_id` is not on the instance for the selected CLI profile, then prunes them from the repo. Files whose rows are all pruned are deleted; a file that mixes DELETE with other actions keeps the file and loses only the pruned DELETE rows. The command is hidden unless `snc` is on PATH (or `servicenowXml.snc.path`). It scans `author_elective_update` even when that folder is ignored for lint/navigator.
+**ServiceNow XML: Prune redundant DELETE files…** (Ctrl+Shift+P, also on Records navigator context menus) indexes `action="DELETE"` exports that have no live twin in the repo, then offers them for removal in a table. From the opening dialog you can either **Query instance** — a read-only `snc record query` per table against the selected CLI profile — or **Review without querying**, which goes straight to the same table.
 
-Testing note: testing has not shown `snc` applying table ACL-style restrictions; results suggest the CLI may bypass ACLs. The command still warns that existence is only checked for the selected profile, and it will not delete files when a query errors or returns an unexpected shape.
+How you start it decides the scope:
+
+| Invoked from | Scope |
+|--------------|-------|
+| Command palette | Every DELETE export in the workspace. The navigator selection is ignored, since what is selected there is usually just the active editor's record. |
+| Context menu on a DELETE record | The DELETE rows in the navigator selection, plus the row you clicked |
+| Context menu on a table folder | The DELETE rows that table holds |
+
+Live rows never enter the scope, so the menu item is offered only on a DELETE record or a table that holds one.
+
+Every candidate row is listed either way, with an **On instance** column:
+
+| Status | Meaning | Checked by default |
+|--------|---------|--------------------|
+| Not found | The profile's query succeeded and did not return the `sys_id` | Yes |
+| Still exists | The query returned the row, so install may still need the tombstone | No |
+| Not checked | No answer: that table's query failed, or no query was run | No |
+
+Nothing is removed until you apply the table, so unchecking a row exempts it and checking a `Still exists` / `Not checked` row is an explicit election. The row count of anything selected without confirmation is called out above the buttons. Selecting a record name opens its XML row, including the right row in a multi-record file.
+
+Files whose rows are all checked are deleted; a file that mixes DELETE with other actions, or that keeps an unchecked DELETE row, is rewritten and loses only the checked rows. The command is hidden unless `snc` is on PATH (or `servicenowXml.snc.path`). It scans `author_elective_update` even when that folder is ignored for lint/navigator.
+
+Testing note: testing has not shown `snc` applying table ACL-style restrictions; results suggest the CLI may bypass ACLs. The command still warns that existence is only checked for the selected profile, and a query that errors or returns an unexpected shape never marks a row as missing.
 
 VS Code installs ignore this path entirely; lint/navigator behavior is unchanged.
 
@@ -476,7 +519,7 @@ Sketch:
 - Invalidate on document open/close and debounced change instead of the file watchers, which need a workspace folder
 - Untitled buffers have no `mtimeMs`; missing metrics already sort last
 
-Known limitations to accept or solve first:
+Known limitations to accept or solve:
 
 - **Usage sorting degrades.** `RecordUsageStore` persists to `workspaceState`, which is per-window when no folder is open, so open counts do not carry over and the default `mostOpened` order is effectively arbitrary there.
 - **Value is uneven.** A retrieved update set has many `sys_update_xml` rows and makes a genuinely useful member browser; a single-record export produces a one-leaf tree that adds nothing over the status bar and Problems panel.

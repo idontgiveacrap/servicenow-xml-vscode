@@ -1,19 +1,16 @@
 import { XMLValidator } from 'fast-xml-parser';
 import {
   CLEANUP_ACTIONS,
-  CSS_FIELD_NAMES,
   CUSTOMER_UPDATE_TABLES,
   EmbeddedFieldHit,
   EmbeddedLanguage,
-  JSON_FIELD_NAMES,
   ParsedDocument,
   PRIMARY_ACTIONS,
   RecordRow,
-  SCRIPT_FIELD_NAMES,
   SnDiagnostic,
   SYS_ID_RE
 } from './kinds/types';
-import { SCRIPT_FIELD_PAIRS } from './kinds/scriptFields.generated';
+import { isCssFieldName, isScriptTypedField } from './registry/fieldKinds';
 import { looksLikeJavaScript } from './embedded/jsLikeness';
 
 /**
@@ -190,25 +187,9 @@ export function scanDirectChildElements(xml: string): DirectChildElement[] {
 
 /**
  * True when `fieldName` is a script-typed element for `tableName`.
+ * Uses Registry fieldKinds pack (dictionary-derived) plus bootstrap names.
  */
-export function isScriptTypedField(
-  tableName: string | undefined,
-  fieldName: string
-): boolean {
-  const name = fieldName.toLowerCase();
-  if (
-    (SCRIPT_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === name)
-  ) {
-    return true;
-  }
-  if (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName}.${fieldName}`)) {
-    return true;
-  }
-  if (tableName && SCRIPT_FIELD_PAIRS.has(`${tableName.toLowerCase()}.${name}`)) {
-    return true;
-  }
-  return false;
-}
+export { isScriptTypedField };
 
 function isInsideRanges(
   offset: number,
@@ -416,6 +397,11 @@ function scanRecordRows(text: string): RecordRow[] {
     );
     const sysScopeValue = extractRowFieldText(rowXml, 'sys_scope');
     const sysPackageValue = extractRowFieldText(rowXml, 'sys_package');
+    // Direct children only: payload CDATA often embeds another record's
+    // <sys_update_name> / <sys_scope>, which must not mark this row as owning them.
+    const directChildNames = new Set(
+      scanDirectChildElements(rowXml).map((c) => c.name.toLowerCase())
+    );
 
     rows.push({
       tableName: bounds.tableName,
@@ -427,9 +413,9 @@ function scanRecordRows(text: string): RecordRow[] {
       sysId: sysIdInfo?.sysId,
       sysIdLine: sysIdInfo?.line,
       sysIdCharacter: sysIdInfo?.character,
-      hasSysScope: /<\s*sys_scope\b/i.test(rowXml),
-      hasSysUpdateName: /<\s*sys_update_name\b/i.test(rowXml),
-      hasSysPackage: /<\s*sys_package\b/i.test(rowXml),
+      hasSysScope: directChildNames.has('sys_scope'),
+      hasSysUpdateName: directChildNames.has('sys_update_name'),
+      hasSysPackage: directChildNames.has('sys_package'),
       sysScopeValue,
       sysPackageValue,
       embeddedFields,
@@ -493,7 +479,7 @@ function extractSysId(
 }
 
 /**
- * Extract known script / JSON / CSS fields, plus heuristic JSON-looking element bodies.
+ * Extract script / CSS / JSON leaf fields from a row.
  */
 function extractEmbeddedFields(
   rowXml: string,
@@ -505,12 +491,15 @@ function extractEmbeddedFields(
   const seen = new Set<string>();
 
   for (const child of scanDirectChildElements(rowXml)) {
-    const language = languageForChild(tableName, child.name);
-    if (!language) {
-      continue;
-    }
     const classified = classifyLeafFieldBody(rowXml.slice(child.bodyStart, child.bodyEnd));
     if (!classified) {
+      continue;
+    }
+    const decodedContent = classified.isCdata
+      ? normalizeDecodedLineEndings(classified.content)
+      : decodeXmlFieldText(classified.content);
+    const language = languageForChild(tableName, child.name, decodedContent);
+    if (!language) {
       continue;
     }
     const bodyStartOffset = rowStart + child.bodyStart + classified.innerStart;
@@ -530,51 +519,7 @@ function extractEmbeddedFields(
       bodyStartLine: pos.line,
       bodyStartCharacter: pos.character,
       content: classified.content,
-      decodedContent: classified.isCdata
-        ? normalizeDecodedLineEndings(classified.content)
-        : decodeXmlFieldText(classified.content)
-    });
-  }
-
-  // Heuristic: leaf fields (no nested tags) whose body looks like JSON.
-  // Do not use [\s\S]*? here — that matches the outer row element and consumes the whole slice.
-  const heuristicRe =
-    /<\s*([A-Za-z_][\w.-]*)\b[^>]*>([^<]*)<\/\s*\1\s*>/gi;
-  let hm: RegExpExecArray | null;
-  while ((hm = heuristicRe.exec(rowXml)) !== null) {
-    const fieldName = hm[1];
-    if (
-      languageForChild(tableName, fieldName) ||
-      fieldName === 'sys_id' ||
-      fieldName.startsWith('sys_') ||
-      fieldName === 'payload'
-    ) {
-      continue;
-    }
-    const content = hm[2];
-    const decoded = decodeXmlEntities(content).trim();
-    if (!(decoded.startsWith('{') || decoded.startsWith('[')) || decoded.length < 2) {
-      continue;
-    }
-    const openEnd = hm[0].indexOf('>') + 1;
-    const bodyStartOffset = rowStart + hm.index + openEnd;
-    const bodyEndOffset = bodyStartOffset + content.length;
-    const pos = offsetToPosition(fullText, bodyStartOffset);
-    const key = `${fieldName}:${bodyStartOffset}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    hits.push({
-      fieldName,
-      language: 'json',
-      isCdata: false,
-      bodyStartOffset,
-      bodyEndOffset,
-      bodyStartLine: pos.line,
-      bodyStartCharacter: pos.character,
-      content,
-      decodedContent: decodeXmlEntities(content)
+      decodedContent
     });
   }
 
@@ -649,21 +594,42 @@ function pushFlowStepScriptValue(
   });
 }
 
+/**
+ * Language of a leaf field.
+ *
+ * Script/CSS come from Registry fieldKinds (dictionary embeddedLanguage).
+ * JSON is decided by body shape: ServiceNow spreads JSON across far more
+ * elements than a name list keeps up with, and structural fields like
+ * `payload` / `sys_*` stay excluded.
+ */
 function languageForChild(
   tableName: string | undefined,
-  fieldName: string
+  fieldName: string,
+  decodedContent: string
 ): EmbeddedLanguage | undefined {
   if (isScriptTypedField(tableName, fieldName)) {
     return 'javascript';
   }
   const lower = fieldName.toLowerCase();
-  if ((JSON_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === lower)) {
-    return 'json';
-  }
-  if ((CSS_FIELD_NAMES as readonly string[]).some((n) => n.toLowerCase() === lower)) {
+  if (isCssFieldName(fieldName)) {
     return 'css';
   }
-  return undefined;
+  if (lower === 'payload' || lower.startsWith('sys_')) {
+    return undefined;
+  }
+  return looksLikeJsonBody(decodedContent) ? 'json' : undefined;
+}
+
+/**
+ * Shape test, not a parse: a body that opens as an object or array is JSON that
+ * the caller should lint, even when it is malformed. Requiring a successful
+ * parse here would make broken JSON vanish from diagnostics entirely.
+ */
+function looksLikeJsonBody(decodedContent: string): boolean {
+  const trimmed = decodedContent.trim();
+  return (
+    trimmed.length >= 2 && (trimmed.startsWith('{') || trimmed.startsWith('['))
+  );
 }
 
 /**
@@ -730,21 +696,32 @@ export function extractRowElement(
       localIndex: child.start
     };
   }
+  // Fallbacks only see markup outside payload CDATA. Nested record_update
+  // bodies inside <payload> must not supply this row's field values.
+  const cdataRanges = findCdataRanges(rowXml);
   const cdataRe = new RegExp(
     `<\\s*${escapeRegExp(fieldName)}\\b[^>]*>\\s*<!\\[CDATA\\[([\\s\\S]*?)\\]\\]>\\s*</\\s*${escapeRegExp(fieldName)}\\s*>`,
-    'i'
+    'gi'
   );
-  const cm = rowXml.match(cdataRe);
-  if (cm && cm.index != null) {
-    return { content: cm[1], isCdata: true, localIndex: cm.index };
+  let cm: RegExpExecArray | null;
+  while ((cm = cdataRe.exec(rowXml)) !== null) {
+    if (cm.index != null && !isInsideRanges(cm.index, cdataRanges)) {
+      return { content: cm[1], isCdata: true, localIndex: cm.index };
+    }
   }
   const plainRe = new RegExp(
     `<\\s*${escapeRegExp(fieldName)}\\b[^>]*>([\\s\\S]*?)</\\s*${escapeRegExp(fieldName)}\\s*>`,
-    'i'
+    'gi'
   );
-  const pm = rowXml.match(plainRe);
-  if (pm && pm.index != null && !pm[0].includes('<![CDATA[')) {
-    return { content: pm[1], isCdata: false, localIndex: pm.index };
+  let pm: RegExpExecArray | null;
+  while ((pm = plainRe.exec(rowXml)) !== null) {
+    if (
+      pm.index != null &&
+      !pm[0].includes('<![CDATA[') &&
+      !isInsideRanges(pm.index, cdataRanges)
+    ) {
+      return { content: pm[1], isCdata: false, localIndex: pm.index };
+    }
   }
   return undefined;
 }

@@ -12,15 +12,22 @@ import {
 } from '../parseSnXml';
 import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from '../kinds/types';
 import type { EncodingLayer } from '../embedded/layers';
+import type { ScriptHitRole } from '../scriptHits';
 import {
   buildNormalizedDecodedToRawMap,
   rawOffsetToNormalized,
   stripJavascriptWrapper
 } from './escape';
+import { looksLikeEmbeddedScript } from '../embedded/jsLikeness';
 
 export interface JsonStringHit {
   hostPath: string;
   stableHostId: string;
+  /**
+   * What the temp editor is holding: a script, or a whole JSON-typed field.
+   * Drives the temp file's language and how write-back verifies the splice.
+   */
+  role: ScriptHitRole;
   fieldName: string;
   keyPath: string;
   draftKey: string;
@@ -123,7 +130,7 @@ export function detectJsonStringAtOffset(
   if (!found) {
     return null;
   }
-  if (!isEligibleScriptString(found.propertyName, found.unescapedValue)) {
+  if (!isEligibleScriptString(found.unescapedValue)) {
     return null;
   }
 
@@ -150,6 +157,7 @@ export function detectJsonStringAtOffset(
   return {
     hostPath,
     stableHostId: id,
+    role: 'jsonString',
     fieldName: field.fieldName,
     keyPath: found.keyPath,
     draftKey,
@@ -201,16 +209,14 @@ export function makeDraftKey(
 }
 
 /**
- * Eligible when value is javascript(…) or property name ends with Script.
+ * Eligible when the value reads as code.
+ *
+ * The property name is deliberately ignored: matching names ending in `Script`
+ * missed every script ServiceNow stores under another key, and accepted any
+ * scalar that happened to sit under a matching one.
  */
-export function isEligibleScriptString(
-  propertyName: string,
-  unescapedValue: string
-): boolean {
-  if (/Script$/i.test(propertyName)) {
-    return true;
-  }
-  return /^\s*javascript\(/.test(unescapedValue);
+export function isEligibleScriptString(unescapedValue: string): boolean {
+  return looksLikeEmbeddedScript(unescapedValue).ok;
 }
 
 function collectPayloadJsonFields(
@@ -462,7 +468,7 @@ function findStringByKeyPath(
 
   visit(decoded, visitor);
   const found = box.found;
-  if (!found || !isEligibleScriptString(found.propertyName, found.unescapedValue)) {
+  if (!found || !isEligibleScriptString(found.unescapedValue)) {
     return null;
   }
 
@@ -491,6 +497,7 @@ function findStringByKeyPath(
   return {
     hostPath,
     stableHostId: id,
+    role: 'jsonString',
     fieldName: field.fieldName,
     keyPath: found.keyPath,
     draftKey: makeDraftKey(id, field.fieldName, found.keyPath),

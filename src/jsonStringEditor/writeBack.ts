@@ -2,14 +2,19 @@ import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
-import { decodeXmlEntities, encodeXmlEntities } from '../parseSnXml';
+import {
+  decodeXmlEntities,
+  encodeXmlEntities,
+  normalizeDecodedLineEndings,
+  parseSnXml
+} from '../parseSnXml';
 import {
   restoreJavascriptWrapper,
   toJsonStringToken,
   wouldBreakCdata
 } from './escape';
 import { detectJsonStringByKeyPath, type JsonStringHit } from './detect';
-import { scriptAt } from '../scriptHits';
+import { jsonFieldAt, scriptAt } from '../scriptHits';
 import { encodeThroughLayers } from '../embedded/layers';
 import {
   deleteDraft,
@@ -158,7 +163,27 @@ export async function writeBackJsonString(
   // an error message to say so.
   const nextText = text.slice(0, absStart) + replacement + text.slice(absEnd);
 
-  if (hit.layers) {
+  if (hit.role === 'jsonField') {
+    // A JSON field holds data, so the script detectors find nothing in it. Read
+    // the splice back as a field instead, and refuse anything that would leave
+    // the body unparseable.
+    // Compared with line endings normalized: the temp file can come back CRLF
+    // on Windows, while reading the field back always collapses to LF.
+    const roundTrip = jsonFieldAt(parseSnXml(nextText), absStart);
+    if (
+      !roundTrip ||
+      roundTrip.code !== normalizeDecodedLineEndings(editedCode)
+    ) {
+      return fail('Write-back would not round-trip through the encoding layers.');
+    }
+    try {
+      JSON.parse(editedCode);
+    } catch (err) {
+      const message =
+        err instanceof Error ? err.message : 'JSON parse failed before write-back';
+      return fail(`Write-back would leave invalid JSON: ${message}`);
+    }
+  } else if (hit.layers) {
     // Read the splice back through the same descent. If the layers re-decode to
     // what was typed, every encoding in the stack was applied correctly.
     const roundTrip = scriptAt(nextText, absStart);
@@ -247,7 +272,10 @@ function relocateLayeredHit(
   hostVersion: number,
   absoluteStart: number
 ): JsonStringHit | null {
-  const found = scriptAt(text, absoluteStart);
+  const found =
+    hit.role === 'jsonField'
+      ? jsonFieldAt(parseSnXml(text), absoluteStart)
+      : scriptAt(text, absoluteStart);
   if (!found || found.fieldName !== hit.fieldName) {
     return null;
   }

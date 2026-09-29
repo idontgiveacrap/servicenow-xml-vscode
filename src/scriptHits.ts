@@ -2,8 +2,9 @@
  * Shared script discovery and encode-back.
  *
  * Lint and Format Document use listScriptFields (script-typed XML elements,
- * including those nested in a customer-update payload). The temp editor uses
- * scriptAt, which also returns JSON-string / javascript() hits.
+ * including those nested in a customer-update payload) and listJsonFields (the
+ * same, for JSON-typed elements). The temp editor uses scriptAt, which also
+ * returns JSON-string / javascript() hits.
  */
 
 import type { EncodingLayer } from './embedded/layers';
@@ -12,7 +13,12 @@ import {
   encodeThroughLayers
 } from './embedded/layers';
 import { detectJsonStringAtOffset } from './jsonStringEditor/detect';
-import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from './kinds/types';
+import type {
+  EmbeddedFieldHit,
+  EmbeddedLanguage,
+  ParsedDocument,
+  RecordRow
+} from './kinds/types';
 import { detectSysAppMetadata, JavaScriptSupport } from './javascriptSupport';
 import {
   decodeXmlEntities,
@@ -31,7 +37,7 @@ import {
 } from './scriptDeclarations';
 import { resolveScriptProfile } from './scriptProfile';
 
-export type ScriptHitRole = 'scriptField' | 'jsonString';
+export type ScriptHitRole = 'scriptField' | 'jsonField' | 'jsonString';
 
 export interface ScriptHit {
   code: string;
@@ -57,6 +63,12 @@ export interface ScriptHitOptions {
   javascriptSupport?: JavaScriptSupport;
   workspaceAppSysId?: string;
   workspaceAppScope?: string;
+  /**
+   * Also return the enclosing JSON-typed field when nothing at the offset reads
+   * as code. Opt-in: lint and range formatting ask for scripts and would treat
+   * a data field as one.
+   */
+  includeJsonFields?: boolean;
 }
 
 /**
@@ -67,6 +79,19 @@ export function listScriptFields(
   options?: ScriptHitOptions
 ): ScriptHit[] {
   return collectScriptFieldHits(doc, options);
+}
+
+/**
+ * JSON-typed XML elements on host rows and inside sys_update_xml payloads.
+ *
+ * Same shape as listScriptFields so callers can encode write-back through the
+ * identical layer stack; hits carry role 'jsonField'.
+ */
+export function listJsonFields(
+  doc: ParsedDocument,
+  options?: ScriptHitOptions
+): ScriptHit[] {
+  return collectScriptFieldHits(doc, options, 'json');
 }
 
 /**
@@ -136,7 +161,9 @@ export function scriptAt(
     options?.stableHostId
   );
   if (!json) {
-    return null;
+    return options?.includeJsonFields
+      ? jsonFieldAt(doc, absoluteOffset, options)
+      : null;
   }
   const layers = json.layers ?? layersForJsonField(json.field, json.hadJavascriptWrapper);
   return {
@@ -153,6 +180,28 @@ export function scriptAt(
     javascriptSupport,
     keyPath: json.keyPath
   };
+}
+
+/**
+ * Innermost JSON-typed field covering `absoluteOffset`, as a whole-field hit.
+ *
+ * Exported so write-back can re-find the field it spliced without going back
+ * through the script detectors, which by definition find nothing in JSON data.
+ */
+export function jsonFieldAt(
+  doc: ParsedDocument,
+  absoluteOffset: number,
+  options?: ScriptHitOptions
+): ScriptHit | null {
+  const covering = listJsonFields(doc, options).filter(
+    (h) => absoluteOffset >= h.hostStart && absoluteOffset < h.hostEnd
+  );
+  if (covering.length === 0) {
+    return null;
+  }
+  return covering.reduce((best, hit) =>
+    hit.hostEnd - hit.hostStart < best.hostEnd - best.hostStart ? hit : best
+  );
 }
 
 /**
@@ -253,8 +302,10 @@ export function restoreIndent(code: string, indent: string): string {
 
 function collectScriptFieldHits(
   doc: ParsedDocument,
-  options?: ScriptHitOptions
+  options?: ScriptHitOptions,
+  language: EmbeddedLanguage = 'javascript'
 ): ScriptHit[] {
+  const role: ScriptHitRole = language === 'json' ? 'jsonField' : 'scriptField';
   const includeDelete = options?.includeDelete === true;
   const javascriptSupport = options?.javascriptSupport ?? 'ES5';
   const documentApp = detectSysAppMetadata(doc.text);
@@ -284,7 +335,7 @@ function collectScriptFieldHits(
       rowXml
     );
     for (const field of row.embeddedFields) {
-      if (field.language !== 'javascript' || !field.decodedContent.trim()) {
+      if (field.language !== language || !field.decodedContent.trim()) {
         continue;
       }
       hits.push(
@@ -300,7 +351,8 @@ function collectScriptFieldHits(
               kind: field.isCdata ? 'cdata' : 'xmlText',
               fieldName: field.fieldName
             }
-          ]
+          ],
+          role
         )
       );
     }
@@ -314,7 +366,15 @@ function collectScriptFieldHits(
       continue;
     }
     hits.push(
-      ...payloadScriptFieldHits(doc, row, includeDelete, javascriptSupport, scopeApps)
+      ...payloadScriptFieldHits(
+        doc,
+        row,
+        includeDelete,
+        javascriptSupport,
+        scopeApps,
+        language,
+        role
+      )
     );
   }
 
@@ -329,6 +389,7 @@ function fieldToHit(
   callerScope: string | undefined,
   ownDeclarationName: string | undefined,
   layers: EncodingLayer[],
+  role: ScriptHitRole,
   hostStart = field.bodyStartOffset,
   hostEnd = field.bodyEndOffset,
   code = field.decodedContent
@@ -339,7 +400,7 @@ function fieldToHit(
     hostEnd,
     layers,
     indent: detectCommonIndent(code),
-    role: 'scriptField',
+    role,
     tableName,
     fieldName: field.fieldName,
     action,
@@ -360,7 +421,9 @@ function payloadScriptFieldHits(
     workspaceAppScope?: string;
     documentAppSysId?: string;
     documentAppScope?: string;
-  }
+  },
+  language: EmbeddedLanguage,
+  role: ScriptHitRole
 ): ScriptHit[] {
   const rowXml = doc.text.slice(row.startOffset, row.endOffset);
   const payload = locatePayloadBody(rowXml, row.startOffset);
@@ -412,7 +475,7 @@ function payloadScriptFieldHits(
       innerXml
     );
     for (const field of innerRow.embeddedFields) {
-      if (field.language !== 'javascript' || !field.decodedContent.trim()) {
+      if (field.language !== language || !field.decodedContent.trim()) {
         continue;
       }
       const absStart = payload.bodyAbs + toRawInPayload(field.bodyStartOffset);
@@ -433,6 +496,7 @@ function payloadScriptFieldHits(
               fieldName: field.fieldName
             }
           ],
+          role,
           absStart,
           absEnd
         )

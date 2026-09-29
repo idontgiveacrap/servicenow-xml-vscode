@@ -63,11 +63,18 @@ export class JsonStringSessionManager {
 
     fs.mkdirSync(TEMP_ROOT, { recursive: true });
     const safeFileName = this.makeSafeFileName(hit);
-    const tempPath = path.join(TEMP_ROOT, `${safeFileName}.js`);
+    const isJsonField = hit.role === 'jsonField';
+    const tempPath = path.join(
+      TEMP_ROOT,
+      `${safeFileName}.${isJsonField ? 'json' : 'js'}`
+    );
     fs.writeFileSync(tempPath, code, 'utf8');
     const tempUri = vscode.Uri.file(tempPath);
     const doc = await vscode.workspace.openTextDocument(tempUri);
-    await vscode.languages.setTextDocumentLanguage(doc, 'javascript');
+    await vscode.languages.setTextDocumentLanguage(
+      doc,
+      isJsonField ? 'json' : 'javascript'
+    );
     await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.Beside,
       preview: false

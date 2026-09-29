@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog, uriKey } from './catalog';
 import { matchesQuery } from './goToRecord';
 import { tableDecorationUri } from './gitStatus';
+import { getWorkspaceRegistryService } from '../registry/vscodeAdapter';
 
 export type TreeNode = TableNode | RecordNode | MessageNode;
 
@@ -349,7 +350,8 @@ export class RecordsTreeProvider
     }
 
     if (element.kind === 'table') {
-      const count = this.filteredRecordsForTable(element.table).length;
+      const tableRecords = this.filteredRecordsForTable(element.table);
+      const count = tableRecords.length;
       const item = new vscode.TreeItem(
         element.table,
         this.filterQuery
@@ -360,12 +362,19 @@ export class RecordsTreeProvider
       // Stable ids keep expansion state across refreshes and let reveal resolve
       // the table → record chain. Filter count stays out of the id on purpose.
       item.id = element.id;
-      item.contextValue = 'servicenowXml.table';
+      // Suffix lets prune show only on tables that actually hold a DELETE row.
+      item.contextValue = tableRecords.some((r) => r.action === 'DELETE')
+        ? 'servicenowXml.table.hasDelete'
+        : 'servicenowXml.table';
       // `symbol-folder` is the same glyph as `folder`, but VS Code treats the
       // `folder` id as "let the file icon theme draw this" once resourceUri is
       // set — which leaves no icon at all under themes without folder icons.
       item.iconPath = new vscode.ThemeIcon('symbol-folder');
-      item.tooltip = `${element.table}\n${count} record${count === 1 ? '' : 's'}`;
+      const tableSymbol = getWorkspaceRegistryService().registry.getTable(element.table);
+      const labelLine = tableSymbol?.label
+        ? `${tableSymbol.label} (${element.table})`
+        : element.table;
+      item.tooltip = `${labelLine}\n${count} record${count === 1 ? '' : 's'}`;
       // Synthetic URI so the folder picks up the Git state rolled up from its
       // record files; record leaves get that from their own file URI.
       item.resourceUri = tableDecorationUri(element.table);
@@ -390,9 +399,11 @@ export class RecordsTreeProvider
       title: 'Open',
       arguments: [r]
     };
-    // Suffix lets context menus show Delete only for INSERT_OR_UPDATE rows.
-    item.contextValue =
-      r.action === 'INSERT_OR_UPDATE'
+    // Suffixes let context menus split by action: converting to DELETE only
+    // makes sense for a live row, pruning only for one that is already DELETE.
+    item.contextValue = isDelete
+      ? 'servicenowXml.record.delete'
+      : r.action === 'INSERT_OR_UPDATE'
         ? 'servicenowXml.record.insertOrUpdate'
         : 'servicenowXml.record';
     // The accent is the whole active-file marker: selection stays the user's,

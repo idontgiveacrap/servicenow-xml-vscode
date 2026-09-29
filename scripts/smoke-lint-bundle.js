@@ -175,7 +175,7 @@ try {
   ];
 
   const scopedCaller = undefNames(
-    'var a = new customUtil()\nvar b = new AppUtil()\nvar c = global.customUtil\nvar d = new ArrayUtil()\n',
+    'var a = new customUtil()\nvar b = new AppUtil()\nvar c = global.customUtil\nvar d = new ArrayUtil()\nvar e = new x_app.AppUtil()\n',
     'server',
     'sys_script',
     extras,
@@ -196,6 +196,10 @@ try {
   assert.ok(
     scopedCaller.some((m) => m.includes("'ArrayUtil'")),
     `bundled global SIs must not be bare from a scoped caller, got: ${scopedCaller.join(' | ')}`
+  );
+  assert.ok(
+    !scopedCaller.some((m) => m.includes("'x_app'")),
+    `same-scope prefix must not be no-undef, got: ${scopedCaller.join(' | ')}`
   );
 
   const globalCaller = undefNames(

@@ -13,7 +13,8 @@ import {
   RecordsTreeProvider,
   TreeNode
 } from './navigator/tree';
-import { changeActionToDelete } from './navigator/changeActionToDelete';
+import { authorRecordDeletion } from './navigator/authorDelete';
+import { deleteRecordFromDisk } from './navigator/deleteExportFile';
 import { registerGoToRecord } from './navigator/goToRecord';
 import { ActiveRecordSync } from './navigator/activeRecord';
 import {
@@ -34,6 +35,8 @@ import { registerEmbeddedFormatter } from './formatEmbedded';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
 import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
+import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import { registerRegistryLanguageProviders } from './registry/languageProviders';
 import {
   refreshSncContext,
   registerPruneRedundantDeletes
@@ -87,9 +90,18 @@ export function activate(context: vscode.ExtensionContext): void {
   registerJsonStringEditor(context);
   registerEmbeddedFormatter(context, (document) => gate.isValidationAllowed(document));
 
+  // Shared Registry (static packs + workspace symbols) for lint / navigator / MCP.
+  getWorkspaceRegistryService();
+  registerRegistryLanguageProviders(context);
+
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog(context.workspaceState);
+  catalog.configure({
+    getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
+    getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
+    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport()
+  });
   const declarationIndex = new ScriptDeclarationIndex(context.workspaceState);
   declarationIndex.configure({
     isActive: () =>
@@ -444,49 +456,17 @@ function activateDiagnosticsAndCommands(
       'servicenowXml.changeActionToDelete',
       async (element?: unknown) => {
         const record = getCatalogRecordFromTreeElement(element);
-        if (!record || record.action !== 'INSERT_OR_UPDATE') {
-          return;
+        if (record) {
+          await authorRecordDeletion(record);
         }
-        const confirm = await vscode.window.showWarningMessage(
-          `Change action of "${record.displayName}" (${record.table}) from INSERT_OR_UPDATE to DELETE?`,
-          { modal: true },
-          'Change to DELETE'
-        );
-        if (confirm !== 'Change to DELETE') {
-          return;
-        }
-        try {
-          const document = await vscode.workspace.openTextDocument(record.uri);
-          const result = changeActionToDelete(
-            document.getText(),
-            record.uri.fsPath,
-            record
-          );
-          if (!result.ok) {
-            void vscode.window.showErrorMessage(
-              `Could not change action to DELETE: ${result.reason}.`
-            );
-            return;
-          }
-          const edit = new vscode.WorkspaceEdit();
-          const fullRange = new vscode.Range(
-            document.positionAt(0),
-            document.positionAt(document.getText().length)
-          );
-          edit.replace(record.uri, fullRange, result.text);
-          const applied = await vscode.workspace.applyEdit(edit);
-          if (!applied) {
-            void vscode.window.showErrorMessage(
-              'Could not apply action=DELETE change to the file.'
-            );
-            return;
-          }
-          await document.save();
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          void vscode.window.showErrorMessage(
-            `Could not change action to DELETE: ${detail}`
-          );
+      }
+    ),
+    vscode.commands.registerCommand(
+      'servicenowXml.deleteRecordFromDisk',
+      async (element?: unknown) => {
+        const record = getCatalogRecordFromTreeElement(element);
+        if (record) {
+          await deleteRecordFromDisk(record);
         }
       }
     ),

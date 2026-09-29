@@ -5,220 +5,20 @@ import { SnDiagnostic } from './kinds/types';
 import { JavaScriptSupport } from './javascriptSupport';
 import { decodeXmlEntities } from './parseSnXml';
 import {
-  globalsForDeclarations,
-  ScopeList,
   ScriptDeclaration,
-  scriptDeclarationsKey,
-  ScriptIncludeWhitelist
+  scriptDeclarationsKey
 } from './scriptDeclarations';
-
-const SERVER_GLOBALS: Record<string, 'readonly' | 'writable'> = {
-  // Core scripting entry point
-  gs: 'readonly',
-  Class: 'readonly',
-  SNC: 'readonly',
-
-  // Query / record APIs
-  GlideRecord: 'readonly',
-  GlideRecordSecure: 'readonly',
-  GlideAggregate: 'readonly',
-  GlideQuery: 'readonly',
-  GlideQueryCondition: 'readonly',
-  GlideFilter: 'readonly',
-  GlideElement: 'readonly',
-  GlideTableHierarchy: 'readonly',
-  GlideDBFunctionBuilder: 'readonly',
-
-  // Date / time
-  GlideDateTime: 'readonly',
-  GlideDate: 'readonly',
-  GlideTime: 'readonly',
-  GlideDuration: 'readonly',
-  GlideSchedule: 'readonly',
-  GlideScheduleDateTime: 'readonly',
-
-  // Session / security
-  GlideSystem: 'readonly',
-  GlideSession: 'readonly',
-  GlideUser: 'readonly',
-  GlideImpersonate: 'readonly',
-  GlideSecurityManager: 'readonly',
-  GlideEncrypter: 'readonly',
-  GlideDigest: 'readonly',
-
-  // Utility
-  GlideSysAttachment: 'readonly',
-  GlideStringUtil: 'readonly',
-  GlideXMLUtil: 'readonly',
-  GlideProperties: 'readonly',
-  GlideTemplate: 'readonly',
-  GlideURI: 'readonly',
-  GlideEmailOutbound: 'readonly',
-  GlideTransaction: 'readonly',
-  GlideScriptedExtensionPoint: 'readonly',
-  GlideSPScriptable: 'readonly',
-
-  // Scoped API namespaces
-  sn_ws: 'readonly',
-  sn_fd: 'readonly',
-  sn_auth: 'readonly',
-  sn_sc: 'readonly',
-  sn_cmdb: 'readonly',
-  sn_impex: 'readonly',
-  sn_notification: 'readonly',
-
-  // Rhino/Java bridge; only reachable from global-scope scripts, but scoped
-  // exports occasionally still carry legacy code that references it.
-  Packages: 'readonly',
-  java: 'readonly',
-
-  // Platform-supplied entry-point variables. Which of these is bound depends on
-  // the script field (business rule, UI action, notification, scripted REST),
-  // and the linter has no per-field binding table, so all are always allowed.
-  current: 'readonly',
-  previous: 'readonly',
-  g_scratchpad: 'writable',
-  workflow: 'readonly',
-  activity: 'readonly',
-  action: 'readonly',
-  event: 'readonly',
-  producer: 'readonly',
-  template: 'readonly',
-  email: 'readonly',
-  email_action: 'readonly',
-  request: 'readonly',
-  response: 'readonly',
-  RP: 'readonly',
-  AbstractAjaxProcessor: 'readonly'
-};
-
-const CLIENT_GLOBALS: Record<string, 'readonly' | 'writable'> = {
-  // Platform-supplied client variables
-  g_form: 'readonly',
-  g_user: 'readonly',
-  g_list: 'readonly',
-  g_scratchpad: 'writable',
-  g_navigation: 'readonly',
-  g_document: 'readonly',
-  g_i18n: 'readonly',
-  g_modal: 'readonly',
-  g_menu: 'readonly',
-  g_service_catalog: 'readonly',
-
-  // Client-side Glide classes. GlideAjax is how client code reaches a
-  // client-callable Script Include, so the Script Include name itself is a
-  // string argument and never appears as a bare identifier here.
-  GlideAjax: 'readonly',
-  GlideRecord: 'readonly',
-  GlideModal: 'readonly',
-  GlideModalForm: 'readonly',
-  GlideDialogWindow: 'readonly',
-  GlideList2: 'readonly',
-  GlideMenu: 'readonly',
-  GlideURL: 'readonly',
-  GlideForm: 'readonly',
-  GlideUser: 'readonly',
-  NOW: 'readonly',
-
-  // Service Portal client
-  spModal: 'readonly',
-  spUtil: 'readonly',
-
-  gel: 'readonly',
-  getMessage: 'readonly',
-  alert: 'readonly',
-  confirm: 'readonly',
-  prompt: 'readonly',
-  console: 'readonly',
-  document: 'readonly',
-  window: 'readonly',
-  location: 'readonly',
-  navigator: 'readonly',
-  history: 'readonly',
-  top: 'readonly',
-  parent: 'readonly',
-  fetch: 'readonly',
-  CustomEvent: 'readonly',
-  setTimeout: 'readonly',
-  clearTimeout: 'readonly',
-  setInterval: 'readonly',
-  clearInterval: 'readonly',
-  jQuery: 'readonly',
-  $: 'readonly',
-  $j: 'readonly',
-  angular: 'readonly',
-  // UX client script include wrapper
-  imports: 'readonly',
-  api: 'readonly',
-
-  // Additional names bound in the browser UI runtime. `0` and
-  // `now.__SNANALYTICS_OBSERVER_SET__` are omitted: ESLint globals must be
-  // identifiers. The latter is covered by `now`.
-  CustomEventManager: 'readonly',
-  DevStudio: 'readonly',
-  GJSV: 'readonly',
-  NOW_UCM_INFO: 'readonly',
-  Prism: 'readonly',
-  alertDeprecated: 'readonly',
-  amb: 'readonly',
-  appliedPageFragmentsPromise: 'readonly',
-  breakpointHitAlert: 'readonly',
-  caml_fs_tmp: 'readonly',
-  coreui_total_ui_time: 'readonly',
-  ephox: 'readonly',
-  frameBusterRouteChangeWithoutRedirect: 'readonly',
-  g_ambClient: 'readonly',
-  g_application_picker: 'readonly',
-  g_ck: 'readonly',
-  g_first_day_of_week: 'readonly',
-  g_tiny_url: 'readonly',
-  g_tz: 'readonly',
-  g_tz_offset: 'readonly',
-  g_tz_user_offset: 'readonly',
-  g_user_date_format: 'readonly',
-  g_user_date_time_format: 'readonly',
-  gsft_main: 'readonly',
-  initDevStudioLauncher: 'readonly',
-  interopPatch: 'readonly',
-  jsoo_create_file: 'readonly',
-  launchScriptDebugger: 'readonly',
-  launchScriptDebuggerOK: 'readonly',
-  loadScriptWhenIdle: 'readonly',
-  now: 'readonly',
-  nowAnalytics: 'readonly',
-  nowUiFramework: 'readonly',
-  nowUiFrameworkLogs: 'readonly',
-  nowUiFrameworkMetrics: 'readonly',
-  nowWindowManager: 'readonly',
-  pageMeta: 'readonly',
-  popupOpenFocus: 'readonly',
-  regeneratorRuntime: 'readonly',
-  resolveApfPromise: 'readonly',
-  resolveSubscreenPromise: 'readonly',
-  serviceWorkerManager: 'readonly',
-  snmCabrillo: 'readonly',
-  subscreenPromise: 'readonly',
-  tectonicVarWrapperState: 'readonly',
-  tinyMCE: 'readonly',
-  tinymce: 'readonly',
-  transaction_source: 'readonly',
-  triggerSoftwareUpdateFlow: 'readonly',
-  uxPageSessionDebug: 'readonly',
-  ux_globals: 'readonly',
-  uxf: 'readonly',
-  uxfIntentLibrary: 'readonly',
-  uxfTriggerLibrary: 'readonly',
-  uxf_timing: 'readonly',
-  wrapTectonicVarIfNeeded: 'readonly'
-};
-
-// Required rather than imported so tsc does not infer a literal type for every
-// one of the several thousand names; esbuild still inlines the JSON.
-const SCRIPT_INCLUDES: ScriptIncludeWhitelist = require('./data/scriptIncludes.json');
-
-// Instance scope list, so a `<scope>.<Name>` namespace resolves even when the
-// Script Include whitelist has no record for that scope.
-const SCOPES: ScopeList = require('./data/scopes.json');
+import {
+  globalsForLint,
+  platformGlobalsMap,
+  shadowAllowFromRegistry
+} from './registry/lintGlobals';
+import { getRuntimeFieldIndex, getRuntimeRegistry } from './registry/runtime';
+import {
+  lintSchemaTableArgs,
+  schemaMessagesToEslint
+} from './registry/schemaLint';
+import { extractAndMergeMethods } from './registry/lazyParse';
 
 /** Characters that force entity encoding (or break CDATA) in XML text nodes. */
 const XML_TEXT_ESCAPE_RE = /[&<]|[^\t\n\r\x20-\x7E]/;
@@ -474,22 +274,13 @@ function configFor(
   // Indexed / bundled Script Include names come first so the hand-maintained
   // platform lists win if an instance ever ships a Script Include that shadows
   // a Glide API.
-  const declarationGlobals = globalsForDeclarations({
+  const registry = getRuntimeRegistry();
+  const globals = globalsForLint(registry, {
     profile,
     callerScope,
-    bundledScriptIncludes: SCRIPT_INCLUDES,
-    bundledScopes: SCOPES,
-    extra: extraDeclarations
+    extra: extraDeclarations,
+    featureGlobals: PLATFORM_FEATURE_GLOBALS
   });
-  const globals =
-    profile === 'client'
-      ? { ...PLATFORM_FEATURE_GLOBALS, ...declarationGlobals, ...CLIENT_GLOBALS }
-      : {
-          ...PLATFORM_FEATURE_GLOBALS,
-          ...declarationGlobals,
-          ...SERVER_GLOBALS,
-          ...CLIENT_GLOBALS
-        };
   const platformRules =
     javascriptSupport === 'ES5'
       ? { ...PLATFORM_RULES_ALL_MODES, ...PLATFORM_RULES_ES5_ONLY }
@@ -501,9 +292,11 @@ function configFor(
   // shadow it. Indexed and same-document records are source in the workspace
   // rather than platform API, and the record's own name stays exempt even when
   // it is inactive, has no resolvable scope, or overrides a bundled name.
-  const shadowAllow = Object.keys(
-    globalsForDeclarations({ profile, callerScope, extra: extraDeclarations })
-  );
+  const shadowAllow = shadowAllowFromRegistry(registry, {
+    profile,
+    callerScope,
+    extra: extraDeclarations
+  });
   if (ownDeclarationName) {
     shadowAllow.push(ownDeclarationName);
   }
@@ -515,8 +308,9 @@ function configFor(
   if (profile === 'server') {
     // Client names are merged into the server profile only to tolerate mixed
     // legacy code; the ones a server script never receives are fair game.
-    for (const name of Object.keys(CLIENT_GLOBALS)) {
-      if (!(name in SERVER_GLOBALS)) {
+    const serverNames = platformGlobalsMap(registry, 'server');
+    for (const name of Object.keys(platformGlobalsMap(registry, 'client'))) {
+      if (!(name in serverNames)) {
         shadowAllow.push(name);
       }
     }
@@ -760,6 +554,13 @@ export function lintScriptRegions(
       extraDeclarations
     );
     const source = region.decodedContent;
+    if (region.ownDeclarationName) {
+      extractAndMergeMethods(getRuntimeRegistry(), {
+        ownerName: region.ownDeclarationName,
+        scope: region.callerScope,
+        script: source
+      });
+    }
     let messages: LinterType.LintMessage[];
     try {
       messages = engine.verify(source, config, {
@@ -778,6 +579,14 @@ export function lintScriptRegions(
       });
       continue;
     }
+
+    // Schema-aware table/field checks share the Registry dictionary packs.
+    const schemaMessages = lintSchemaTableArgs(
+      source,
+      getRuntimeRegistry(),
+      getRuntimeFieldIndex()
+    );
+    messages = messages.concat(schemaMessagesToEslint(schemaMessages));
 
     for (const msg of messages) {
       // ESLint lines/columns are 1-based

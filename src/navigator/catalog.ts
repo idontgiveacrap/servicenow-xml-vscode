@@ -10,11 +10,13 @@ import {
   PersistedCatalogRecord,
   readCatalogCache
 } from './catalogCache';
+import type { CachedDeclaration } from '../registry/cache';
+import { getWorkspaceRegistryService } from '../registry/vscodeAdapter';
 import {
   ExportRecord,
-  readExportRecords,
+  readExportRecordsWithDeclarations,
   SCAN_CONCURRENCY,
-  scanExportRecords
+  scanExportRecordsWithDeclarations
 } from './scanExports';
 import { RecordUsageStore, uriKey } from './usage';
 
@@ -85,6 +87,12 @@ export class RecordCatalog implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private readonly usage: RecordUsageStore;
   private readonly workspaceState: vscode.Memento;
+  /** Declaration scripts collected in the same pass as record scans (Registry). */
+  private lastDeclarations: CachedDeclaration[] = [];
+  private getWorkspaceAppSysId: () => string | undefined = () => undefined;
+  private getWorkspaceAppScope: () => string | undefined = () => undefined;
+  private getWorkspaceJavaScriptSupport: () => string | undefined = () =>
+    undefined;
 
   constructor(workspaceState: vscode.Memento) {
     this.workspaceState = workspaceState;
@@ -160,6 +168,22 @@ export class RecordCatalog implements vscode.Disposable {
     }
     this.disposables.length = 0;
     this.listeners.clear();
+  }
+
+  /**
+   * Bind workspace app metadata used when extracting script declarations
+   * during the unified export scan.
+   */
+  configure(options: {
+    getWorkspaceAppSysId: () => string | undefined;
+    getWorkspaceAppScope: () => string | undefined;
+    getWorkspaceJavaScriptSupport?: () => string | undefined;
+  }): void {
+    this.getWorkspaceAppSysId = options.getWorkspaceAppSysId;
+    this.getWorkspaceAppScope = options.getWorkspaceAppScope;
+    if (options.getWorkspaceJavaScriptSupport) {
+      this.getWorkspaceJavaScriptSupport = options.getWorkspaceJavaScriptSupport;
+    }
   }
 
   /** Subscribe to catalog rebuilds (tree refresh). */
@@ -321,6 +345,14 @@ export class RecordCatalog implements vscode.Disposable {
     }
     this.applyRecords(restored);
     this.restoredFromCache = true;
+    void getWorkspaceRegistryService()
+      .restoreFromDisk(this.workspaceCacheKey(), this.configCacheKey())
+      .then((ok) => {
+        if (ok) {
+          this.lastDeclarations =
+            getWorkspaceRegistryService().getCachedDeclarations();
+        }
+      });
     return true;
   }
 
@@ -423,6 +455,7 @@ export class RecordCatalog implements vscode.Disposable {
         }
       }
       await this.persistCache();
+      await this.syncRegistry();
     };
 
     if (showProgress) {
@@ -544,12 +577,20 @@ export class RecordCatalog implements vscode.Disposable {
 
   /**
    * Scan XML files with bounded concurrency to avoid serial I/O and memory spikes.
+   * Also extracts Script Include / UI Script declarations for the Registry.
    */
   private async scanWorkspace(): Promise<CatalogRecord[]> {
     const ignoreGlobs = getIgnoreGlobs();
     const excludeDelete = this.excludeDelete();
-    const records = await scanExportRecords({ ignoreGlobs, excludeDelete });
-    return records.map((record) => this.withUsage(record));
+    const scanned = await scanExportRecordsWithDeclarations({
+      ignoreGlobs,
+      excludeDelete,
+      extractDeclarations: true,
+      workspaceAppSysId: this.getWorkspaceAppSysId(),
+      workspaceAppScope: this.getWorkspaceAppScope()
+    });
+    this.lastDeclarations = scanned.declarations;
+    return scanned.records.map((record) => this.withUsage(record));
   }
 
   /**
@@ -560,8 +601,52 @@ export class RecordCatalog implements vscode.Disposable {
     ignoreGlobs = getIgnoreGlobs(),
     excludeDelete = this.excludeDelete()
   ): Promise<CatalogRecord[]> {
-    const records = await readExportRecords(uri, { ignoreGlobs, excludeDelete });
-    return records.map((record) => this.withUsage(record));
+    const found = await readExportRecordsWithDeclarations(uri, {
+      ignoreGlobs,
+      excludeDelete,
+      extractDeclarations: true,
+      workspaceAppSysId: this.getWorkspaceAppSysId(),
+      workspaceAppScope: this.getWorkspaceAppScope()
+    });
+    return found.records.map((record) => this.withUsage(record));
+  }
+
+  /**
+   * Push catalog rows + declarations into the shared Registry and disk cache.
+   */
+  private async syncRegistry(): Promise<void> {
+    if (!this.loaded) {
+      return;
+    }
+    const records = [...this.recordsByUri.values()].flat().map((record) => ({
+      table: record.table,
+      displayName: record.displayName,
+      sysId: record.sysId,
+      action: record.action,
+      apiName: record.apiName,
+      sysModCount: record.sysModCount,
+      startOffset: record.startOffset,
+      mtimeMs: record.mtimeMs,
+      uri: record.uri.toString(),
+      relativePath: record.relativePath
+    }));
+    const scope = this.getWorkspaceAppScope();
+    const jsLevel = this.getWorkspaceJavaScriptSupport();
+    const service = getWorkspaceRegistryService();
+    service.setWorkspaceData({
+      records,
+      declarations: this.lastDeclarations,
+      app: {
+        sysId: this.getWorkspaceAppSysId(),
+        scope,
+        jsLevel,
+        supportsES12:
+          Boolean(scope) &&
+          scope !== 'global' &&
+          (jsLevel === 'ES12' || jsLevel === 'es_latest')
+      }
+    });
+    await service.persistToDisk(this.workspaceCacheKey(), this.configCacheKey());
   }
 
   /**
@@ -674,10 +759,23 @@ export class RecordCatalog implements vscode.Disposable {
     this.pendingFileChanges.clear();
     const generation = this.scanGeneration;
     const updated = await Promise.all(
-      changes.map(async ([key, uri]) => ({
-        key,
-        records: uri ? await this.readCatalogRecords(uri) : []
-      }))
+      changes.map(async ([key, uri]) => {
+        if (!uri) {
+          return { key, records: [] as CatalogRecord[], declarations: [] as CachedDeclaration[] };
+        }
+        const found = await readExportRecordsWithDeclarations(uri, {
+          ignoreGlobs: getIgnoreGlobs(),
+          excludeDelete: this.excludeDelete(),
+          extractDeclarations: true,
+          workspaceAppSysId: this.getWorkspaceAppSysId(),
+          workspaceAppScope: this.getWorkspaceAppScope()
+        });
+        return {
+          key,
+          records: found.records.map((record) => this.withUsage(record)),
+          declarations: found.declarations
+        };
+      })
     );
 
     if (
@@ -688,11 +786,22 @@ export class RecordCatalog implements vscode.Disposable {
       return;
     }
 
-    for (const { key, records } of updated) {
+    const changedKeys = new Set(changes.map(([key]) => key));
+    this.lastDeclarations = this.lastDeclarations.filter((declaration) => {
+      try {
+        return !changedKeys.has(uriKey(vscode.Uri.parse(declaration.uri)));
+      } catch {
+        return true;
+      }
+    });
+    for (const { key, records, declarations } of updated) {
       if (records.length > 0) {
         this.recordsByUri.set(key, records);
       } else {
         this.recordsByUri.delete(key);
+      }
+      for (const declaration of declarations) {
+        this.lastDeclarations.push(declaration);
       }
     }
     this.rebuildViews();
@@ -708,6 +817,7 @@ export class RecordCatalog implements vscode.Disposable {
       }
     }
     await this.persistCache();
+    await this.syncRegistry();
   }
 
   private stopWatching(): void {

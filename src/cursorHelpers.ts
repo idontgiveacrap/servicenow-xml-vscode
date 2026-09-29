@@ -45,13 +45,16 @@ export const PLUGIN_ID = 'servicenow-xml';
 /** Stable install root for scripts/schema used by MCP + hooks + rules. */
 export const HELPERS_HOME = path.join(os.homedir(), '.cursor', PLUGIN_ID);
 
-/** MCP server ids registered by this extension (all prefixed with PLUGIN_ID). */
+/** MCP server ids (prefixed with PLUGIN_ID). Retired ids remain for unregister-on-install. */
 export const MCP_SERVERS = {
   docs: `${PLUGIN_ID}-docs`,
   uiExamples: `${PLUGIN_ID}-ui-examples`,
+  /** @deprecated Unregistered only; schema lives on Registry MCP. */
   dbSchema: `${PLUGIN_ID}-db-schema`,
+  /** @deprecated Unregistered only; scripting lives on Registry MCP. */
   scripting: `${PLUGIN_ID}-scripting`,
-  liveInstance: `${PLUGIN_ID}-instance`
+  liveInstance: `${PLUGIN_ID}-instance`,
+  registry: `${PLUGIN_ID}-registry`
 } as const;
 
 /** Prior MCP ids / display names — unregistered and removed from mcp.json on install. */
@@ -147,10 +150,10 @@ export function bundledHelpersRoot(context: vscode.ExtensionContext): string {
 let installCursorHelpersInFlight: Promise<CursorHelpersResult> | undefined;
 
 /**
- * Idempotently install ServiceNow Cursor helpers: scripts, schema, rules, MCP, optional hook.
+ * Idempotently install ServiceNow Cursor helpers: scripts, data, rules, MCP, optional hook.
  * No-ops on VS Code (or when disabled) without throwing.
- * Python absence only skips Python-dependent pieces (db-schema MCP, pip, index hook);
- * rules and remote MCPs still install. Never throws to the caller.
+ * Registry MCP (Node) always installs when the bundle exists — no Python required.
+ * Instance MCP needs Python + mcp + snc; index hook needs Python. Never throws to the caller.
  */
 export async function installCursorHelpers(
   context: vscode.ExtensionContext,
@@ -254,14 +257,6 @@ async function installCursorHelpersCore(
     path.join(scriptsDest, 'servicenow_repo_index.py')
   );
   syncedFiles += syncFile(
-    path.join(bundleRoot, 'scripts', 'db_schema_mcp_server.py'),
-    path.join(scriptsDest, 'db_schema_mcp_server.py')
-  );
-  syncedFiles += syncFile(
-    path.join(bundleRoot, 'scripts', 'scripting_mcp_server.py'),
-    path.join(scriptsDest, 'scripting_mcp_server.py')
-  );
-  syncedFiles += syncFile(
     path.join(bundleRoot, 'scripts', 'instance_mcp_server.py'),
     path.join(scriptsDest, 'instance_mcp_server.py')
   );
@@ -274,33 +269,63 @@ async function installCursorHelpersCore(
     path.join(hooksDest, 'session_start_index.py')
   );
 
-  const schemaGz = path.join(bundleRoot, 'data', 'sys_dictionary.csv.gz');
-  const schemaCsvGz = path.join(dataDest, 'sys_dictionary.csv.gz');
-  if (fs.existsSync(schemaGz)) {
-    syncedFiles += syncFile(schemaGz, schemaCsvGz);
-  } else {
-    messages.push(
-      'Bundled schema CSV gzip missing; DB schema MCP needs SCHEMA_CSV_PATH.'
-    );
+  // Drop retired Python MCP scripts / legacy data split from prior installs.
+  for (const stale of [
+    path.join(scriptsDest, 'db_schema_mcp_server.py'),
+    path.join(scriptsDest, 'scripting_mcp_server.py'),
+    path.join(dataDest, 'sys_dictionary.csv.gz')
+  ]) {
+    try {
+      if (fs.existsSync(stale)) {
+        fs.unlinkSync(stale);
+      }
+    } catch {
+      // Ignore locked files.
+    }
+  }
+  const legacyRegistryDir = path.join(dataDest, 'registry');
+  if (fs.existsSync(legacyRegistryDir)) {
+    try {
+      fs.rmSync(legacyRegistryDir, { recursive: true, force: true });
+    } catch {
+      // Ignore locked trees.
+    }
   }
 
-  const scriptingGz = path.join(bundleRoot, 'data', 'scripting_reference.json.gz');
-  const scriptingRefGz = path.join(dataDest, 'scripting_reference.json.gz');
-  if (fs.existsSync(scriptingGz)) {
-    syncedFiles += syncFile(scriptingGz, scriptingRefGz);
+  // Registry MCP (Node) — schema, scripting/performance, workspace discovery.
+  const extensionDist = path.join(context.extensionPath, 'dist');
+  const registryMcpSrc = path.join(extensionDist, 'registryMcp.js');
+  const registryMcpDest = path.join(scriptsDest, 'registryMcp.js');
+  let includeRegistry = false;
+  if (fs.existsSync(registryMcpSrc)) {
+    syncedFiles += syncFile(registryMcpSrc, registryMcpDest);
+    const distData = path.join(extensionDist, 'data');
+    for (const name of [
+      'dictionaryTables.json',
+      'dictionaryFields.json.gz',
+      'fieldKinds.json',
+      'platformGlobals.json',
+      'scriptIncludes.json',
+      'scopes.json',
+      'scripting_reference.json.gz',
+      'js_performance.json'
+    ]) {
+      const from = path.join(distData, name);
+      if (fs.existsSync(from)) {
+        syncedFiles += syncFile(from, path.join(dataDest, name));
+      }
+    }
+    includeRegistry =
+      fs.existsSync(registryMcpDest) &&
+      fs.existsSync(path.join(dataDest, 'dictionaryTables.json'));
+    if (includeRegistry && !fs.existsSync(path.join(dataDest, 'scripting_reference.json.gz'))) {
+      messages.push(
+        'scripting_reference.json.gz missing under helpers data; Registry scripting tools will be empty.'
+      );
+    }
   } else {
     messages.push(
-      'Bundled scripting reference gzip missing; scripting MCP needs SCRIPTING_REF_PATH.'
-    );
-  }
-
-  const jsPerformance = path.join(bundleRoot, 'data', 'js_performance.json');
-  const jsPerformanceRef = path.join(dataDest, 'js_performance.json');
-  if (fs.existsSync(jsPerformance)) {
-    syncedFiles += syncFile(jsPerformance, jsPerformanceRef);
-  } else {
-    messages.push(
-      'Bundled JavaScript performance data missing; scripting MCP performance tools will be unavailable.'
+      'Registry MCP bundle missing (dist/registryMcp.js); Node Registry MCP skipped.'
     );
   }
 
@@ -321,23 +346,30 @@ async function installCursorHelpersCore(
 
   const pythonPath = cfg.get<string>('cursorHelpers.pythonPath', 'python') || 'python';
   const pythonOk = await pythonIsAvailable(pythonPath);
+  const sncPath = cfg.get<string>('snc.path', 'snc') || 'snc';
+  const sncOk = await sncCliExists(sncPath);
   let mcpPkgOk = false;
 
   if (!pythonOk) {
     messages.push(
-      `Python not available (${pythonPath}); skipping local MCP servers, pip install, and index hook. Lint/navigator unaffected.`
+      `Python not available (${pythonPath}); skipping instance MCP, pip install, and index hook. Registry MCP / lint / navigator unaffected.`
     );
     if (options?.force) {
       void vscode.window.showWarningMessage(
-        `ServiceNow Cursor helpers: Python not found (${pythonPath}). Indexer and local MCP servers were skipped; other features still work.`
+        `ServiceNow Cursor helpers: Python not found (${pythonPath}). Instance MCP and indexer were skipped; Registry MCP still installs.`
       );
     }
-  } else {
+  } else if (sncOk) {
+    // pip only when instance MCP can run — Registry MCP is Node-only.
     const mcpPkg = await ensurePythonMcpPackage(pythonPath, {
       interactive: Boolean(options?.force)
     });
     messages.push(...mcpPkg.messages);
     mcpPkgOk = mcpPkg.ok;
+  } else {
+    messages.push(
+      `snc not available (${sncPath}); skipping ${MCP_SERVERS.liveInstance} (and pip install mcp). Registry MCP still installs.`
+    );
   }
 
   // Only install the sessionStart indexer hook when Python can run it.
@@ -350,24 +382,10 @@ async function installCursorHelpersCore(
     messages.push('sessionStart index hook skipped (no Python)');
   }
 
-  const sncPath = cfg.get<string>('snc.path', 'snc') || 'snc';
-  const includeInstance =
-    pythonOk && mcpPkgOk && (await sncCliExists(sncPath));
-  if (pythonOk && mcpPkgOk && !includeInstance) {
-    messages.push(
-      `snc not available (${sncPath}); skipping ${MCP_SERVERS.liveInstance}.`
-    );
-  }
+  const includeInstance = pythonOk && mcpPkgOk && sncOk;
 
   const { registered, unregistered } = registerMcpServers({
     pythonPath,
-    schemaServerScript: path.join(scriptsDest, 'db_schema_mcp_server.py'),
-    schemaCsvPath: schemaCsvGz,
-    includeDbSchema: pythonOk && mcpPkgOk && fs.existsSync(schemaCsvGz),
-    scriptingServerScript: path.join(scriptsDest, 'scripting_mcp_server.py'),
-    scriptingRefPath: scriptingRefGz,
-    jsPerformancePath: fs.existsSync(jsPerformanceRef) ? jsPerformanceRef : '',
-    includeScripting: pythonOk && mcpPkgOk && fs.existsSync(scriptingRefGz),
     instanceServerScript: path.join(scriptsDest, 'instance_mcp_server.py'),
     sncPath,
     sncProfileAllowlist: JSON.stringify(
@@ -375,15 +393,16 @@ async function installCursorHelpersCore(
         .map((name) => name.trim())
         .filter(Boolean)
     ),
-    includeInstance
+    includeInstance,
+    registryServerScript: registryMcpDest,
+    registryDataDir: dataDest,
+    includeRegistry
   });
 
   const pluginPath = registerPluginPath(pluginDest);
 
   writeManifest(context, {
-    schemaCsvGz,
-    scriptingRefGz,
-    jsPerformanceRef,
+    dataDest,
     scriptsDest,
     hooksDest,
     pluginDest
@@ -513,7 +532,7 @@ async function ensurePythonMcpPackage(
 
   if (options.interactive) {
     const choice = await vscode.window.showInformationMessage(
-      `Python package "mcp" is required for local MCP servers (${MCP_SERVERS.dbSchema}, ${MCP_SERVERS.scripting}, ${MCP_SERVERS.liveInstance}). Install with ${pythonPath} -m pip install mcp?`,
+      `Python package "mcp" is required for ${MCP_SERVERS.liveInstance}. Install with ${pythonPath} -m pip install mcp?`,
       'Install',
       'Skip'
     );
@@ -534,7 +553,7 @@ async function ensurePythonMcpPackage(
     messages.push(`pip install mcp failed: ${detail}`);
     if (options.interactive) {
       void vscode.window.showWarningMessage(
-        `Could not install Python mcp for ServiceNow DB schema. Run: ${pythonPath} -m pip install mcp`
+        `Could not install Python mcp for ServiceNow instance MCP. Run: ${pythonPath} -m pip install mcp`
       );
     } else {
       console.warn(
@@ -593,17 +612,13 @@ async function pythonHasMcp(pythonPath: string): Promise<boolean> {
 
 function registerMcpServers(args: {
   pythonPath: string;
-  schemaServerScript: string;
-  schemaCsvPath: string;
-  includeDbSchema: boolean;
-  scriptingServerScript: string;
-  scriptingRefPath: string;
-  jsPerformancePath: string;
-  includeScripting: boolean;
   instanceServerScript: string;
   sncPath: string;
   sncProfileAllowlist: string;
   includeInstance: boolean;
+  registryServerScript: string;
+  registryDataDir: string;
+  includeRegistry: boolean;
 }): { registered: string[]; unregistered: string[] } {
   const cursor = getCursorApi();
   const registered: string[] = [];
@@ -612,6 +627,7 @@ function registerMcpServers(args: {
     return { registered, unregistered };
   }
 
+  // Unregister current + retired Python schema/scripting + legacy ids.
   const allNames = [
     ...Object.values(MCP_SERVERS),
     ...LEGACY_MCP_NAMES
@@ -643,44 +659,34 @@ function registerMcpServers(args: {
     }
   }
 
-  if (args.includeDbSchema) {
+  if (args.includeRegistry) {
     try {
+      const workspaceRoot =
+        vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? '';
       cursor.mcp.registerServer({
-        name: MCP_SERVERS.dbSchema,
+        name: MCP_SERVERS.registry,
         server: {
-          command: args.pythonPath,
-          args: [args.schemaServerScript],
+          command: 'node',
+          args: [args.registryServerScript],
           env: {
-            SCHEMA_CSV_PATH: args.schemaCsvPath
+            REGISTRY_DATA_DIR: args.registryDataDir,
+            ...(workspaceRoot
+              ? {
+                  REGISTRY_WORKSPACE: workspaceRoot,
+                  REGISTRY_CACHE_PATH: path.join(
+                    workspaceRoot,
+                    '.servicenow-xml',
+                    'registry-cache.json'
+                  )
+                }
+              : {})
           }
         }
       });
-      registered.push(MCP_SERVERS.dbSchema);
+      registered.push(MCP_SERVERS.registry);
     } catch (error) {
       console.warn(
-        '[servicenow-xml] DB schema MCP register failed (non-fatal):',
-        error
-      );
-    }
-  }
-
-  if (args.includeScripting) {
-    try {
-      cursor.mcp.registerServer({
-        name: MCP_SERVERS.scripting,
-        server: {
-          command: args.pythonPath,
-          args: [args.scriptingServerScript],
-          env: {
-            SCRIPTING_REF_PATH: args.scriptingRefPath,
-            JS_PERFORMANCE_PATH: args.jsPerformancePath
-          }
-        }
-      });
-      registered.push(MCP_SERVERS.scripting);
-    } catch (error) {
-      console.warn(
-        '[servicenow-xml] Scripting MCP register failed (non-fatal):',
+        '[servicenow-xml] Registry MCP register failed (non-fatal):',
         error
       );
     }
@@ -850,9 +856,7 @@ function installSessionStartHook(hookScript: string): boolean {
 function writeManifest(
   context: vscode.ExtensionContext,
   paths: {
-    schemaCsvGz: string;
-    scriptingRefGz: string;
-    jsPerformanceRef: string;
+    dataDest: string;
     scriptsDest: string;
     hooksDest: string;
     pluginDest: string;
@@ -861,14 +865,18 @@ function writeManifest(
   const files: Record<string, string> = {};
   for (const file of [
     path.join(paths.scriptsDest, 'servicenow_repo_index.py'),
-    path.join(paths.scriptsDest, 'db_schema_mcp_server.py'),
-    path.join(paths.scriptsDest, 'scripting_mcp_server.py'),
     path.join(paths.scriptsDest, 'instance_mcp_server.py'),
     path.join(paths.scriptsDest, 'mcp_usage_log.py'),
+    path.join(paths.scriptsDest, 'registryMcp.js'),
     path.join(paths.hooksDest, 'session_start_index.py'),
-    paths.schemaCsvGz,
-    paths.scriptingRefGz,
-    paths.jsPerformanceRef
+    path.join(paths.dataDest, 'dictionaryTables.json'),
+    path.join(paths.dataDest, 'dictionaryFields.json.gz'),
+    path.join(paths.dataDest, 'fieldKinds.json'),
+    path.join(paths.dataDest, 'scripting_reference.json.gz'),
+    path.join(paths.dataDest, 'js_performance.json'),
+    path.join(paths.dataDest, 'platformGlobals.json'),
+    path.join(paths.dataDest, 'scriptIncludes.json'),
+    path.join(paths.dataDest, 'scopes.json')
   ]) {
     if (fs.existsSync(file)) {
       files[file] = sha256File(file);
@@ -876,8 +884,7 @@ function writeManifest(
   }
   const manifest: InstallManifest = {
     version: context.extension.packageJSON.version ?? '0.0.0',
-    files,
-    schemaSha256: files[paths.schemaCsvGz]
+    files
   };
   fs.writeFileSync(
     path.join(HELPERS_HOME, MANIFEST_NAME),

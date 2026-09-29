@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.13.0",
+  "version": "3.0.1",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -66,7 +66,11 @@
       },
       {
         "command": "servicenowXml.changeActionToDelete",
-        "title": "Delete"
+        "title": "Convert record to DELETE…"
+      },
+      {
+        "command": "servicenowXml.deleteRecordFromDisk",
+        "title": "Delete from disk…"
       },
       {
         "command": "servicenowXml.cursor.installHelpers",
@@ -78,7 +82,7 @@
       },
       {
         "command": "servicenowXml.editJsonStringCode",
-        "title": "ServiceNow XML: Edit Embedded Script…"
+        "title": "ServiceNow XML: Edit Embedded Script or JSON…"
       },
       {
         "command": "servicenowXml.loadJsonStringDraft",
@@ -133,6 +137,10 @@
         {
           "command": "servicenowXml.changeActionToDelete",
           "when": "false"
+        },
+        {
+          "command": "servicenowXml.deleteRecordFromDisk",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -160,23 +168,28 @@
       "view/item/context": [
         {
           "command": "servicenowXml.revealInExplorer",
-          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
           "group": "navigation@1"
         },
         {
           "command": "servicenowXml.revealInFileExplorer",
-          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
           "group": "navigation@2"
         },
         {
           "command": "servicenowXml.pruneRedundantDeletes",
-          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate || viewItem == servicenowXml.table)",
+          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record.delete || viewItem == servicenowXml.table.hasDelete)",
           "group": "1_modification@1"
         },
         {
           "command": "servicenowXml.changeActionToDelete",
           "when": "view == servicenowXml.records && viewItem == servicenowXml.record.insertOrUpdate",
           "group": "7_modification@1"
+        },
+        {
+          "command": "servicenowXml.deleteRecordFromDisk",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
+          "group": "7_modification@2"
         }
       ],
       "editor/context": [
@@ -204,6 +217,11 @@
           "type": "boolean",
           "default": true,
           "description": "After XML format, format JavaScript in script-typed XML fields (including scripts nested in update-set payloads). Uses the editor's JavaScript formatter."
+        },
+        "servicenowXml.formatJson": {
+          "type": "boolean",
+          "default": true,
+          "description": "After XML format, format JSON in JSON-typed XML fields such as output_schema, props and composition (including those nested in update-set payloads). Uses the editor's JSON formatter. Fields that do not parse as JSON are left alone."
         },
         "servicenowXml.formatXmlFirst": {
           "type": "boolean",
@@ -308,7 +326,9 @@
         ],
         "embeddedLanguages": {
           "meta.embedded.block.javascript": "javascript",
-          "source.js": "javascript"
+          "source.js": "javascript",
+          "meta.embedded.block.json": "json",
+          "meta.embedded.block.css": "css"
         }
       }
     ]
@@ -319,7 +339,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",
@@ -327,7 +347,9 @@
     "@types/vscode": "^1.85.0",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.28.1",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   },
   "dependencies": {
     "eslint": "^8.57.1",

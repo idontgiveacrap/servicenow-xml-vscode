@@ -20,9 +20,8 @@ import {
   buildNormalizedDecodedToRawMap,
   rawOffsetToNormalized
 } from '../jsonStringEditor/escape';
-import { stripJavascriptWrapper } from '../jsonStringEditor/escape';
 import { resolveScriptProfile } from '../scriptProfile';
-import { looksLikeJavaScript } from './jsLikeness';
+import { looksLikeEmbeddedScript } from './jsLikeness';
 
 /** How many nested documents to follow before giving up. */
 const MAX_DEPTH = 6;
@@ -278,8 +277,8 @@ function finish(
   tableName: string,
   keyPath?: string
 ): EmbeddedScriptHit | null {
-  const { code, hadWrapper } = stripJavascriptWrapper(value);
-  if (!looksLikeJavaScript(code).ok) {
+  const { ok, code, hadWrapper } = looksLikeEmbeddedScript(value);
+  if (!ok) {
     return null;
   }
   return {

@@ -4,11 +4,12 @@ Convert the ServiceNow scripting reference workbook into MCP-ready JSON.gz.
 
 Source workbook is human-oriented (cover sheet, title rows, multi-sheet layout).
 This script strips presentation rows, normalizes column names, and writes a single
-UTF-8 JSON document gzipped for the servicenow-xml-scripting MCP server.
+UTF-8 JSON document gzipped for the servicenow-xml-registry MCP
+(scripting / performance tools).
 
 Usage:
   python scripts/pack-scripting-reference.py [path/to/workbook.xlsx]
-  python scripts/pack-scripting-reference.py --out cursor-plugins/servicenow-xml/data/scripting_reference.json.gz
+  python scripts/pack-scripting-reference.py --out src/data/scripting_reference.json.gz
 """
 
 from __future__ import annotations
@@ -30,8 +31,7 @@ except ImportError:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUT = (
     REPO_ROOT
-    / "cursor-plugins"
-    / "servicenow-xml"
+    / "src"
     / "data"
     / "scripting_reference.json.gz"
 )

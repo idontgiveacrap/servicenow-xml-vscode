@@ -193,6 +193,26 @@ try {
     'global'
   );
 
+  // A row with no scope fields at all (a flow's sys_variable_value script)
+  // takes the workspace app scope so in-scope names stay bare-callable.
+  assert.strictEqual(
+    resolveTechnicalScope({ workspaceAppScope: 'x_example' }),
+    'x_example'
+  );
+  assert.strictEqual(
+    resolveTechnicalScope({ documentAppScope: 'x_example' }),
+    'x_example'
+  );
+  assert.strictEqual(resolveTechnicalScope({}), undefined);
+  assert.strictEqual(
+    resolveTechnicalScope({
+      sysScopeValue: 'global',
+      workspaceAppScope: 'x_example'
+    }),
+    'global',
+    'an explicit global sys_scope must win over the workspace app scope'
+  );
+
   const persisted = {
     table: 'sys_script_include',
     profile: 'server',

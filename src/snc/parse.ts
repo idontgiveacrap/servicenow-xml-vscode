@@ -15,6 +15,8 @@ export interface IndexedExport {
   uriString: string;
   relativePath: string;
   displayName: string;
+  /** Row offset used to open the record in multi-record XML files. */
+  startOffset: number;
   /**
    * False for DELETE rows outside a navigator selection. Such rows still count
    * toward the file's row total so a partial selection cannot delete the file.
@@ -26,6 +28,8 @@ export interface IndexedExport {
 export interface DeleteRow {
   table: string;
   sysId: string;
+  displayName: string;
+  startOffset: number;
 }
 
 /** File holding DELETE rows eligible for an instance check. */
@@ -44,11 +48,29 @@ export interface SkipNote {
   reason: string;
 }
 
-/** File plus the sys_ids confirmed absent on the instance. */
+/** File plus the sys_ids selected for removal. */
 export interface PruneTarget {
   file: DeleteFileCandidate;
   sysIds: string[];
   removesWholeFile: boolean;
+}
+
+/**
+ * Instance-check outcome for one DELETE row.
+ *
+ * `unchecked` covers both halves of "no answer": the table's query failed, or
+ * no query ran at all because the user chose to review without querying.
+ */
+export type DeleteRowStatus = 'absent' | 'present' | 'unchecked';
+
+/** One DELETE row offered for removal, with its instance-check outcome. */
+export interface PruneCandidateRow {
+  file: DeleteFileCandidate;
+  table: string;
+  sysId: string;
+  displayName: string;
+  startOffset: number;
+  status: DeleteRowStatus;
 }
 
 export type RecordQueryParse =
@@ -232,7 +254,12 @@ export function selectDeleteQueryCandidates(records: IndexedExport[]): {
         continue;
       }
       seen.add(id);
-      eligible.push({ table: row.table, sysId: id });
+      eligible.push({
+        table: row.table,
+        sysId: id,
+        displayName: row.displayName,
+        startOffset: row.startOffset
+      });
     }
     if (eligible.length === 0) {
       continue;
@@ -249,31 +276,30 @@ export function selectDeleteQueryCandidates(records: IndexedExport[]): {
 }
 
 /**
- * Per-file sys_ids that a successful query proved absent from the instance.
- * Tables whose query failed are not present in `presentByTable`, so their rows
- * never become prune targets.
+ * Flatten candidate files into one row per DELETE record, tagged with what the
+ * instance query said about it.
+ *
+ * A table whose query failed is absent from `presentByTable`, so its rows come
+ * back `unchecked` rather than `absent`: nothing an instance never answered for
+ * is ever reported as confirmed gone.
  */
-export function confirmedMissingByFile(
+export function classifyDeleteRows(
   candidates: DeleteFileCandidate[],
   presentByTable: Map<string, Set<string>>
-): PruneTarget[] {
-  const targets: PruneTarget[] = [];
+): PruneCandidateRow[] {
+  const rows: PruneCandidateRow[] = [];
   for (const file of candidates) {
-    const sysIds: string[] = [];
     for (const row of file.rows) {
       const present = presentByTable.get(row.table);
-      if (present && !present.has(row.sysId)) {
-        sysIds.push(row.sysId);
-      }
+      rows.push({
+        file,
+        table: row.table,
+        sysId: row.sysId,
+        displayName: row.displayName,
+        startOffset: row.startOffset,
+        status: !present ? 'unchecked' : present.has(row.sysId) ? 'present' : 'absent'
+      });
     }
-    if (sysIds.length === 0) {
-      continue;
-    }
-    targets.push({
-      file,
-      sysIds,
-      removesWholeFile: sysIds.length === file.primaryRowCount
-    });
   }
-  return targets;
+  return rows;
 }

@@ -16,8 +16,10 @@ import {
 } from '../src/jsonStringEditor/detect';
 import {
   decodeXmlEntities,
-  encodeXmlEntities
+  encodeXmlEntities,
+  parseSnXml
 } from '../src/parseSnXml';
+import { encodeHit, jsonFieldAt, scriptAt } from '../src/scriptHits';
 import {
   ensureGitignoreEntry,
   gitignoreHasEntry,
@@ -84,12 +86,90 @@ section('CDATA / XML entities');
 
 section('eligibility + draft keys');
 {
-  assert.equal(isEligibleScriptString('clientTransformScript', 'x'), true);
-  assert.equal(isEligibleScriptString('label', 'javascript(foo)'), true);
-  assert.equal(isEligibleScriptString('label', 'nope'), false);
+  // Content, not the property name: a value under a *Script key that is only a
+  // scalar is not a script, and a script under any other key still is.
+  assert.equal(isEligibleScriptString('x'), false);
+  assert.equal(isEligibleScriptString('function f(){ return 1; }'), true);
+  assert.equal(isEligibleScriptString('nope'), false);
+  assert.equal(isEligibleScriptString('evidence_submission_field sys_id'), false);
+  // An explicit javascript(…) wrapper is its own evidence, even when the inner
+  // source is just a member lookup.
+  assert.equal(isEligibleScriptString('javascript(current.number)'), true);
   const k1 = makeDraftKey('a.xml', 'composition', 'events.[0].clientTransformScript');
   const k2 = makeDraftKey('a.xml', 'composition', 'events.[1].clientTransformScript');
   assert.notEqual(k1, k2);
+}
+
+section('whole JSON field at the caret');
+{
+  const propsJson = [
+    '[',
+    '  {',
+    '    "name": "sys_id",',
+    '    "label": "Entity sys_id",',
+    '    "description": "evidence_submission_field sys_id",',
+    '    "mandatory": true',
+    '  }',
+    ']'
+  ].join('\n');
+  // ServiceNow writes a CR entity before each newline in a text-node field.
+  const rawProps = propsJson.split('\n').join('&#13;\n');
+  const xml = `<?xml version="1.0"?>
+<record_update table="sys_ux_data_broker_transform">
+  <sys_ux_data_broker_transform action="INSERT_OR_UPDATE">
+    <sys_id>cccccccccccccccccccccccccccccccc</sys_id>
+    <props>${rawProps}</props>
+    <data>{"onLoad":"function go(){ return 1; }"}</data>
+    <script><![CDATA[function transform(input){ return input; }]]></script>
+  </sys_ux_data_broker_transform>
+</record_update>
+`;
+  const opts = { hostPath: 'broker.xml', hostVersion: 1, includeJsonFields: true };
+
+  const inProps = xml.indexOf('"label"');
+  const fieldHit = scriptAt(xml, inProps, opts);
+  assert.ok(fieldHit, 'expected the enclosing JSON field');
+  assert.equal(fieldHit!.role, 'jsonField');
+  assert.equal(fieldHit!.fieldName, 'props');
+  assert.equal(fieldHit!.code, propsJson);
+  assert.equal(xml.slice(fieldHit!.hostStart, fieldHit!.hostEnd), rawProps);
+
+  // Opt-in only: lint and range formatting must not see data as a script.
+  assert.equal(scriptAt(xml, inProps, { hostPath: 'broker.xml' }), null);
+
+  // A plain string inside the field is data, so the field still wins.
+  const onDescription = xml.indexOf('evidence_submission_field sys_id');
+  assert.equal(scriptAt(xml, onDescription, opts)!.role, 'jsonField');
+
+  // A string that reads as code wins over the field that contains it.
+  const onEmbeddedScript = xml.indexOf('function go');
+  const stringHit = scriptAt(xml, onEmbeddedScript, opts);
+  assert.equal(stringHit!.role, 'jsonString');
+  assert.equal(stringHit!.keyPath, 'onLoad');
+  assert.equal(stringHit!.code, 'function go(){ return 1; }');
+
+  // A script-typed field still resolves as a script.
+  assert.equal(
+    scriptAt(xml, xml.indexOf('function transform'), opts)!.role,
+    'scriptField'
+  );
+
+  // Write-back re-encodes the whole body, which drops the &#13; noise.
+  const edited = propsJson.replace('"mandatory": true', '"mandatory": false');
+  const encoded = encodeHit(fieldHit!, edited);
+  assert.ok(encoded.ok, 'expected the field to encode');
+  const next =
+    xml.slice(0, fieldHit!.hostStart) +
+    (encoded as { text: string }).text +
+    xml.slice(fieldHit!.hostEnd);
+  assert.ok(!next.includes('&#13;'), 'CR entities should be gone after write-back');
+  const roundTrip = jsonFieldAt(parseSnXml(next), fieldHit!.hostStart);
+  assert.ok(roundTrip, 'expected to re-find the field after the splice');
+  assert.equal(roundTrip!.code, edited);
+  assert.equal(
+    (JSON.parse(roundTrip!.code) as Array<{ mandatory: boolean }>)[0].mandatory,
+    false
+  );
 }
 
 section('detect in composition XML');

@@ -116,31 +116,13 @@ export interface ClassificationResult {
   pendingRulesNote?: string;
 }
 
-/** Known executable script field element names (CDATA expected). */
+/** Known executable script field element names (CDATA expected). Bootstrap for cold parse. */
 export const SCRIPT_FIELD_NAMES = [
   'script',
   'client_script_v2',
   'script_true',
   'script_false'
 ] as const;
-
-/** Known JSON-ish fields in UX / config exports (plain text or entity-escaped). */
-export const JSON_FIELD_NAMES = [
-  'composition',
-  'layout',
-  'props',
-  'style_config',
-  'output_schema',
-  'bundles',
-  'data',
-  'state_properties',
-  'required_translations',
-  'component_dependencies',
-  'associated_types'
-] as const;
-
-/** Known CSS fields. */
-export const CSS_FIELD_NAMES = ['css', 'style'] as const;
 
 export const PRIMARY_ACTIONS = new Set([
   'INSERT_OR_UPDATE',
