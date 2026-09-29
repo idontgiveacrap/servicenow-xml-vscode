@@ -130,6 +130,27 @@ def _export_xml_newer_than_index(root: Path, index_mtime: float) -> bool:
     return False
 
 
+def _registry_cache_path(root: Path) -> Path:
+    return root / ".servicenow-xml" / "registry-cache.json"
+
+
+def _registry_cache_is_fresh(root: Path) -> bool:
+    """
+    True when the extension Registry cache exists and no export XML is newer.
+    Agents prefer Registry MCP over regenerating Python index.json.
+    """
+    cache = _registry_cache_path(root)
+    try:
+        if not cache.is_file():
+            return False
+        mtime = cache.stat().st_mtime
+    except OSError:
+        return False
+    if _export_xml_newer_than_index(root, mtime):
+        return False
+    return True
+
+
 def _index_is_current(root: Path) -> bool:
     """
     Current when index.json exists, matches HEAD (when in a git repo), and no
@@ -204,6 +225,9 @@ def main() -> int:
         root = Path(raw)
         if not _looks_like_sn_export(root):
             skipped.append(f"{root}: not a ServiceNow export")
+            continue
+        if _registry_cache_is_fresh(root):
+            skipped.append(f"{root}: registry-cache fresh (skip Python index)")
             continue
         if _index_is_current(root):
             head = _git_head(root)

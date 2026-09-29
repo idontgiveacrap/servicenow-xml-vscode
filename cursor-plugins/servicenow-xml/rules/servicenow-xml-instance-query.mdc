@@ -42,7 +42,7 @@ This rule is generic — do not assume any specific scoped-app tables. Discover 
 
 - **App scope / tables**: the export marker `{sys_id}/sys_app_{sys_id}.xml` and `sys_scope` / `sys_db_object` rows in the repo name the application's tables.
 - **Custom class rows**: many app records are stored on a base table (e.g. `task`) with `sys_class_name=<scoped_table>`; if a direct query on the scoped table fails ACL, query the base table filtered by `sys_class_name` instead.
-- **Schema**: use the **servicenow-xml-db-schema** MCP (bundled `sys_dictionary` CSV) for offline field/table lookups, or `record_query` against `sys_dictionary` / `sys_db_object` for live schema.
+- **Schema**: use the **servicenow-xml-registry** MCP (`list_tables`, `get_table`, `list_columns`, `search_schema`) for offline field/table lookups, or `record_query` against `sys_dictionary` / `sys_db_object` for live schema.
 
 Pass only the `fields` you need on `record_query` (limit is capped at 100).
 
@@ -50,12 +50,12 @@ Pass only the `fields` you need on `record_query` (limit is capped at 100).
 
 1. **Repo** — implementation, dictionary, exported ACL/XML
 2. **servicenow-xml-docs** MCP — platform APIs and product behavior
-3. **servicenow-xml-db-schema** MCP — offline table/field schema from the bundled `sys_dictionary` CSV
+3. **servicenow-xml-registry** MCP — offline table/field schema, scripting reference, workspace record discovery
 4. **servicenow-xml-instance** MCP — live data, runtime config, ACL outcomes, deployment state (reads by default)
 
 State which source answered the question, including the profile/host when the instance MCP was used.
 
-To refresh the bundled CSV on an instance:
+To refresh the dictionary pack that backs Registry schema tools, export CSV from an instance and run `node scripts/pack-dictionary.js <csv>` (CSV is a pack refresh input, not a runtime MCP source):
 
 ```text
 /sys_dictionary_list.do?sysparm_query=sys_scope.scopeNOT+IN{custom scope names}^ORsys_scopeISEMPTY&CSV&sysparm_default_export_fields=all

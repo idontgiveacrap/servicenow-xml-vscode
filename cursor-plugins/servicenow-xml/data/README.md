@@ -1,49 +1,41 @@
-# Reference data for local MCP servers
+# Reference data (legacy plugin folder)
 
-Bundled under this folder and synced to `~/.cursor/servicenow-xml/data/` on Cursor helper install.
+Runtime Registry packs ship from **`src/data/`** (copied to `dist/data/` at build, then synced to `~/.cursor/servicenow-xml/data/` on Cursor helper install). This folder is no longer the install source for schema/scripting packs.
 
-| File | MCP server | Purpose |
-|------|------------|---------|
-| `sys_dictionary.csv.gz` | **servicenow-xml-db-schema** | Instance `sys_dictionary` export |
-| `scripting_reference.json.gz` | **servicenow-xml-scripting** | Server APIs, browser runtime catalog/items, snippets, undocumented notes |
-| `js_performance.json` | **servicenow-xml-scripting** | Evidence-bounded server JavaScript benchmark comparisons |
+| File (under `src/data/`) | Consumed by | Purpose |
+|--------------------------|-------------|---------|
+| `dictionaryTables.json` / `dictionaryFields.json.gz` | **servicenow-xml-registry** | Offline schema |
+| `fieldKinds.json` | Extension parse / script profile | Compact script/CSS/JSON field sets |
+| `scripting_reference.json.gz` | **servicenow-xml-registry** | Server APIs, runtime catalog/items, snippets |
+| `js_performance.json` | **servicenow-xml-registry** | Evidence-bounded JS benchmark comparisons |
+| `platformGlobals.json` / `scriptIncludes.json` / `scopes.json` | Registry + lint | Platform APIs and SI whitelist |
 
-## sys_dictionary CSV refresh
+Python `servicenow-xml-db-schema` and `servicenow-xml-scripting` MCP servers are **retired**; use Registry MCP tools instead.
 
-On a ServiceNow instance, open (or download):
+## Dictionary pack refresh
+
+On a ServiceNow instance, download:
 
 ```text
 /sys_dictionary_list.do?sysparm_query=sys_scope.sys_class_name!=sys_app^ORsys_scopeISEMPTY&CSV&sysparm_default_export_fields=all
 ```
 
-Replace `{custom scope names}` with a comma-separated list of scoped app **scope** values to exclude (for example `x_prefix_scope,x_prefix_scope2`). The `ORsys_scopeISEMPTY` clause keeps global and empty-scope dictionary rows.
+Then:
 
-### Packaging
+```bash
+node scripts/pack-dictionary.js "path/to/sys_dictionary.csv"
+```
 
-1. Save the CSV from the URL above.
-2. Gzip it to `sys_dictionary.csv.gz` in this folder (Windows list CSV is typically **cp1252**).
-3. Rebuild / reinstall Cursor helpers so `~/.cursor/servicenow-xml/data/sys_dictionary.csv.gz` updates.
-
-The MCP reads the gzip directly via `SCHEMA_CSV_PATH` and returns normalized JSON (`list_tables`, `get_table`, `list_columns`, `search_schema`) plus optional raw rows (`get_dictionary_rows`).
+Writes `src/data/dictionaryTables.json`, `dictionaryFields.json.gz`, and `fieldKinds.json`. Rebuild/reinstall helpers afterward. CSV is a **refresh input**, not a runtime MCP source.
 
 ## Scripting reference pack
-
-Source workbook is a multi-sheet Excel guide (cover, runtime catalog/items, server globals, useful scripts, undocumented APIs, UI Builder examples). Pack it into MCP-ready JSON:
 
 ```bash
 python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting reference.xlsx"
 ```
 
-Writes `scripting_reference.json.gz` here (UTF-8 JSON, presentation rows stripped, snake_case fields). Rebuild / reinstall Cursor helpers so `SCRIPTING_REF_PATH` picks up the new file.
-
-The scripting MCP exposes `get_scripting_meta`, `list_scripting_sections`, `get_scripting_section`, `lookup_scripting_name`, `search_scripting_reference`, and `list_runtime_items`.
+Writes `src/data/scripting_reference.json.gz`. Registry MCP exposes `get_scripting_meta`, section list/get, lookup/search, `list_runtime_items`, and JS performance tools.
 
 ## JavaScript performance data
 
-`js_performance.json` stores derived comparisons and the supplied raw runs together. The MCP exposes:
-
-- `get_js_performance_meta` for scope, environment gaps, method, and ratio semantics
-- `search_js_performance` for compact evidence rows
-- `lookup_js_performance` for exact comparisons with raw runs and limitations
-
-Keep the evidence boundary explicit. The current dataset measures ES5-compatible and ES12 constructs inside a scoped `es_latest` server runtime. It contains no ES5-runtime, global-scope transpilation, or browser measurements.
+`src/data/js_performance.json` — `get_js_performance_meta`, `search_js_performance`, `lookup_js_performance` on Registry MCP. Scoped `es_latest` server measurements only.
