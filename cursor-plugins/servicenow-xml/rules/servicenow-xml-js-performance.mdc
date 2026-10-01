@@ -15,6 +15,6 @@ When performance affects a ServiceNow script decision, query the **servicenow-xm
 
 The bundled dataset currently contains scoped-application `es_latest` (**ES12**) server measurements only. It has no ES5-runtime, global-scope transpilation, or browser measurements. An ES5-compatible baseline measured inside an ES12 runtime is **not** an ES5-runtime result.
 
-Language legality still comes from Registry MCP `get_workspace_app` (or `index.json` → `app.supportsES12` / `js_level` as fallback) per **`servicenow-xml-review.mdc`**. Performance evidence never permits ES12 syntax in an ES5-only application.
+Language legality comes from Registry MCP `get_workspace_app` (`supportsES12`, `jsLevel`) per **`servicenow-xml-review.mdc`**. Performance evidence never permits ES12 syntax in an ES5-only application.
 
 If the MCP returns no matching evidence, say that no bundled measurement covers the comparison. Do not invent timing, rankings, engine behavior, or statistical confidence.

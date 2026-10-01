@@ -70,7 +70,7 @@ function main() {
 
   /** @type {Map<string, { name: string, label?: string }>} */
   const tables = new Map();
-  /** @type {Map<string, Array<{ element: string, internalType?: string, reference?: string, embeddedLanguage?: string }>>} */
+  /** @type {Map<string, Array<{ element: string, label?: string, internalType?: string, reference?: string, embeddedLanguage?: string }>>} */
   const fieldsByTable = new Map();
 
   let tableDefs = 0;
@@ -119,6 +119,7 @@ function main() {
     }
     list.push({
       element,
+      ...(label ? { label } : {}),
       ...(internalType ? { internalType } : {}),
       ...(reference ? { reference } : {}),
       ...(embeddedLanguage ? { embeddedLanguage } : {})

@@ -627,13 +627,23 @@ function registerMcpServers(args: {
     return { registered, unregistered };
   }
 
-  // Unregister current + retired Python schema/scripting + legacy ids.
-  const allNames = [
-    ...Object.values(MCP_SERVERS),
+  // Cursor starts these processes before extension activation. Unregistering a
+  // server we are about to keep kills that process and leaves it "failed to
+  // create" until the user reloads that MCP by hand. Only drop retired ids,
+  // plus a live id when this install will not register it.
+  const retire = new Set<string>([
+    MCP_SERVERS.dbSchema,
+    MCP_SERVERS.scripting,
     ...LEGACY_MCP_NAMES
-  ];
+  ]);
+  if (!args.includeRegistry) {
+    retire.add(MCP_SERVERS.registry);
+  }
+  if (!args.includeInstance) {
+    retire.add(MCP_SERVERS.liveInstance);
+  }
   if (cursor.mcp.unregisterServer) {
-    for (const name of allNames) {
+    for (const name of retire) {
       try {
         cursor.mcp.unregisterServer(name);
         unregistered.push(name);

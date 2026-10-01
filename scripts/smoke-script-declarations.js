@@ -7,7 +7,6 @@ const esbuild = require('esbuild');
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sn-xml-decl-smoke-'));
 const declsPath = path.join(tempDir, 'scriptDeclarations.cjs');
 const parsePath = path.join(tempDir, 'parseSnXml.cjs');
-const cachePath = path.join(tempDir, 'declarationCache.cjs');
 
 try {
   esbuild.buildSync({
@@ -26,27 +25,13 @@ try {
     format: 'cjs',
     logLevel: 'silent'
   });
-  esbuild.buildSync({
-    entryPoints: [
-      path.join(__dirname, '..', 'src', 'scriptDeclarationCache.ts')
-    ],
-    outfile: cachePath,
-    bundle: true,
-    platform: 'node',
-    format: 'cjs',
-    logLevel: 'silent'
-  });
-
   const {
     extractScriptDeclarations,
     isScriptDeclarationExportPath,
-    resolveTechnicalScope
+    resolveTechnicalScope,
+    topLevelFunctionNames
   } = require(declsPath);
   const { parseSnXml } = require(parsePath);
-  const {
-    createDeclarationCache,
-    readDeclarationCache
-  } = require(cachePath);
 
   const fixturePath = path.join(
     __dirname,
@@ -213,22 +198,42 @@ try {
     'an explicit global sys_scope must win over the workspace app scope'
   );
 
-  const persisted = {
-    table: 'sys_script_include',
-    profile: 'server',
-    scope: 'x_example',
-    name: 'HelloWorld',
-    uri: 'file:///c%3A/work/sys_script_include_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
-  };
-  const cache = createDeclarationCache('workspace-a', 'config-a', [persisted]);
   assert.deepStrictEqual(
-    readDeclarationCache(cache, 'workspace-a', 'config-a'),
-    [persisted]
+    topLevelFunctionNames(
+      'function keep() {}\nfunction nested() { function hide() {} }\n// function skipped() {}\n"function quoted() {}"'
+    ),
+    ['keep', 'nested']
   );
-  assert.strictEqual(
-    readDeclarationCache(cache, 'workspace-b', 'config-a'),
-    undefined
+
+  const brXml = `<record_update table="sys_script">
+    <sys_script action="INSERT_OR_UPDATE">
+      <name>Utility label</name>
+      <collection>global</collection>
+      <active>true</active>
+      <condition/>
+      <filter_condition/>
+      <script><![CDATA[function fromBefore() {
+  function inner() {}
+}
+function alsoGlobal() {}]]></script>
+      <sys_scope>global</sys_scope>
+    </sys_script>
+  </record_update>`;
+  const brDecls = extractScriptDeclarations(parseSnXml(brXml));
+  assert.deepStrictEqual(
+    brDecls.map((d) => d.name),
+    ['fromBefore', 'alsoGlobal']
   );
+  assert.ok(brDecls.every((d) => d.table === 'sys_script' && d.profile === 'server' && d.scope === 'global'));
+
+  const conditioned = brXml.replace('<condition/>', '<condition>true</condition>');
+  assert.deepStrictEqual(
+    extractScriptDeclarations(parseSnXml(conditioned)),
+    [],
+    'a condition means the business rule is not an unconditional global'
+  );
+  const tableBr = brXml.replace('<collection>global</collection>', '<collection>incident</collection>');
+  assert.deepStrictEqual(extractScriptDeclarations(parseSnXml(tableBr)), []);
 
   console.log('script declaration smoke tests passed');
 } finally {

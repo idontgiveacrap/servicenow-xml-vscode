@@ -1,78 +1,48 @@
 ---
-description: ServiceNow Git export — Registry MCP discovery and optional Python indexer fallback
+description: ServiceNow Git export — discover records and app metadata through Registry MCP
 globs: "**/update/**/*.xml"
 alwaysApply: false
 ---
 <!-- managed-by: servicenow-xml -->
 
-# ServiceNow repo index and discovery
+# ServiceNow repo discovery
 
 Applies to ServiceNow scoped application exports in Git (`**/update/**/*.xml`, etc.).
 
 **`author_elective_update/`:** ignore for discovery and navigation unless the task is finding a **deleted record** or **application configuration stored only there**. See **`servicenow-xml-git-exports.mdc`**.
 
-For **code review** priorities and review-specific checks (relationships, UX state, ES12/ES5), see **`servicenow-xml-review.mdc`**.
+For **code review** priorities and JavaScript language level, see **`servicenow-xml-review.mdc`**.
 
-## Prefer Registry MCP (default)
+## Registry MCP
 
-Use the **servicenow-xml-registry** MCP before dumping `index.json` or running a full-repo search:
+Use **servicenow-xml-registry** before a workspace-wide search:
 
 | Tool | Use for |
 |------|---------|
 | **`search_records`** | Find export rows by substring / table |
 | **`lookup_by_name`** | Exact display name / `api_name` / declaration name |
 | **`lookup_script_include`** | Script Include / UI Script (bundled + workspace) |
-| **`get_workspace_app`** | Workspace `sys_app` scope / `js_level` / `supportsES12` |
-| **`registry_diagnostics_context`** | Symbol counts + app snapshot |
-| **`list_tables` / `get_table` / `list_columns` / `search_schema`** | Offline dictionary schema |
+| **`get_workspace_app`** | Scope, `jsLevel` (`ES5` or `ES12`), `supportsES12`, and `restrictTableAccess` |
+| **`registry_diagnostics_context`** | Symbol counts plus the app snapshot |
+| **`list_tables` / `get_table` / `list_columns` / `search_schema`** | One dictionary: platform pack plus project `sys_dictionary` / `<database>` exports. Project columns win. Each field has `source`: `platform` or `project` |
+| **`references_to` / `references_from`** | sys_id edges for one record. `targetState` is `in_project`, `deleted`, or `not_in_project` |
+| **`list_reference_issues`** | Deleted-target references (same errors as the editor). Pass `includeNotInProject: true` to also list ids that are not in the export; those are not Problems-panel diagnostics |
+| **`lookup_scripting_name`** | Platform API docs attached to Registry symbols |
+| **`get_js_performance_meta` / `search_js_performance` / `lookup_js_performance`** | Bundled JavaScript performance evidence |
 
-Workspace rows come from the extension’s **`.servicenow-xml/registry-cache.json`** (written when the Records navigator / workspace scan runs). Prefer that cache over regenerating Python `index.json`.
+Workspace rows come from `.servicenow-xml/registry-cache.json`, written when the extension scans the folder. Do not read or regenerate `index.json`.
 
-## Python indexer (fallback)
+## Other custom MCPs
 
-Keep the managed indexer for mechanical reference checks, graph shards, or when Registry cache is missing/stale:
-
-`~/.cursor/servicenow-xml/scripts/servicenow_repo_index.py`
-
-On Windows: `%USERPROFILE%\.cursor\servicenow-xml\scripts\servicenow_repo_index.py`. Prefer **ServiceNow XML: Run Repo Indexer** when available.
-
-The sessionStart hook **skips** a Python scan when `.servicenow-xml/registry-cache.json` is present and not older than export XML. Run the indexer explicitly when you need `index.json` shards (`reference_errors`, graph, etc.).
-
-### Staleness check (only when using `index.json`)
-
-1. Read **`git_commit`** from **`index.json`** at the repository root.
-2. Run `git rev-parse HEAD` and compare.
-3. If missing, null, or different, re-run the indexer before relying on `index.json`.
-
-### Agent-ideal command (fallback)
-
-```bash
-python "$HOME/.cursor/servicenow-xml/scripts/servicenow_repo_index.py" .
-```
-
-Windows PowerShell:
-
-```powershell
-python "$env:USERPROFILE\.cursor\servicenow-xml\scripts\servicenow_repo_index.py" .
-```
-
-### Indexer flags
-
-| Flag | Meaning |
-|------|---------|
-| *(default)* | Split index; reference scan; **errors only** in `index.json` |
-| `--include-reference-warnings` | Write **`index.issues.json`** |
-| `--include-reference-graph` | Write **`index.graph.json`** |
-| `--no-reference-check` | Skip scan (fast navigation-only regen) |
-| `--pretty` | Indented JSON |
-
-**Source rows:** skipped when `action="DELETE"` or when the row’s `sys_id` is **logically deleted** anywhere in the export.
+| Server | Use for |
+|--------|---------|
+| **servicenow-xml-instance** | Live read-only `list_profiles`, `record_query`, `record_get` |
+| **servicenow-xml-docs** | Product documentation |
+| **servicenow-xml-ui-examples** | UI Builder / Next Experience examples |
 
 ## Discovery workflow
 
-1. Prefer Registry MCP (`search_records` / `lookup_by_name` / `lookup_script_include` / `get_workspace_app`).
-2. Open targeted XML under **`update/`**; use **`grep`** on specific keys when needed.
-3. Fall back to Python `index.json` only when MCP/cache cannot answer (reference graph, mechanical triage).
-4. Do not broad-search **`author_elective_update/`** unless the task is deletes / residual app config.
-
-The Records navigator must not depend on `index.json`.
+1. Call Registry MCP (`search_records`, `lookup_by_name`, `lookup_script_include`, `get_workspace_app`).
+2. Open the matching XML under **`update/`**.
+3. Use **servicenow-xml-instance** when the question is live data rather than the export.
+4. Do not broad-search **`author_elective_update/`** unless the task is deletes or residual app config.

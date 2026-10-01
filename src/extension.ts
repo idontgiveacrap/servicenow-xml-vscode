@@ -36,7 +36,7 @@ import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
 import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
-import { registerRegistryLanguageProviders } from './registry/languageProviders';
+import { registerRegistryLanguageProviders } from './languageProviders';
 import {
   refreshSncContext,
   registerPruneRedundantDeletes
@@ -100,7 +100,8 @@ export function activate(context: vscode.ExtensionContext): void {
   catalog.configure({
     getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
     getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
-    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport()
+    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
+    getRestrictTableAccess: () => gate.getRestrictTableAccess()
   });
   const declarationIndex = new ScriptDeclarationIndex(context.workspaceState);
   declarationIndex.configure({
@@ -113,7 +114,9 @@ export function activate(context: vscode.ExtensionContext): void {
         .getConfiguration('servicenowXml')
         .get<boolean>('lintJavaScript', true),
     getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
-    getWorkspaceAppScope: () => gate.getWorkspaceAppScope()
+    getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
+    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
+    getRestrictTableAccess: () => gate.getRestrictTableAccess()
   });
   const treeProvider = new RecordsTreeProvider(catalog);
   const treeView = vscode.window.createTreeView<TreeNode>('servicenowXml.records', {

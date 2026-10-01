@@ -1,26 +1,19 @@
 #!/usr/bin/env python3
 """
-Cursor sessionStart hook: refresh ServiceNow repo index when the workspace
-looks like a scoped-app Git export and index.json is missing, behind HEAD, or
-older than export XML files (uncommitted edits).
+Cursor sessionStart hook for ServiceNow export workspaces.
+
+Tells the agent to use the extension MCP servers. Does not regenerate index.json.
 
 Installed by the servicenow-xml extension (managed-by: servicenow-xml).
-
-Writes {} (or additional_context) to stdout for the hooks protocol.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 MARKER = "servicenow-xml"
-HELPERS_ROOT = Path.home() / ".cursor" / "servicenow-xml"
-INDEXER = HELPERS_ROOT / "scripts" / "servicenow_repo_index.py"
-LOG_DIR = HELPERS_ROOT / "logs"
 
 
 def _emit(payload: dict) -> None:
@@ -41,11 +34,8 @@ def _read_stdin() -> dict:
 
 def _looks_like_sn_export(root: Path) -> bool:
     """
-    True only when the workspace holds the ServiceNow scoped-app marker
-    `{sys_id}/sys_app_{sys_id}.xml` (same 32-hex id in folder name and filename)
-    one level below the root. Matches the extension's workspace gate
-    (matchesSnAppMarker in src/fileName.ts); index.json / a bare update/ folder
-    are intentionally not sufficient.
+    True when the workspace holds `{sys_id}/sys_app_{sys_id}.xml`
+    one level below the root (same marker as the extension workspace gate).
     """
     try:
         for child in root.iterdir():
@@ -60,153 +50,11 @@ def _looks_like_sn_export(root: Path) -> bool:
     return False
 
 
-def _git_head(root: Path) -> str | None:
+def _registry_cache_exists(root: Path) -> bool:
     try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if completed.returncode != 0:
-        return None
-    return completed.stdout.strip() or None
-
-
-def _index_commit(root: Path) -> str | None:
-    path = root / "index.json"
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    commit = data.get("git_commit")
-    return commit if isinstance(commit, str) and commit else None
-
-
-def _index_mtime(root: Path) -> float | None:
-    path = root / "index.json"
-    try:
-        return path.stat().st_mtime if path.is_file() else None
-    except OSError:
-        return None
-
-
-def _export_xml_newer_than_index(root: Path, index_mtime: float) -> bool:
-    """
-    True when any likely export XML under the workspace is newer than index.json.
-    Cheap one-level walk of {sys_id}/update and {sys_id}/author_elective_update.
-    """
-    try:
-        children = list(root.iterdir())
+        return (root / ".servicenow-xml" / "registry-cache.json").is_file()
     except OSError:
         return False
-    for child in children:
-        if not child.is_dir():
-            continue
-        name = child.name
-        if not (len(name) == 32 and all(c in "0123456789abcdef" for c in name.lower())):
-            continue
-        for sub in ("update", "author_elective_update"):
-            folder = child / sub
-            if not folder.is_dir():
-                continue
-            try:
-                for entry in folder.iterdir():
-                    if not entry.is_file() or entry.suffix.lower() != ".xml":
-                        continue
-                    try:
-                        if entry.stat().st_mtime > index_mtime:
-                            return True
-                    except OSError:
-                        continue
-            except OSError:
-                continue
-    return False
-
-
-def _registry_cache_path(root: Path) -> Path:
-    return root / ".servicenow-xml" / "registry-cache.json"
-
-
-def _registry_cache_is_fresh(root: Path) -> bool:
-    """
-    True when the extension Registry cache exists and no export XML is newer.
-    Agents prefer Registry MCP over regenerating Python index.json.
-    """
-    cache = _registry_cache_path(root)
-    try:
-        if not cache.is_file():
-            return False
-        mtime = cache.stat().st_mtime
-    except OSError:
-        return False
-    if _export_xml_newer_than_index(root, mtime):
-        return False
-    return True
-
-
-def _index_is_current(root: Path) -> bool:
-    """
-    Current when index.json exists, matches HEAD (when in a git repo), and no
-    export XML is newer than the index file. Non-git workspaces rely on mtimes.
-    """
-    indexed = _index_commit(root)
-    index_mtime = _index_mtime(root)
-    if index_mtime is None:
-        return False
-    head = _git_head(root)
-    if head is not None:
-        if not indexed or head != indexed:
-            return False
-    if _export_xml_newer_than_index(root, index_mtime):
-        return False
-    return True
-
-
-def _python_cmd() -> list[str]:
-    override = os.environ.get("SERVICENOW_XML_PYTHON", "").strip()
-    if override:
-        return [override]
-    return [sys.executable]
-
-
-def _run_indexer(root: Path) -> tuple[bool, str]:
-    if not INDEXER.is_file():
-        return False, f"indexer missing: {INDEXER}"
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / "session-start-index.log"
-    cmd = _python_cmd() + [str(INDEXER), str(root)]
-    try:
-        completed = subprocess.run(
-            cmd,
-            cwd=str(root),
-            capture_output=True,
-            text=True,
-            timeout=180,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, str(exc)
-
-    try:
-        with log_path.open("a", encoding="utf-8") as fh:
-            fh.write(f"\n--- {root} ---\n")
-            fh.write(completed.stdout or "")
-            fh.write(completed.stderr or "")
-            fh.write(f"\nexit={completed.returncode}\n")
-    except OSError:
-        pass
-
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or "indexer failed").strip()
-        return False, err[:500]
-    return True, "index refreshed"
 
 
 def main() -> int:
@@ -215,41 +63,43 @@ def main() -> int:
     if not isinstance(roots, list):
         roots = []
 
-    refreshed: list[str] = []
-    skipped: list[str] = []
-    errors: list[str] = []
-
+    sn_roots: list[str] = []
+    missing_cache: list[str] = []
     for raw in roots:
         if not isinstance(raw, str) or not raw.strip():
             continue
         root = Path(raw)
         if not _looks_like_sn_export(root):
-            skipped.append(f"{root}: not a ServiceNow export")
             continue
-        if _registry_cache_is_fresh(root):
-            skipped.append(f"{root}: registry-cache fresh (skip Python index)")
-            continue
-        if _index_is_current(root):
-            head = _git_head(root)
-            tag = head[:8] if head else "mtime"
-            skipped.append(f"{root}: index current ({tag})")
-            continue
-        ok, detail = _run_indexer(root)
-        if ok:
-            refreshed.append(str(root))
-        else:
-            errors.append(f"{root}: {detail}")
+        sn_roots.append(str(root))
+        if not _registry_cache_exists(root):
+            missing_cache.append(str(root))
 
-    context_parts = [f"[{MARKER}]"]
-    if refreshed:
-        context_parts.append("Refreshed ServiceNow index for: " + ", ".join(refreshed))
-    if errors:
-        context_parts.append("Indexer errors: " + "; ".join(errors))
-    # Keep quiet when nothing happened — empty additional_context is fine.
-    out: dict = {}
-    if refreshed or errors:
-        out["additional_context"] = " ".join(context_parts)
-    _emit(out)
+    if not sn_roots:
+        _emit({})
+        return 0
+
+    text = (
+        f"[{MARKER}] This workspace is a ServiceNow scoped-app export. "
+        "Use servicenow-xml-registry: search_records, lookup_by_name, and "
+        "lookup_script_include for export rows; get_workspace_app for scope, "
+        "jsLevel (ES5 or ES12), supportsES12 (true only when the scope is "
+        "non-global and sys_app js_level is es_latest), and restrictTableAccess; "
+        "list_tables, get_table, list_columns, and search_schema for one dictionary "
+        "(platform pack plus project exports; project columns win); "
+        "list_reference_issues for deleted sys_id targets; references_to and "
+        "references_from for one record; lookup_scripting_name for platform API docs. "
+        "Use servicenow-xml-instance for live list_profiles, record_query, and "
+        "record_get. Use servicenow-xml-docs for product docs. "
+        "Do not read or regenerate index.json."
+    )
+    if missing_cache:
+        text += (
+            " Registry cache is not on disk yet for: "
+            + ", ".join(missing_cache)
+            + ". The extension writes .servicenow-xml/registry-cache.json when it scans."
+        )
+    _emit({"additional_context": text})
     return 0
 
 

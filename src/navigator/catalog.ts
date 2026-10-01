@@ -4,14 +4,15 @@ import {
   getIgnoreGlobs,
   isWorkspaceSchemeUri
 } from '../ignorePaths';
+import type {
+  CachedDeclaration,
+  CachedReference,
+  CachedSchemaField
+} from '../registry/cache';
 import {
-  CATALOG_CACHE_STATE_KEY,
-  createCatalogCache,
-  PersistedCatalogRecord,
-  readCatalogCache
-} from './catalogCache';
-import type { CachedDeclaration } from '../registry/cache';
-import { getWorkspaceRegistryService } from '../registry/vscodeAdapter';
+  getWorkspaceRegistryService,
+  registrySnapshotKeys
+} from '../registry/vscodeAdapter';
 import {
   ExportRecord,
   readExportRecordsWithDeclarations,
@@ -89,14 +90,19 @@ export class RecordCatalog implements vscode.Disposable {
   private readonly workspaceState: vscode.Memento;
   /** Declaration scripts collected in the same pass as record scans (Registry). */
   private lastDeclarations: CachedDeclaration[] = [];
+  private lastSchemaFields: CachedSchemaField[] = [];
+  private lastReferences: CachedReference[] = [];
   private getWorkspaceAppSysId: () => string | undefined = () => undefined;
   private getWorkspaceAppScope: () => string | undefined = () => undefined;
   private getWorkspaceJavaScriptSupport: () => string | undefined = () =>
     undefined;
+  private getRestrictTableAccess: () => boolean | undefined = () => undefined;
 
   constructor(workspaceState: vscode.Memento) {
     this.workspaceState = workspaceState;
     this.usage = new RecordUsageStore(workspaceState);
+    // Record identity lives in the Registry disk cache. Drop the old memento snapshot.
+    void this.workspaceState.update('servicenowXml.navigator.catalogCache', undefined);
     this.disposables.push(
       this.usage,
       vscode.workspace.onDidChangeConfiguration((e) => {
@@ -125,7 +131,7 @@ export class RecordCatalog implements vscode.Disposable {
                 }
                 this.rebuildViews();
                 this.notify();
-                await this.persistCache();
+                await this.syncRegistry();
               });
               return;
             }
@@ -178,11 +184,15 @@ export class RecordCatalog implements vscode.Disposable {
     getWorkspaceAppSysId: () => string | undefined;
     getWorkspaceAppScope: () => string | undefined;
     getWorkspaceJavaScriptSupport?: () => string | undefined;
+    getRestrictTableAccess?: () => boolean | undefined;
   }): void {
     this.getWorkspaceAppSysId = options.getWorkspaceAppSysId;
     this.getWorkspaceAppScope = options.getWorkspaceAppScope;
     if (options.getWorkspaceJavaScriptSupport) {
       this.getWorkspaceJavaScriptSupport = options.getWorkspaceJavaScriptSupport;
+    }
+    if (options.getRestrictTableAccess) {
+      this.getRestrictTableAccess = options.getRestrictTableAccess;
     }
   }
 
@@ -284,7 +294,7 @@ export class RecordCatalog implements vscode.Disposable {
     if (!this.isEnabled()) {
       return false;
     }
-    if (!this.loaded && this.restoreCache()) {
+    if (!this.loaded && (await this.restoreCache())) {
       this.startWatching();
       this.notify();
       this.startCacheRevalidation();
@@ -305,30 +315,26 @@ export class RecordCatalog implements vscode.Disposable {
   }
 
   /**
-   * Restore a compatible workspace-state snapshot into the in-memory catalog.
-   * Usage metrics remain authoritative in RecordUsageStore and are merged while
-   * views rebuild, so cached open counts cannot overwrite newer usage state.
+   * Restore the Registry disk snapshot into the in-memory catalog.
+   * Usage metrics stay in RecordUsageStore and are merged when views rebuild.
    */
-  private restoreCache(): boolean {
+  private async restoreCache(): Promise<boolean> {
     if (this.cacheRestoreAttempted) {
       return false;
     }
     this.cacheRestoreAttempted = true;
-    const records = readCatalogCache(
-      this.workspaceState.get<unknown>(CATALOG_CACHE_STATE_KEY),
+    const service = getWorkspaceRegistryService();
+    const restoredOk = await service.restoreFromDisk(
       this.workspaceCacheKey(),
       this.configCacheKey()
     );
-    if (!records) {
+    if (!restoredOk) {
       return false;
     }
     const restored: CatalogRecord[] = [];
     try {
-      for (const record of records) {
+      for (const record of service.getCachedRecords()) {
         const uri = vscode.Uri.parse(record.uri);
-        // Snapshots written before watcher events were scheme-filtered can hold
-        // rows for virtual copies of a file; drop them instead of rendering a
-        // duplicate row until the next full scan.
         if (!isWorkspaceSchemeUri(uri)) {
           continue;
         }
@@ -339,20 +345,12 @@ export class RecordCatalog implements vscode.Disposable {
         });
       }
     } catch (error) {
-      console.warn('[servicenow-xml] navigator cache is malformed:', error);
-      void this.workspaceState.update(CATALOG_CACHE_STATE_KEY, undefined);
+      console.warn('[servicenow-xml] registry cache is malformed:', error);
       return false;
     }
+    this.lastDeclarations = service.getCachedDeclarations();
     this.applyRecords(restored);
     this.restoredFromCache = true;
-    void getWorkspaceRegistryService()
-      .restoreFromDisk(this.workspaceCacheKey(), this.configCacheKey())
-      .then((ok) => {
-        if (ok) {
-          this.lastDeclarations =
-            getWorkspaceRegistryService().getCachedDeclarations();
-        }
-      });
     return true;
   }
 
@@ -454,7 +452,6 @@ export class RecordCatalog implements vscode.Disposable {
           this.notify();
         }
       }
-      await this.persistCache();
       await this.syncRegistry();
     };
 
@@ -488,58 +485,17 @@ export class RecordCatalog implements vscode.Disposable {
   }
 
   /**
-   * Persist identity metadata only; usage remains in its existing dedicated
-   * store and XML/script bodies never enter workspaceState.
-   */
-  private async persistCache(): Promise<void> {
-    if (!this.loaded || !this.isEnabled()) {
-      return;
-    }
-    const records: PersistedCatalogRecord[] = [
-      ...this.recordsByUri.values()
-    ].flatMap((rows) =>
-      rows.map((record) => ({
-        table: record.table,
-        displayName: record.displayName,
-        sysId: record.sysId,
-        action: record.action,
-        apiName: record.apiName,
-        sysModCount: record.sysModCount,
-        startOffset: record.startOffset,
-        mtimeMs: record.mtimeMs,
-        uri: record.uri.toString(),
-        relativePath: record.relativePath
-      }))
-    );
-    try {
-      await this.workspaceState.update(
-        CATALOG_CACHE_STATE_KEY,
-        createCatalogCache(this.workspaceCacheKey(), this.configCacheKey(), records)
-      );
-    } catch (error) {
-      console.warn('[servicenow-xml] navigator cache write failed:', error);
-    }
-  }
-
-  /**
    * Stable identity for the folders whose XML records make up this catalog.
    */
   private workspaceCacheKey(): string {
-    return JSON.stringify(
-      (vscode.workspace.workspaceFolders ?? [])
-        .map((folder) => folder.uri.toString())
-        .sort()
-    );
+    return registrySnapshotKeys().workspaceKey;
   }
 
   /**
    * Index-affecting settings; sort and usage do not change catalog membership.
    */
   private configCacheKey(): string {
-    return JSON.stringify({
-      excludeDelete: this.excludeDelete(),
-      ignoreGlobs: [...getIgnoreGlobs()].sort()
-    });
+    return registrySnapshotKeys().configKey;
   }
 
   /**
@@ -590,6 +546,8 @@ export class RecordCatalog implements vscode.Disposable {
       workspaceAppScope: this.getWorkspaceAppScope()
     });
     this.lastDeclarations = scanned.declarations;
+    this.lastSchemaFields = scanned.schemaFields;
+    this.lastReferences = scanned.references;
     return scanned.records.map((record) => this.withUsage(record));
   }
 
@@ -643,8 +601,11 @@ export class RecordCatalog implements vscode.Disposable {
         supportsES12:
           Boolean(scope) &&
           scope !== 'global' &&
-          (jsLevel === 'ES12' || jsLevel === 'es_latest')
-      }
+          (jsLevel === 'ES12' || jsLevel === 'es_latest'),
+        restrictTableAccess: this.getRestrictTableAccess()
+      },
+      schemaFields: this.lastSchemaFields,
+      references: this.lastReferences
     });
     await service.persistToDisk(this.workspaceCacheKey(), this.configCacheKey());
   }
@@ -761,7 +722,13 @@ export class RecordCatalog implements vscode.Disposable {
     const updated = await Promise.all(
       changes.map(async ([key, uri]) => {
         if (!uri) {
-          return { key, records: [] as CatalogRecord[], declarations: [] as CachedDeclaration[] };
+          return {
+            key,
+            records: [] as CatalogRecord[],
+            declarations: [] as CachedDeclaration[],
+            schemaFields: [] as CachedSchemaField[],
+            references: [] as CachedReference[]
+          };
         }
         const found = await readExportRecordsWithDeclarations(uri, {
           ignoreGlobs: getIgnoreGlobs(),
@@ -773,7 +740,9 @@ export class RecordCatalog implements vscode.Disposable {
         return {
           key,
           records: found.records.map((record) => this.withUsage(record)),
-          declarations: found.declarations
+          declarations: found.declarations,
+          schemaFields: found.schemaFields,
+          references: found.references
         };
       })
     );
@@ -794,7 +763,21 @@ export class RecordCatalog implements vscode.Disposable {
         return true;
       }
     });
-    for (const { key, records, declarations } of updated) {
+    this.lastSchemaFields = this.lastSchemaFields.filter((field) => {
+      try {
+        return !changedKeys.has(uriKey(vscode.Uri.parse(field.uri)));
+      } catch {
+        return true;
+      }
+    });
+    this.lastReferences = this.lastReferences.filter((edge) => {
+      try {
+        return !changedKeys.has(uriKey(vscode.Uri.parse(edge.uri)));
+      } catch {
+        return true;
+      }
+    });
+    for (const { key, records, declarations, schemaFields, references } of updated) {
       if (records.length > 0) {
         this.recordsByUri.set(key, records);
       } else {
@@ -802,6 +785,12 @@ export class RecordCatalog implements vscode.Disposable {
       }
       for (const declaration of declarations) {
         this.lastDeclarations.push(declaration);
+      }
+      for (const field of schemaFields) {
+        this.lastSchemaFields.push(field);
+      }
+      for (const edge of references) {
+        this.lastReferences.push(edge);
       }
     }
     this.rebuildViews();
@@ -816,7 +805,6 @@ export class RecordCatalog implements vscode.Disposable {
         this.notify();
       }
     }
-    await this.persistCache();
     await this.syncRegistry();
   }
 

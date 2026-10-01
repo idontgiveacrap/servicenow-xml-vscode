@@ -263,9 +263,8 @@ function isParseableJson(code: string): boolean {
  * an in-memory document. Picks up Prettier and friends the same way the editor
  * would for a real file of that language.
  *
- * The scratch document is created with its final content and never edited, so
- * it stays clean: a dirty untitled document cannot be closed again without the
- * editor asking the user to save it.
+ * `openTextDocument({ content })` yields a dirty untitled document. Closing
+ * that tab goes through revert-and-close so the editor does not ask to save it.
  */
 async function formatThroughProvider(
   code: string,
@@ -299,8 +298,12 @@ async function formatThroughProvider(
 }
 
 /**
- * Close tabs the scratch formatter documents opened, so Format Document does
- * not leave an untitled JS/JSON tab behind per embedded field.
+ * Close tabs the scratch formatter documents opened.
+ *
+ * Those documents are untitled and dirty as soon as they have content, and
+ * `tabGroups.close` confirms before discarding that. Revert-and-close drops
+ * the dirty state and closes without a save prompt. The editor that was active
+ * before the close (the XML file being formatted) is focused again afterward.
  */
 async function closeScratchTabs(
   scratchDocs: vscode.TextDocument[]
@@ -309,15 +312,34 @@ async function closeScratchTabs(
     return;
   }
   const uris = new Set(scratchDocs.map((doc) => doc.uri.toString()));
-  const tabs = vscode.window.tabGroups.all
-    .flatMap((group) => group.tabs)
-    .filter(
-      (tab) =>
+  const previous = vscode.window.activeTextEditor;
+  const tabs: Array<{ uri: vscode.Uri; viewColumn: vscode.ViewColumn }> = [];
+  for (const group of vscode.window.tabGroups.all) {
+    for (const tab of group.tabs) {
+      if (
         tab.input instanceof vscode.TabInputText &&
         uris.has(tab.input.uri.toString())
+      ) {
+        tabs.push({ uri: tab.input.uri, viewColumn: group.viewColumn });
+      }
+    }
+  }
+  for (const { uri, viewColumn } of tabs) {
+    await vscode.window.showTextDocument(uri, {
+      viewColumn,
+      preview: true,
+      preserveFocus: false
+    });
+    await vscode.commands.executeCommand(
+      'workbench.action.revertAndCloseActiveEditor'
     );
-  if (tabs.length > 0) {
-    await vscode.window.tabGroups.close(tabs, true);
+  }
+  if (previous && !uris.has(previous.document.uri.toString())) {
+    await vscode.window.showTextDocument(previous.document, {
+      viewColumn: previous.viewColumn,
+      selection: previous.selection,
+      preserveFocus: true
+    });
   }
 }
 

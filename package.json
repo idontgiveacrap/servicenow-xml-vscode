@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "3.0.1",
+  "version": "3.1.0",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -290,7 +290,7 @@
         "servicenowXml.cursorHelpers.installIndexHook": {
           "type": "boolean",
           "default": true,
-          "description": "In Cursor only: idempotently add a user sessionStart hook that refreshes index.json when stale for ServiceNow export workspaces."
+          "description": "In Cursor only: add a user sessionStart hook that points agents at the ServiceNow Registry and instance MCP servers for export workspaces."
         },
         "servicenowXml.cursorHelpers.pythonPath": {
           "type": "string",
@@ -339,7 +339,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^9.6.1",

@@ -389,7 +389,7 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.navigator.excludeDelete` | `false` | Hide `action=DELETE` records from the navigator. |
 | `servicenowXml.navigator.sortBy` | `mostOpened` | Sort order for Records navigator tables and records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name`. |
 | `servicenowXml.cursorHelpers.enable` | `true` | **Cursor only.** On activate, idempotently install ServiceNow MCP servers, user rules, and the Python repo indexer. No-op in VS Code. |
-| `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that refreshes `index.json` when stale for ServiceNow export workspaces. |
+| `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that points agents at the Registry and instance MCP servers for ServiceNow export workspaces. |
 | `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, local MCP servers, and sessionStart hook. |
 | `servicenowXml.snc.path` | `snc` | ServiceNow CLI executable for prune-redundant-DELETE and the Cursor instance MCP. |
 | `servicenowXml.snc.mcpProfiles` | `[]` | **Cursor only.** Allowlist of snc profile names for `servicenow-xml-instance`. Empty means every snc profile is available to the MCP. Does not change the prune UI. |
@@ -402,10 +402,10 @@ On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the
 |-------|----------------------------------------|
 | **Registry MCP script** | `scripts/registryMcp.js` (Node; schema + scripting/performance + workspace discovery) |
 | **Registry data** | `data/` (packed dictionary, fieldKinds, Script Includes, scopes, platform globals, scripting reference, JS performance) |
-| **Indexer** | `scripts/servicenow_repo_index.py` (fallback; prefer Registry MCP `search_records` / `lookup_by_name`) |
+| **Indexer** | `scripts/servicenow_repo_index.py` (not used by agents; discovery is Registry MCP) |
 | **Instance MCP script** | `scripts/instance_mcp_server.py` (spawns `snc`; skipped if snc is missing) |
 | **MCP usage log** | `mcp-usage.log` (one UTC line per local MCP tool call: timestamp, server id, tool name) |
-| **sessionStart hook** | `hooks/session_start_index.py` (skips Python scan when Registry cache is fresh) |
+| **sessionStart hook** | `hooks/session_start_index.py` (tells the agent to use Registry and instance MCP; does not refresh `index.json`) |
 | **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
 | **MCP servers** | `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry` (always when bundle exists), `servicenow-xml-instance` (only when Python + `mcp` + `snc` exist). Python `servicenow-xml-db-schema` / `servicenow-xml-scripting` are removed. |
 | **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
@@ -418,6 +418,7 @@ Registry schema tools are backed by packed dictionary JSON under `src/data/`, no
 ```text
 /sys_dictionary_list.do?sysparm_query=sys_scope.sys_class_name!=sys_app^ORsys_scopeISEMPTY&CSV&sysparm_default_export_fields=all
 ```
+This export is very large and you likely need to increase the value of glide.csv.export.limit (default 10K out of >400K) to prevent a partial export. The filter reduces the number of custom entries, or you could use a fresh PDI to get only OOTB data.
 
 ```bash
 node scripts/pack-dictionary.js "path/to/sys_dictionary.csv"
