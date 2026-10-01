@@ -10,7 +10,14 @@ import {
   isScriptDeclarationTable,
   ScriptDeclaration
 } from '../scriptDeclarations';
-import type { CachedDeclaration, CachedRecord } from './cache';
+import type {
+  CachedDeclaration,
+  CachedRecord,
+  CachedReference,
+  CachedSchemaField
+} from './cache';
+import { extractProjectSchema } from './projectSchema';
+import { extractXmlReferences, MAX_REFERENCE_EDGES } from './xmlReferences';
 
 export interface IndexExportOptions {
   uri: string;
@@ -26,6 +33,8 @@ export interface IndexExportOptions {
 export interface IndexedExport {
   records: CachedRecord[];
   declarations: CachedDeclaration[];
+  schemaFields: CachedSchemaField[];
+  references: CachedReference[];
 }
 
 /**
@@ -57,8 +66,8 @@ export function indexExportText(
 
   const declarations: CachedDeclaration[] = [];
   if (options.extractDeclarations !== false) {
-    const hasDeclarationTable = records.some((r) =>
-      isScriptDeclarationTable(r.table)
+    const hasDeclarationTable = records.some(
+      (r) => isScriptDeclarationTable(r.table) || r.table === 'sys_script'
     );
     if (hasDeclarationTable || looksLikeDeclarationFile(options.relativePath)) {
       const parsed = parseSnXml(text, options.relativePath);
@@ -75,7 +84,17 @@ export function indexExportText(
     }
   }
 
-  return { records, declarations };
+  const schemaFields: CachedSchemaField[] = extractProjectSchema(text).map((field) => ({
+    ...field,
+    uri: options.uri,
+    relativePath: options.relativePath
+  }));
+  const references = extractXmlReferences(text, {
+    uri: options.uri,
+    relativePath: options.relativePath
+  }).slice(0, MAX_REFERENCE_EDGES);
+
+  return { records, declarations, schemaFields, references };
 }
 
 /**
@@ -97,7 +116,7 @@ export function toCachedDeclaration(
 }
 
 function looksLikeDeclarationFile(relativePath: string): boolean {
-  return /(?:^|[/\\])(sys_script_include|sys_ui_script|sys_ux_client_script_include)_[0-9a-f]{32}\.xml$/i.test(
+  return /(?:^|[/\\])(sys_script_include|sys_ui_script|sys_ux_client_script_include|sys_script)_[0-9a-f]{32}\.xml$/i.test(
     relativePath
   );
 }

@@ -15,6 +15,7 @@ import {
   loadDictionaryTables,
   schemaAssetPaths
 } from './schemaLoader';
+import { attachScriptingDocsFromDir } from './scriptingKnowledge';
 import {
   loadStaticPacks,
   PlatformGlobalsPack
@@ -75,6 +76,7 @@ function ensureStaticLoaded(target: Registry): void {
   if (fs.existsSync(paths.tables)) {
     loadDictionaryTables(target, paths.tables);
   }
+  attachScriptingDocsFromDir(target, path.dirname(paths.tables));
   staticLoaded = true;
 }
 

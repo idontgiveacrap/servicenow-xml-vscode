@@ -5,6 +5,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import { Registry } from './Registry';
+import type { PlatformApiSymbol, ScriptingDocSection } from './types';
 
 const SECTION_KEYS = [
   'runtime_catalog',
@@ -52,7 +54,10 @@ export interface ScriptingKnowledge {
 /**
  * Load scripting + performance packs from a data directory (missing files → empty tools).
  */
-export function loadScriptingKnowledge(dataDir: string): ScriptingKnowledge {
+export function loadScriptingKnowledge(
+  dataDir: string,
+  registry?: Registry
+): ScriptingKnowledge {
   const scriptingPath = path.join(dataDir, 'scripting_reference.json.gz');
   const altScripting = path.join(dataDir, 'scripting_reference.json');
   const perfPath = path.join(dataDir, 'js_performance.json');
@@ -83,6 +88,10 @@ export function loadScriptingKnowledge(dataDir: string): ScriptingKnowledge {
           !!row && typeof row === 'object'
       );
     }
+  }
+
+  if (registry) {
+    attachScriptingDocs(registry, scripting);
   }
 
   return {
@@ -337,6 +346,181 @@ export function loadScriptingKnowledge(dataDir: string): ScriptingKnowledge {
       return results;
     }
   };
+}
+
+/**
+ * Load the scripting-reference pack and attach each named API onto a Registry symbol.
+ */
+export function attachScriptingDocsFromDir(
+  registry: Registry,
+  dataDir: string
+): void {
+  const scriptingPath = path.join(dataDir, 'scripting_reference.json.gz');
+  const altScripting = path.join(dataDir, 'scripting_reference.json');
+  let scripting: Record<string, unknown> | undefined;
+  if (fs.existsSync(scriptingPath)) {
+    scripting = JSON.parse(
+      zlib.gunzipSync(fs.readFileSync(scriptingPath)).toString('utf8')
+    ) as Record<string, unknown>;
+  } else if (fs.existsSync(altScripting)) {
+    scripting = JSON.parse(fs.readFileSync(altScripting, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+  }
+  attachScriptingDocs(registry, scripting);
+}
+
+/**
+ * Fold scripting-reference rows onto PlatformApi / Global symbols.
+ * Names that are not already lint globals are stored as `docsOnly` so lookup
+ * can read the row without widening `no-undef`.
+ */
+export function attachScriptingDocs(
+  registry: Registry,
+  scripting: Record<string, unknown> | undefined
+): void {
+  if (!scripting) {
+    return;
+  }
+  for (const row of asRowList(scripting.server)) {
+    const name = String(row.name ?? '').trim();
+    if (name) {
+      mergeScriptingDoc(registry, name, 'server', row, 'server');
+    }
+  }
+  for (const row of asRowList(scripting.runtime_items)) {
+    const name = String(row.name ?? '').trim();
+    if (name) {
+      mergeScriptingDoc(registry, name, 'both', row, 'runtime_item');
+    }
+  }
+  for (const row of asRowList(scripting.undocumented)) {
+    const name = String(row.api ?? row.name ?? '').trim();
+    if (name) {
+      mergeScriptingDoc(registry, name, 'server', row, 'undocumented');
+    }
+  }
+}
+
+/**
+ * Case-insensitive scripting-reference lookup over Registry symbols.
+ */
+export function scriptingLookupFromRegistry(
+  registry: Registry,
+  name: string
+): {
+  query: string;
+  server: unknown;
+  runtime_item: unknown;
+  undocumented: unknown[];
+} {
+  const needle = name.trim().toLowerCase();
+  if (!needle) {
+    throw new Error('name is required');
+  }
+  let server: unknown = null;
+  let runtimeItem: unknown = null;
+  const undocumented: unknown[] = [];
+  for (const symbol of platformSymbols(registry)) {
+    const doc = symbol.doc;
+    if (!doc || !symbol.docSection) {
+      continue;
+    }
+    const symbolName = symbol.name.trim().toLowerCase();
+    const memberHit =
+      symbol.docSection === 'undocumented' &&
+      memberNames(doc).includes(needle);
+    if (symbolName !== needle && !memberHit) {
+      continue;
+    }
+    if (symbol.docSection === 'server' && symbolName === needle && !server) {
+      server = doc;
+    } else if (
+      symbol.docSection === 'runtime_item' &&
+      symbolName === needle &&
+      !runtimeItem
+    ) {
+      runtimeItem = doc;
+    } else if (symbol.docSection === 'undocumented') {
+      undocumented.push(doc);
+    }
+  }
+  return {
+    query: name,
+    server,
+    runtime_item: runtimeItem,
+    undocumented
+  };
+}
+
+/**
+ * Attach one reference row, merging onto an existing global when the name matches.
+ */
+function mergeScriptingDoc(
+  registry: Registry,
+  name: string,
+  profile: 'server' | 'client' | 'both',
+  row: Record<string, unknown>,
+  docSection: ScriptingDocSection
+): void {
+  const text = docSummary(row);
+  const matches = registry.lookup(name).filter(
+    (symbol): symbol is PlatformApiSymbol =>
+      symbol.kind === 'PlatformApi' || symbol.kind === 'Global'
+  );
+  if (matches.length === 0) {
+    registry.upsert({
+      kind: 'PlatformApi',
+      name,
+      profile,
+      documentation: text,
+      doc: row,
+      docSection,
+      docsOnly: true
+    });
+    return;
+  }
+  for (const existing of matches) {
+    registry.upsert({
+      ...existing,
+      documentation: existing.documentation || text,
+      doc: row,
+      docSection
+    });
+  }
+}
+
+function docSummary(row: Record<string, unknown>): string | undefined {
+  const raw = row.description ?? row.summary ?? row.supported_contract;
+  if (typeof raw !== 'string') {
+    return undefined;
+  }
+  const text = raw.trim();
+  return text ? text.slice(0, 2000) : undefined;
+}
+
+function memberNames(doc: Record<string, unknown>): string[] {
+  const raw = doc.members;
+  if (typeof raw !== 'string') {
+    return [];
+  }
+  return raw
+    .split(',')
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function platformSymbols(registry: Registry): PlatformApiSymbol[] {
+  const out: PlatformApiSymbol[] = [];
+  for (const kind of ['PlatformApi', 'Global'] as const) {
+    for (const symbol of registry.listByKind(kind)) {
+      if (symbol.kind === 'PlatformApi' || symbol.kind === 'Global') {
+        out.push(symbol);
+      }
+    }
+  }
+  return out;
 }
 
 function resolveSection(section: string): SectionKey {

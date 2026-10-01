@@ -1,3 +1,4 @@
+import type { CachedReference, CachedSchemaField } from './cache';
 import {
   DependencyEdge,
   FieldSymbol,
@@ -12,6 +13,7 @@ import {
   UiScriptSymbol,
   symbolId
 } from './types';
+import { MAX_REFERENCE_EDGES } from './xmlReferences';
 
 /**
  * In-memory symbol store with lookup indexes.
@@ -25,6 +27,9 @@ export class Registry {
   private readonly byUri = new Map<string, string[]>();
   private readonly byKind = new Map<SymbolKind, string[]>();
   private readonly edges: DependencyEdge[] = [];
+  /** Workspace dictionary columns. These win over the platform pack for the same table.element. */
+  private projectFields: CachedSchemaField[] = [];
+  private referenceEdges: CachedReference[] = [];
   /** Parsed-document / AST payloads keyed by uri + version (Phase D). */
   private readonly parseCache = new Map<
     string,
@@ -39,6 +44,8 @@ export class Registry {
     this.byUri.clear();
     this.byKind.clear();
     this.edges.length = 0;
+    this.projectFields = [];
+    this.referenceEdges = [];
   }
 
   /**
@@ -52,7 +59,9 @@ export class Registry {
         continue;
       }
       if (
-        (symbol.kind === 'ScriptInclude' || symbol.kind === 'UiScript') &&
+        (symbol.kind === 'ScriptInclude' ||
+          symbol.kind === 'UiScript' ||
+          symbol.kind === 'Table') &&
         symbol.fromWorkspace
       ) {
         remove.push(id);
@@ -133,6 +142,10 @@ export class Registry {
   }
 
   getField(table: string, element: string): FieldSymbol | undefined {
+    const project = this.projectFieldSymbol(table, element);
+    if (project) {
+      return project;
+    }
     const id = `Field:${table}.${element}`;
     const symbol = this.symbols.get(id);
     return symbol?.kind === 'Field' ? symbol : undefined;
@@ -143,9 +156,83 @@ export class Registry {
   }
 
   listFieldsForTable(table: string): FieldSymbol[] {
-    return this.byTableName(table).filter(
-      (s): s is FieldSymbol => s.kind === 'Field'
+    const byElement = new Map<string, FieldSymbol>();
+    for (const symbol of this.byTableName(table)) {
+      if (symbol.kind === 'Field') {
+        byElement.set(symbol.element, symbol);
+      }
+    }
+    for (const field of this.projectFields) {
+      if (field.table === table && field.element) {
+        byElement.set(field.element, projectFieldToSymbol(field));
+      }
+    }
+    return [...byElement.values()];
+  }
+
+  /**
+   * Workspace dictionary rows for one table, or every project row when table is omitted.
+   * Empty `element` rows are table labels.
+   */
+  listProjectFields(table?: string): CachedSchemaField[] {
+    if (!table) {
+      return this.projectFields;
+    }
+    return this.projectFields.filter((field) => field.table === table);
+  }
+
+  /** Label from a workspace table-definition row, when the export has one. */
+  projectTableLabel(table: string): string | undefined {
+    return this.projectFields.find((field) => field.table === table && !field.element)
+      ?.label;
+  }
+
+  listReferenceEdges(): CachedReference[] {
+    return this.referenceEdges;
+  }
+
+  /**
+   * Replace workspace dictionary columns and sys_id edges.
+   * Tables that are not in the platform pack are added as workspace Table symbols.
+   */
+  setProjectOverlay(
+    fields: CachedSchemaField[],
+    references: CachedReference[]
+  ): void {
+    const staleTables: string[] = [];
+    for (const [id, symbol] of this.symbols) {
+      if (symbol.kind === 'Table' && symbol.fromWorkspace) {
+        staleTables.push(id);
+      }
+    }
+    for (const id of staleTables) {
+      this.removeSymbol(id);
+    }
+    this.projectFields = fields;
+    this.referenceEdges = references.slice(0, MAX_REFERENCE_EDGES);
+    const seen = new Set<string>();
+    for (const field of fields) {
+      if (!field.table || seen.has(field.table) || this.getTable(field.table)) {
+        continue;
+      }
+      seen.add(field.table);
+      this.upsert({
+        kind: 'Table',
+        name: field.table,
+        label: this.projectTableLabel(field.table),
+        fromWorkspace: true
+      });
+    }
+  }
+
+  private projectFieldSymbol(
+    table: string,
+    element: string
+  ): FieldSymbol | undefined {
+    const field = this.projectFields.find(
+      (row) => row.table === table && row.element === element
     );
+    return field ? projectFieldToSymbol(field) : undefined;
   }
 
   listRecords(): RecordSymbol[] {
@@ -175,6 +262,9 @@ export class Registry {
     for (const kind of ['PlatformApi', 'Global'] as const) {
       for (const symbol of this.listByKind(kind)) {
         if (symbol.kind !== 'PlatformApi' && symbol.kind !== 'Global') {
+          continue;
+        }
+        if (symbol.docsOnly) {
           continue;
         }
         if (symbol.profile === profile || symbol.profile === 'both') {
@@ -307,4 +397,20 @@ export class Registry {
       map.set(key, next);
     }
   }
+}
+
+/** Project column as a Field symbol so lint and completion see it ahead of the pack. */
+function projectFieldToSymbol(field: CachedSchemaField): FieldSymbol {
+  return {
+    kind: 'Field',
+    name: field.element,
+    table: field.table,
+    element: field.element,
+    label: field.label,
+    internalType: field.internalType,
+    reference: field.reference,
+    uri: field.uri,
+    relativePath: field.relativePath,
+    fromWorkspace: true
+  };
 }

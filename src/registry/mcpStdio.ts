@@ -2,6 +2,10 @@
  * Minimal MCP stdio JSON-RPC framing (no external MCP SDK dependency).
  */
 
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
 export interface JsonRpcRequest {
   jsonrpc: '2.0';
   id?: string | number | null;
@@ -19,8 +23,8 @@ export interface JsonRpcResponse {
 type Handler = (params: unknown) => Promise<unknown> | unknown;
 
 /**
- * Run an MCP-compatible stdio server with Content-Length framing and a
- * newline-delimited fallback for simple hosts.
+ * Run an MCP-compatible newline-delimited JSON stdio server.
+ * Content-Length input remains accepted for compatibility with older callers.
  */
 export function runMcpStdio(handlers: {
   name: string;
@@ -43,6 +47,7 @@ export function runMcpStdio(handlers: {
     'tools/call': async (params) => {
       const p = params as { name?: string; arguments?: Record<string, unknown> };
       const toolName = p.name ?? '';
+      logMcpUse(handlers.name, toolName);
       try {
         const result = await handlers.callTool(toolName, p.arguments ?? {});
         return {
@@ -62,12 +67,10 @@ export function runMcpStdio(handlers: {
   let buffer = Buffer.alloc(0);
 
   const respond = (response: JsonRpcResponse): void => {
-    const body = Buffer.from(JSON.stringify(response), 'utf8');
-    const header = Buffer.from(
-      `Content-Length: ${body.length}\r\n\r\n`,
-      'utf8'
-    );
-    process.stdout.write(Buffer.concat([header, body]));
+    // MCP's stdio transport is newline-delimited JSON. Content-Length framing
+    // is used by LSP, but MCP clients wait for a newline and never finish
+    // loading when a server emits only LSP-style headers.
+    process.stdout.write(`${JSON.stringify(response)}\n`);
   };
 
   const handleMessage = async (message: JsonRpcRequest): Promise<void> => {
@@ -152,4 +155,22 @@ export function runMcpStdio(handlers: {
   }
 
   process.stdin.resume();
+}
+
+/**
+ * Append one UTC line (`timestamp server tool`) for a custom MCP tool call.
+ * Failures are ignored so a log problem cannot fail the tool.
+ */
+function logMcpUse(server: string, tool: string): void {
+  try {
+    const raw = process.env.MCP_USAGE_LOG_PATH?.trim();
+    const filePath = raw
+      ? path.resolve(raw)
+      : path.join(os.homedir(), '.cursor', 'servicenow-xml', 'mcp-usage.log');
+    const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.appendFileSync(filePath, `${stamp} ${server} ${tool}\n`, 'utf8');
+  } catch {
+    // Logging must not break tool handlers.
+  }
 }

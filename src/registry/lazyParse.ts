@@ -1,6 +1,6 @@
 /**
  * Lazy parse cache for open/active documents (Phase D).
- * XML via parseSnXml; JS regions via espree when needed.
+ * XML via parseSnXml. Script bodies are parsed with espree and cached per URI.
  */
 
 import { parseSnXml } from '../parseSnXml';
@@ -35,9 +35,42 @@ export function getOrParseXml(
   return parsed;
 }
 
+interface ScriptAstNode {
+  type: string;
+  name?: string;
+  computed?: boolean;
+  key?: ScriptAstNode;
+  value?: ScriptAstNode;
+  left?: ScriptAstNode;
+  right?: ScriptAstNode;
+  object?: ScriptAstNode;
+  property?: ScriptAstNode;
+  body?: ScriptAstNode | ScriptAstNode[];
+}
+
 /**
- * Extract simple method names from a Script Include script body and merge
- * Method symbols into the Registry. Uses lightweight regex (no full type graph).
+ * Parse a script body with espree. Returns undefined when the text is not a script.
+ * The AST is the Phase D parse; callers cache it on the Registry parse entry.
+ */
+export function parseEmbeddedScript(code: string): ScriptAstNode | undefined {
+  try {
+    const espree = require('espree') as {
+      parse: (source: string, options: object) => ScriptAstNode;
+    };
+    return espree.parse(code, {
+      ecmaVersion: 2022,
+      sourceType: 'script',
+      loc: true,
+      range: true
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Extract method names from a Script Include script body and merge Method symbols.
+ * Object-literal methods (`foo: function`) and `prototype.foo = function` assignments.
  */
 export function extractAndMergeMethods(
   registry: Registry,
@@ -48,15 +81,21 @@ export function extractAndMergeMethods(
     script: string;
   }
 ): MethodSymbol[] {
+  const program = parseEmbeddedScript(options.script);
+  if (options.ownerUri) {
+    const entry =
+      registry.getParseEntry(options.ownerUri) ??
+      registry.getOrCreateParseEntry(options.ownerUri, 0);
+    entry.jsAstByRegion?.set(options.ownerName, program);
+  }
+  if (!program) {
+    return [];
+  }
   const methods: MethodSymbol[] = [];
-  // initialize: function() { … }  /  foo: function(a, b) {
-  const re = /(?:^|[,{\s])(\w+)\s*:\s*function\s*\(/g;
-  let match: RegExpExecArray | null;
   const seen = new Set<string>();
-  while ((match = re.exec(options.script)) !== null) {
-    const name = match[1];
-    if (seen.has(name) || name === 'type') {
-      continue;
+  const add = (name: string | undefined): void => {
+    if (!name || seen.has(name) || name === 'type') {
+      return;
     }
     seen.add(name);
     const symbol: MethodSymbol = {
@@ -69,12 +108,28 @@ export function extractAndMergeMethods(
     };
     registry.upsert(symbol);
     methods.push(symbol);
-    registry.addEdge({
-      fromId: `ScriptInclude:${options.scope ?? ''}:${options.ownerName}:${options.ownerUri ?? ''}`,
-      toId: `Method:${options.ownerName}.${name}:${options.ownerUri ?? ''}`,
-      kind: 'calls'
-    });
-  }
+  };
+  walkScript(program, (node) => {
+    if (
+      (node.type === 'Property' || node.type === 'MethodDefinition') &&
+      node.key?.type === 'Identifier' &&
+      !node.computed &&
+      isFunctionNode(node.value ?? node)
+    ) {
+      add(node.key.name);
+      return;
+    }
+    if (
+      node.type === 'AssignmentExpression' &&
+      node.left?.type === 'MemberExpression' &&
+      !node.left.computed &&
+      node.left.property?.type === 'Identifier' &&
+      isFunctionNode(node.right) &&
+      isPrototypeObject(node.left.object)
+    ) {
+      add(node.left.property.name);
+    }
+  });
   return methods;
 }
 
@@ -86,9 +141,11 @@ export function resolveScriptIncludeReference(
   name: string,
   readFile: (uri: string) => string | undefined
 ): MethodSymbol[] {
-  const matches = registry
-    .lookup(name)
-    .filter((s) => s.kind === 'ScriptInclude' || s.kind === 'UiScript');
+  const matches = registry.lookup(name).filter(
+    (s) =>
+      (s.kind === 'ScriptInclude' && s.table !== 'sys_script') ||
+      s.kind === 'UiScript'
+  );
   const methods: MethodSymbol[] = [];
   for (const match of matches) {
     if (!match.uri) {
@@ -124,4 +181,44 @@ export function resolveScriptIncludeReference(
     );
   }
   return methods;
+}
+
+function isFunctionNode(node: ScriptAstNode | undefined): boolean {
+  return (
+    node?.type === 'FunctionExpression' ||
+    node?.type === 'FunctionDeclaration' ||
+    node?.type === 'ArrowFunctionExpression'
+  );
+}
+
+function isPrototypeObject(node: ScriptAstNode | undefined): boolean {
+  return (
+    node?.type === 'MemberExpression' &&
+    !node.computed &&
+    node.property?.type === 'Identifier' &&
+    node.property.name === 'prototype'
+  );
+}
+
+function walkScript(node: ScriptAstNode, visit: (node: ScriptAstNode) => void): void {
+  visit(node);
+  for (const value of Object.values(node)) {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (isScriptNode(item)) {
+          walkScript(item, visit);
+        }
+      }
+    } else if (isScriptNode(value)) {
+      walkScript(value, visit);
+    }
+  }
+}
+
+function isScriptNode(value: unknown): value is ScriptAstNode {
+  return (
+    !!value &&
+    typeof value === 'object' &&
+    typeof (value as ScriptAstNode).type === 'string'
+  );
 }

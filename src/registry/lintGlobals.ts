@@ -21,10 +21,7 @@ export function workspaceDeclarationsFromRegistry(
   registry: Registry
 ): ScriptDeclaration[] {
   return registry.listWorkspaceDeclarations().map((symbol) => ({
-    table:
-      symbol.kind === 'ScriptInclude'
-        ? 'sys_script_include'
-        : symbol.table,
+    table: symbol.table,
     profile: symbol.profile,
     scope: symbol.scope ?? 'global',
     name: symbol.name

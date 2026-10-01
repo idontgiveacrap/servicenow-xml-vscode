@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import type { CachedSchemaField } from './cache';
 import { Registry } from './Registry';
 import type { FieldSymbol, TableSymbol } from './types';
 
@@ -13,17 +14,32 @@ interface TablesPack {
   tables: Array<{ name: string; label?: string }>;
 }
 
+/** One packed dictionary field (name, label, type, reference). */
+export interface PackedField {
+  element: string;
+  label?: string;
+  internalType?: string;
+  reference?: string;
+  embeddedLanguage?: 'javascript' | 'json' | 'css' | 'xml' | 'other';
+}
+
+/** Field row returned by schema queries. */
+export interface SchemaFieldHit {
+  table: string;
+  name: string;
+  label?: string;
+  type?: string;
+  reference?: string;
+}
+
+/** Schema hit tagged with whether the workspace export replaced the platform row. */
+export interface MergedSchemaFieldHit extends SchemaFieldHit {
+  source: 'platform' | 'project';
+}
+
 interface FieldsPack {
   version: number;
-  fields: Record<
-    string,
-    Array<{
-      element: string;
-      internalType?: string;
-      reference?: string;
-      embeddedLanguage?: 'javascript' | 'json' | 'css' | 'xml' | 'other';
-    }>
-  >;
+  fields: Record<string, PackedField[]>;
 }
 
 /**
@@ -99,6 +115,7 @@ export class DictionaryFieldIndex {
         name: row.element,
         table,
         element: row.element,
+        label: row.label,
         internalType: row.internalType,
         reference: row.reference,
         embeddedLanguage: row.embeddedLanguage
@@ -118,6 +135,49 @@ export class DictionaryFieldIndex {
     for (const table of Object.keys(this.fields)) {
       this.ensureTableFields(table);
     }
+  }
+
+  /**
+   * Fields for one table: name, label, type, and reference.
+   * Does not require the table's symbols to be upserted first.
+   */
+  fieldsFor(table: string): SchemaFieldHit[] {
+    this.ensurePackLoaded();
+    const rows = this.fields?.[table];
+    if (!rows) {
+      return [];
+    }
+    return rows.map((row) => toFieldHit(table, row));
+  }
+
+  /**
+   * Substring search across field name, label, type, and reference.
+   */
+  searchFields(query: string, limit: number): SchemaFieldHit[] {
+    this.ensurePackLoaded();
+    const needle = query.trim().toLowerCase();
+    if (!needle || !this.fields || limit <= 0) {
+      return [];
+    }
+    const hits: SchemaFieldHit[] = [];
+    const tables = Object.keys(this.fields).sort();
+    for (const table of tables) {
+      for (const row of this.fields[table]) {
+        const hit = toFieldHit(table, row);
+        const hay = [hit.name, hit.label, hit.type, hit.reference]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(needle)) {
+          continue;
+        }
+        hits.push(hit);
+        if (hits.length >= limit) {
+          return hits;
+        }
+      }
+    }
+    return hits;
   }
 
   hasTable(table: string): boolean {
@@ -144,4 +204,97 @@ export class DictionaryFieldIndex {
     const pack = JSON.parse(raw.toString('utf8')) as FieldsPack;
     this.fields = pack.fields;
   }
+}
+
+/**
+ * Map a packed dictionary row to the schema query shape.
+ */
+/**
+ * Platform pack fields with workspace columns overlaid. Project rows win on the same element.
+ */
+export function mergeSchemaFields(
+  packed: SchemaFieldHit[],
+  project: CachedSchemaField[]
+): MergedSchemaFieldHit[] {
+  const byName = new Map<string, MergedSchemaFieldHit>();
+  for (const field of packed) {
+    byName.set(field.name, { ...field, source: 'platform' });
+  }
+  for (const field of project) {
+    if (!field.element) {
+      continue;
+    }
+    byName.set(field.element, projectFieldHit(field));
+  }
+  return [...byName.values()];
+}
+
+/**
+ * Field search across project columns first, then platform rows the project did not replace.
+ */
+export function searchMergedSchema(
+  packedHits: SchemaFieldHit[],
+  project: CachedSchemaField[],
+  query: string,
+  limit: number
+): MergedSchemaFieldHit[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle || limit <= 0) {
+    return [];
+  }
+  const overridden = new Set(
+    project.filter((field) => field.element).map((field) => `${field.table}.${field.element}`)
+  );
+  const hits: MergedSchemaFieldHit[] = [];
+  for (const field of project) {
+    if (!field.element || !fieldMatches(projectFieldHit(field), needle)) {
+      continue;
+    }
+    hits.push(projectFieldHit(field));
+    if (hits.length >= limit) {
+      return hits;
+    }
+  }
+  for (const field of packedHits) {
+    if (overridden.has(`${field.table}.${field.name}`)) {
+      continue;
+    }
+    if (!fieldMatches(field, needle)) {
+      continue;
+    }
+    hits.push({ ...field, source: 'platform' });
+    if (hits.length >= limit) {
+      return hits;
+    }
+  }
+  return hits;
+}
+
+function projectFieldHit(field: CachedSchemaField): MergedSchemaFieldHit {
+  return {
+    table: field.table,
+    name: field.element,
+    ...(field.label ? { label: field.label } : {}),
+    ...(field.internalType ? { type: field.internalType } : {}),
+    ...(field.reference ? { reference: field.reference } : {}),
+    source: 'project'
+  };
+}
+
+function fieldMatches(field: SchemaFieldHit, needle: string): boolean {
+  return [field.name, field.label, field.type, field.reference]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .includes(needle);
+}
+
+function toFieldHit(table: string, row: PackedField): SchemaFieldHit {
+  return {
+    table,
+    name: row.element,
+    ...(row.label ? { label: row.label } : {}),
+    ...(row.internalType ? { type: row.internalType } : {}),
+    ...(row.reference ? { reference: row.reference } : {})
+  };
 }

@@ -3,6 +3,11 @@ import { classifyAndValidate } from './kinds';
 import { SnDiagnostic } from './kinds/types';
 import { getOrParseXml } from './registry/lazyParse';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import {
+  extractXmlReferences,
+  referenceTargetIndex
+} from './registry/xmlReferences';
+import { extractRecordIdentities } from './navigator/recordName';
 import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
@@ -145,7 +150,10 @@ export class DiagnosticsController implements vscode.Disposable {
       requireRecordSysIds: this.requiresRecordSysId(document)
     });
 
-    const snDiags: SnDiagnostic[] = [...classification.diagnostics];
+    const snDiags: SnDiagnostic[] = [
+      ...classification.diagnostics,
+      ...deletedReferenceDiagnostics(document, text)
+    ];
 
     if (
       config.get<boolean>('lintJavaScript', true) &&
@@ -246,6 +254,46 @@ function toSeverity(level: SnDiagnostic['severity']): vscode.DiagnosticSeverity 
     default:
       return vscode.DiagnosticSeverity.Warning;
   }
+}
+
+/**
+ * Error when an export element points at a sys_id whose only project row is DELETE.
+ * Ids that are simply absent (platform rows) are not diagnostics; agents query them.
+ */
+function deletedReferenceDiagnostics(
+  document: vscode.TextDocument,
+  text: string
+): SnDiagnostic[] {
+  const uri = document.uri.toString();
+  const edges = extractXmlReferences(text, {
+    uri,
+    relativePath: document.uri.fsPath
+  });
+  if (edges.length === 0) {
+    return [];
+  }
+  const registry = getWorkspaceRegistryService().registry;
+  const others = registry.listRecords().filter((record) => record.uri !== uri);
+  const here = extractRecordIdentities(text, document.uri.fsPath);
+  const targetState = referenceTargetIndex([...others, ...here]);
+  const diagnostics: SnDiagnostic[] = [];
+  for (const edge of edges) {
+    if (targetState(edge.toSysId) !== 'deleted') {
+      continue;
+    }
+    const start = document.positionAt(edge.startOffset);
+    const end = document.positionAt(edge.startOffset + edge.toSysId.length);
+    diagnostics.push({
+      message: `Referenced sys_id ${edge.toSysId} (${edge.element}) is deleted in this project.`,
+      severity: 'error',
+      line: start.line,
+      character: start.character,
+      endLine: end.line,
+      endCharacter: end.character,
+      code: 'xml-reference-deleted'
+    });
+  }
+  return diagnostics;
 }
 
 function clampPosition(

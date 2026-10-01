@@ -22,13 +22,20 @@ import { runMcpStdio } from './mcpStdio';
 import {
   DictionaryFieldIndex,
   loadDictionaryTables,
-  schemaAssetPaths
+  mergeSchemaFields,
+  schemaAssetPaths,
+  searchMergedSchema
 } from './schemaLoader';
+import { referenceTargetIndex } from './xmlReferences';
 import {
   loadStaticPacks,
   PlatformGlobalsPack
 } from './staticLoader';
-import { loadScriptingKnowledge, ScriptingKnowledge } from './scriptingKnowledge';
+import {
+  loadScriptingKnowledge,
+  scriptingLookupFromRegistry,
+  ScriptingKnowledge
+} from './scriptingKnowledge';
 import type { ScriptIncludeWhitelist, ScopeList } from '../scriptDeclarations';
 
 function dataDir(): string {
@@ -44,7 +51,9 @@ function dataDir(): string {
 
 function resolveCachePath(): string | undefined {
   if (process.env.REGISTRY_CACHE_PATH) {
-    return process.env.REGISTRY_CACHE_PATH;
+    return fs.existsSync(process.env.REGISTRY_CACHE_PATH)
+      ? process.env.REGISTRY_CACHE_PATH
+      : undefined;
   }
   const workspace = process.env.REGISTRY_WORKSPACE || process.cwd();
   const candidate = registryCachePath(workspace);
@@ -79,7 +88,7 @@ function bootRegistry(): {
   });
   loadDictionaryTables(registry, paths.tables);
   const fieldIndex = new DictionaryFieldIndex(registry, paths.fieldsGz);
-  const scripting = loadScriptingKnowledge(dir);
+  const scripting = loadScriptingKnowledge(dir, registry);
 
   let app: CachedApp | undefined;
   const cachePath = resolveCachePath();
@@ -99,6 +108,14 @@ function bootRegistry(): {
       }
       if (Array.isArray(declarations)) {
         registry.upsertMany(cachedDeclarationsToSymbols(declarations));
+      }
+      const schemaFields = cache?.schemaFields ?? parsed.schemaFields ?? [];
+      const references = cache?.references ?? parsed.references ?? [];
+      if (Array.isArray(schemaFields) || Array.isArray(references)) {
+        registry.setProjectOverlay(
+          Array.isArray(schemaFields) ? schemaFields : [],
+          Array.isArray(references) ? references : []
+        );
       }
       if (!app) {
         app = appFromSysAppRecords(registry);
@@ -159,16 +176,13 @@ function dispatch(
     case 'list_columns': {
       const table = String(args.table ?? '');
       const info = registry.getTable(table);
-      fieldIndex.ensureTableFields(table);
-      const fields = registry.listFieldsForTable(table).map((f) => ({
-        element: f.element,
-        internalType: f.internalType,
-        reference: f.reference,
-        embeddedLanguage: f.embeddedLanguage
-      }));
+      const fields = mergeSchemaFields(
+        fieldIndex.fieldsFor(table),
+        registry.listProjectFields(table)
+      );
       return {
         table,
-        label: info?.label,
+        label: registry.projectTableLabel(table) ?? info?.label,
         known: !!(info || fields.length || fieldIndex.hasTable(table)),
         fields
       };
@@ -177,16 +191,78 @@ function dispatch(
       const q = String(args.query ?? '')
         .toLowerCase()
         .trim();
-      const tables = registry
-        .listTables()
-        .filter(
-          (t) =>
-            t.name.toLowerCase().includes(q) ||
-            (t.label ?? '').toLowerCase().includes(q)
-        )
-        .slice(0, limit)
-        .map((t) => ({ kind: 'table', name: t.name, label: t.label }));
-      return { matches: tables };
+      const matches: unknown[] = [];
+      if (q) {
+        for (const table of registry.listTables()) {
+          if (matches.length >= limit) {
+            break;
+          }
+          if (
+            table.name.toLowerCase().includes(q) ||
+            (table.label ?? '').toLowerCase().includes(q)
+          ) {
+            matches.push({
+              match: 'table',
+              table: table.name,
+              name: table.name,
+              label: table.label
+            });
+          }
+        }
+      }
+      if (matches.length < limit && q) {
+        for (const field of searchMergedSchema(
+          fieldIndex.searchFields(q, limit),
+          registry.listProjectFields(),
+          q,
+          limit - matches.length
+        )) {
+          matches.push({ match: 'field', ...field });
+        }
+      }
+      return { matches };
+    }
+    case 'references_to':
+    case 'references_from': {
+      const sysId = String(args.sys_id ?? '').toLowerCase();
+      const records = registry.listRecords();
+      const targetState = referenceTargetIndex(records);
+      const edges = registry.listReferenceEdges().filter((edge) =>
+        name === 'references_to'
+          ? edge.toSysId === sysId
+          : (edge.fromSysId ?? '').toLowerCase() === sysId
+      );
+      return {
+        sys_id: sysId,
+        total: edges.length,
+        references: edges.slice(0, limit).map((edge) => ({
+          ...edge,
+          targetState: targetState(edge.toSysId)
+        }))
+      };
+    }
+    case 'list_reference_issues': {
+      const includeNotInProject = args.includeNotInProject === true;
+      const targetState = referenceTargetIndex(registry.listRecords());
+      const issues: unknown[] = [];
+      let matched = 0;
+      for (const edge of registry.listReferenceEdges()) {
+        const state = targetState(edge.toSysId);
+        const include =
+          state === 'deleted' || (includeNotInProject && state === 'not_in_project');
+        if (!include) {
+          continue;
+        }
+        matched += 1;
+        if (issues.length < limit) {
+          issues.push({
+            ...edge,
+            targetState: state,
+            severity: state === 'deleted' ? 'error' : 'info'
+          });
+        }
+      }
+      return { issues, total: matched };
     }
     case 'lookup_platform_api': {
       const apiName = String(args.name ?? '');
@@ -277,8 +353,13 @@ function dispatch(
         section: args.section,
         data: scripting.getSection(String(args.section ?? ''))
       };
-    case 'lookup_scripting_name':
-      return scripting.lookupName(String(args.name ?? ''));
+    case 'lookup_scripting_name': {
+      const meta = scripting.getMeta() as { available?: boolean };
+      if (!meta.available) {
+        throw new Error('scripting_reference pack not loaded');
+      }
+      return scriptingLookupFromRegistry(registry, String(args.name ?? ''));
+    }
     case 'search_scripting_reference':
       return {
         matches: scripting.search(
@@ -318,7 +399,8 @@ const { registry, fieldIndex, scripting, app } = bootRegistry();
 const tools = [
   {
     name: 'list_tables',
-    description: 'List known ServiceNow tables from the Registry dictionary pack.',
+    description:
+      'List tables from the platform dictionary and project dictionary exports, as one set.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string' }, limit: { type: 'number' } }
@@ -326,7 +408,8 @@ const tools = [
   },
   {
     name: 'get_table',
-    description: 'Get one table and its columns from the Registry.',
+    description:
+      'Get one table and its fields (name, label, type, reference, source). Project columns override the platform pack.',
     inputSchema: {
       type: 'object',
       properties: { table: { type: 'string' } },
@@ -335,7 +418,8 @@ const tools = [
   },
   {
     name: 'list_columns',
-    description: 'List columns for a table.',
+    description:
+      'List fields for one table (name, label, type, reference, source) from the combined dictionary.',
     inputSchema: {
       type: 'object',
       properties: { table: { type: 'string' } },
@@ -344,7 +428,8 @@ const tools = [
   },
   {
     name: 'search_schema',
-    description: 'Search tables by substring.',
+    description:
+      'Search the combined platform and project dictionary by name, label, type, or reference.',
     inputSchema: {
       type: 'object',
       properties: { query: { type: 'string' }, limit: { type: 'number' } },
@@ -393,9 +478,41 @@ const tools = [
     }
   },
   {
+    name: 'references_to',
+    description:
+      'Incoming sys_id references for one record. Each edge includes targetState: in_project, deleted, or not_in_project.',
+    inputSchema: {
+      type: 'object',
+      properties: { sys_id: { type: 'string' }, limit: { type: 'number' } },
+      required: ['sys_id']
+    }
+  },
+  {
+    name: 'references_from',
+    description:
+      'Outgoing sys_id references from one record. Each edge includes targetState.',
+    inputSchema: {
+      type: 'object',
+      properties: { sys_id: { type: 'string' }, limit: { type: 'number' } },
+      required: ['sys_id']
+    }
+  },
+  {
+    name: 'list_reference_issues',
+    description:
+      'Reference findings an agent can query. Default is deleted targets (editor errors). Set includeNotInProject to also list ids absent from the export; those are not editor diagnostics.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number' },
+        includeNotInProject: { type: 'boolean' }
+      }
+    }
+  },
+  {
     name: 'get_workspace_app',
     description:
-      'Workspace sys_app metadata from Registry cache (scope, js_level, supportsES12).',
+      'Workspace sys_app metadata from Registry cache (scope, jsLevel, supportsES12, restrictTableAccess).',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -424,7 +541,8 @@ const tools = [
   },
   {
     name: 'lookup_scripting_name',
-    description: 'Lookup a name in server / runtime / undocumented scripting sections.',
+    description:
+      'Lookup a name on Registry platform symbols that carry scripting-reference doc payloads.',
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string' } },

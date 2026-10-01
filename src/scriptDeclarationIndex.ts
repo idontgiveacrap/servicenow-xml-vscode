@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
 import { getIgnoreGlobs } from './ignorePaths';
-import type { CachedDeclaration } from './registry/cache';
-import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import type { CachedApp, CachedDeclaration } from './registry/cache';
+import {
+  getWorkspaceRegistryService,
+  registrySnapshotKeys
+} from './registry/vscodeAdapter';
 import {
   scanExportRecordsWithDeclarations
 } from './navigator/scanExports';
@@ -12,8 +15,8 @@ type IndexListener = () => void;
 /**
  * Workspace Script Include / UI Script / UX CSI names for lint globals.
  *
- * Prefers declarations already collected by the Records catalog's unified
- * Registry scan; falls back to its own XML scan when the navigator is off.
+ * Reads the shared Registry snapshot. When the navigator is off, this index
+ * runs the same export scan and writes `.servicenow-xml/registry-cache.json`.
  */
 export class ScriptDeclarationIndex implements vscode.Disposable {
   private loaded = false;
@@ -24,16 +27,21 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private getWorkspaceAppSysId: () => string | undefined = () => undefined;
   private getWorkspaceAppScope: () => string | undefined = () => undefined;
+  private getWorkspaceJavaScriptSupport: () => string | undefined = () =>
+    undefined;
+  private getRestrictTableAccess: () => boolean | undefined = () => undefined;
   private isActive: () => boolean = () => false;
 
-  constructor(_workspaceState: vscode.Memento) {
+  constructor(workspaceState: vscode.Memento) {
+    void workspaceState.update('servicenowXml.scriptDeclarations.cache', undefined);
     const registry = getWorkspaceRegistryService();
     this.disposables.push(
       registry.onDidChange(() => {
-        if (registry.getCachedDeclarations().length > 0) {
-          this.loaded = true;
-          this.notify();
+        if (!this.isActive()) {
+          return;
         }
+        this.loaded = true;
+        this.notify();
       }),
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         if (this.isActive()) {
@@ -55,10 +63,18 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     isActive: () => boolean;
     getWorkspaceAppSysId: () => string | undefined;
     getWorkspaceAppScope: () => string | undefined;
+    getWorkspaceJavaScriptSupport?: () => string | undefined;
+    getRestrictTableAccess?: () => boolean | undefined;
   }): void {
     this.isActive = options.isActive;
     this.getWorkspaceAppSysId = options.getWorkspaceAppSysId;
     this.getWorkspaceAppScope = options.getWorkspaceAppScope;
+    if (options.getWorkspaceJavaScriptSupport) {
+      this.getWorkspaceJavaScriptSupport = options.getWorkspaceJavaScriptSupport;
+    }
+    if (options.getRestrictTableAccess) {
+      this.getRestrictTableAccess = options.getRestrictTableAccess;
+    }
   }
 
   dispose(): void {
@@ -101,10 +117,22 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
       return false;
     }
     const registry = getWorkspaceRegistryService();
-    if (registry.getCachedDeclarations().length > 0) {
+    if (
+      registry.getCachedDeclarations().length > 0 ||
+      registry.getCachedRecords().length > 0
+    ) {
       this.loaded = true;
       this.notify();
       return true;
+    }
+    const keys = registrySnapshotKeys();
+    if (await registry.restoreFromDisk(keys.workspaceKey, keys.configKey)) {
+      this.loaded = true;
+      this.notify();
+      return true;
+    }
+    if (this.isNavigatorEnabled()) {
+      return false;
     }
     if (this.loaded) {
       return true;
@@ -123,11 +151,16 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
       this.notify();
       return;
     }
-    // Prefer declarations already produced by the navigator's unified scan.
-    const existing = getWorkspaceRegistryService().getCachedDeclarations();
-    if (existing.length > 0) {
+    const existing = getWorkspaceRegistryService();
+    if (
+      existing.getCachedDeclarations().length > 0 ||
+      existing.getCachedRecords().length > 0
+    ) {
       this.loaded = true;
       this.notify();
+      return;
+    }
+    if (this.isNavigatorEnabled()) {
       return;
     }
     if (this.loading) {
@@ -161,13 +194,16 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
   }
 
   /**
-   * Full-workspace declaration scan when the navigator has not populated Registry.
+   * Full-workspace scan when the Records navigator is off.
+   * Writes records and declarations into the same Registry cache the navigator uses.
    */
   private async runScan(generation: number): Promise<void> {
-    const ignoreGlobs = getIgnoreGlobs();
+    const keys = registrySnapshotKeys();
     const scanned = await scanExportRecordsWithDeclarations({
-      ignoreGlobs,
-      excludeDelete: false,
+      ignoreGlobs: getIgnoreGlobs(),
+      excludeDelete: vscode.workspace
+        .getConfiguration('servicenowXml')
+        .get<boolean>('navigator.excludeDelete', false),
       extractDeclarations: true,
       workspaceAppSysId: this.getWorkspaceAppSysId(),
       workspaceAppScope: this.getWorkspaceAppScope()
@@ -177,24 +213,47 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     }
     const declarations: CachedDeclaration[] = scanned.declarations;
     const service = getWorkspaceRegistryService();
-    // Keep any records the navigator already stored; replace declarations only.
     service.setWorkspaceData({
-      records: service.getCachedRecords(),
-      declarations
+      records: scanned.records.map((record) => ({
+        table: record.table,
+        displayName: record.displayName,
+        sysId: record.sysId,
+        action: record.action,
+        apiName: record.apiName,
+        sysModCount: record.sysModCount,
+        startOffset: record.startOffset,
+        uri: record.uri.toString(),
+        relativePath: record.relativePath
+      })),
+      declarations,
+      app: this.workspaceApp(),
+      schemaFields: scanned.schemaFields,
+      references: scanned.references
     });
-    const workspaceKey = JSON.stringify(
-      (vscode.workspace.workspaceFolders ?? [])
-        .map((folder) => folder.uri.toString())
-        .sort()
-    );
-    const configKey = JSON.stringify({
-      ignoreGlobs: [...ignoreGlobs].sort(),
-      appSysId: this.getWorkspaceAppSysId() ?? '',
-      appScope: this.getWorkspaceAppScope() ?? ''
-    });
-    await service.persistToDisk(workspaceKey, configKey);
+    await service.persistToDisk(keys.workspaceKey, keys.configKey);
     this.loaded = true;
     this.notify();
+  }
+
+  private isNavigatorEnabled(): boolean {
+    return vscode.workspace
+      .getConfiguration('servicenowXml')
+      .get<boolean>('navigator.enable', false);
+  }
+
+  private workspaceApp(): CachedApp {
+    const scope = this.getWorkspaceAppScope();
+    const jsLevel = this.getWorkspaceJavaScriptSupport();
+    return {
+      sysId: this.getWorkspaceAppSysId(),
+      scope,
+      jsLevel,
+      supportsES12:
+        Boolean(scope) &&
+        scope !== 'global' &&
+        (jsLevel === 'ES12' || jsLevel === 'es_latest'),
+      restrictTableAccess: this.getRestrictTableAccess()
+    };
   }
 
   private notify(): void {

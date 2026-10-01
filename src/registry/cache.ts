@@ -33,7 +33,8 @@ export interface CachedDeclaration {
   table:
     | 'sys_script_include'
     | 'sys_ui_script'
-    | 'sys_ux_client_script_include';
+    | 'sys_ux_client_script_include'
+    | 'sys_script';
   profile: 'server' | 'client';
   scope: string;
   name: string;
@@ -50,6 +51,30 @@ export interface CachedApp {
   jsLevel?: string;
   /** True when scoped app is on es_latest (ES12). */
   supportsES12?: boolean;
+  /** `sys_app.restrict_table_access`. Absent when the export omits the field. */
+  restrictTableAccess?: boolean;
+}
+
+/** Project dictionary column (or table label when `element` is empty). */
+export interface CachedSchemaField {
+  table: string;
+  element: string;
+  label?: string;
+  internalType?: string;
+  reference?: string;
+  uri: string;
+  relativePath: string;
+}
+
+/** Outgoing sys_id reference stored on the workspace snapshot. */
+export interface CachedReference {
+  fromSysId?: string;
+  fromTable: string;
+  toSysId: string;
+  element: string;
+  uri: string;
+  relativePath: string;
+  startOffset: number;
 }
 
 /** Versioned workspace snapshot for extension + MCP. */
@@ -61,6 +86,10 @@ export interface RegistryCacheFile {
   records: CachedRecord[];
   declarations: CachedDeclaration[];
   app?: CachedApp;
+  /** Workspace dictionary columns merged over the platform pack at query time. */
+  schemaFields?: CachedSchemaField[];
+  /** sys_id edges collected while scanning exports. */
+  references?: CachedReference[];
 }
 
 /**
@@ -81,6 +110,8 @@ export function createRegistryCache(options: {
   records: CachedRecord[];
   declarations: CachedDeclaration[];
   app?: CachedApp;
+  schemaFields?: CachedSchemaField[];
+  references?: CachedReference[];
 }): RegistryCacheFile {
   return {
     version: REGISTRY_CACHE_VERSION,
@@ -89,7 +120,9 @@ export function createRegistryCache(options: {
     updatedAt: options.updatedAt,
     records: options.records,
     declarations: options.declarations,
-    ...(options.app ? { app: options.app } : {})
+    ...(options.app ? { app: options.app } : {}),
+    ...(options.schemaFields ? { schemaFields: options.schemaFields } : {}),
+    ...(options.references ? { references: options.references } : {})
   };
 }
 
@@ -178,12 +211,15 @@ export function cachedDeclarationsToSymbols(
   declarations: CachedDeclaration[]
 ): Array<ScriptIncludeSymbol | UiScriptSymbol> {
   return declarations.map((declaration) => {
-    if (declaration.table === 'sys_script_include') {
+    if (
+      declaration.table === 'sys_script_include' ||
+      declaration.table === 'sys_script'
+    ) {
       return {
         kind: 'ScriptInclude' as const,
         name: declaration.name,
-        table: 'sys_script_include' as const,
-        profile: declaration.profile,
+        table: declaration.table,
+        profile: declaration.table === 'sys_script' ? 'server' : declaration.profile,
         scope: declaration.scope,
         uri: declaration.uri,
         relativePath: declaration.relativePath,

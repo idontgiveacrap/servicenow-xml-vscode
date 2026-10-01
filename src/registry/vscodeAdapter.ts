@@ -5,11 +5,14 @@
 
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { getIgnoreGlobs } from '../ignorePaths';
 import { ScriptDeclaration } from '../scriptDeclarations';
 import {
   CachedApp,
   CachedDeclaration,
   CachedRecord,
+  CachedReference,
+  CachedSchemaField,
   cachedDeclarationsToSymbols,
   cachedRecordsToSymbols,
   createRegistryCache,
@@ -17,6 +20,7 @@ import {
   registryCachePath,
   saveRegistryCacheFile
 } from './cache';
+import { MAX_REFERENCE_EDGES } from './xmlReferences';
 import { createNodeFileSystem } from './nodeFs';
 import { getRuntimeFieldIndex, getRuntimeRegistry } from './runtime';
 import { workspaceDeclarationsFromRegistry } from './lintGlobals';
@@ -32,6 +36,8 @@ export class WorkspaceRegistryService implements vscode.Disposable {
   private readonly fs = createNodeFileSystem();
   private workspaceRecords: CachedRecord[] = [];
   private workspaceDeclarations: CachedDeclaration[] = [];
+  private workspaceSchema: CachedSchemaField[] = [];
+  private workspaceReferences: CachedReference[] = [];
   private workspaceApp: CachedApp | undefined;
 
   constructor() {
@@ -72,16 +78,21 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     records: CachedRecord[];
     declarations: CachedDeclaration[];
     app?: CachedApp;
+    schemaFields?: CachedSchemaField[];
+    references?: CachedReference[];
   }): void {
     this.workspaceRecords = options.records;
     this.workspaceDeclarations = options.declarations;
     if (options.app !== undefined) {
       this.workspaceApp = options.app;
     }
-    this.registry.clearWorkspaceSymbols();
-    this.registry.upsertMany(cachedRecordsToSymbols(options.records));
-    this.registry.upsertMany(cachedDeclarationsToSymbols(options.declarations));
-    this.notify();
+    if (options.schemaFields !== undefined) {
+      this.workspaceSchema = options.schemaFields;
+    }
+    if (options.references !== undefined) {
+      this.workspaceReferences = options.references.slice(0, MAX_REFERENCE_EDGES);
+    }
+    this.applyWorkspaceSymbols();
   }
 
   /**
@@ -89,11 +100,19 @@ export class WorkspaceRegistryService implements vscode.Disposable {
    */
   setWorkspaceDeclarations(declarations: CachedDeclaration[]): void {
     this.workspaceDeclarations = declarations;
-    // Drop only workspace script symbols, keep records.
-    const keepRecords = this.workspaceRecords;
+    this.applyWorkspaceSymbols();
+  }
+
+  /**
+   * Replace workspace symbols, then overlay project dictionary and reference edges.
+   */
+  private applyWorkspaceSymbols(): void {
     this.registry.clearWorkspaceSymbols();
-    this.registry.upsertMany(cachedRecordsToSymbols(keepRecords));
-    this.registry.upsertMany(cachedDeclarationsToSymbols(declarations));
+    this.registry.upsertMany(cachedRecordsToSymbols(this.workspaceRecords));
+    this.registry.upsertMany(
+      cachedDeclarationsToSymbols(this.workspaceDeclarations)
+    );
+    this.registry.setProjectOverlay(this.workspaceSchema, this.workspaceReferences);
     this.notify();
   }
 
@@ -134,7 +153,9 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       updatedAt: Date.now(),
       records: this.workspaceRecords,
       declarations: this.workspaceDeclarations,
-      app: this.workspaceApp
+      app: this.workspaceApp,
+      schemaFields: this.workspaceSchema,
+      references: this.workspaceReferences
     });
     try {
       await saveRegistryCacheFile(this.fs, cachePath, cache);
@@ -167,7 +188,9 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     this.setWorkspaceData({
       records: cache.records,
       declarations: cache.declarations,
-      app: cache.app
+      app: cache.app,
+      schemaFields: cache.schemaFields ?? [],
+      references: cache.references ?? []
     });
     return true;
   }
@@ -198,6 +221,26 @@ export function getWorkspaceRegistryService(): WorkspaceRegistryService {
 export function resetWorkspaceRegistryService(): void {
   sharedService?.dispose();
   sharedService = undefined;
+}
+
+/**
+ * Workspace and config keys for `.servicenow-xml/registry-cache.json`.
+ * Navigator and the declaration index must share these so one snapshot restores both.
+ */
+export function registrySnapshotKeys(): { workspaceKey: string; configKey: string } {
+  const workspaceKey = JSON.stringify(
+    (vscode.workspace.workspaceFolders ?? [])
+      .map((folder) => folder.uri.toString())
+      .sort()
+  );
+  const excludeDelete = vscode.workspace
+    .getConfiguration('servicenowXml')
+    .get<boolean>('navigator.excludeDelete', false);
+  const configKey = JSON.stringify({
+    excludeDelete,
+    ignoreGlobs: [...getIgnoreGlobs()].sort()
+  });
+  return { workspaceKey, configKey };
 }
 
 /**

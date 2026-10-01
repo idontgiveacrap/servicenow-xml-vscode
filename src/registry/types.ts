@@ -52,7 +52,7 @@ export interface RecordSymbol extends RegistrySymbolBase {
 export interface ScriptIncludeSymbol extends RegistrySymbolBase {
   kind: 'ScriptInclude';
   profile: ScriptProfile;
-  table: 'sys_script_include';
+  table: 'sys_script_include' | 'sys_script';
   packagePrivate?: boolean;
   clientCallable?: boolean;
   /** True when from workspace export rather than static pack. */
@@ -73,6 +73,8 @@ export interface TableSymbol extends RegistrySymbolBase {
   label?: string;
   /** True when this row is the table definition (empty element). */
   isTableDefinition?: boolean;
+  /** True when the table exists only in the workspace export, not the platform pack. */
+  fromWorkspace?: boolean;
 }
 
 /** Dictionary field on a table. */
@@ -80,11 +82,18 @@ export interface FieldSymbol extends RegistrySymbolBase {
   kind: 'Field';
   table: string;
   element: string;
+  /** column_label from the dictionary export. */
+  label?: string;
   internalType?: string;
   reference?: string;
   /** Script / JSON / CSS / other embedded language hint. */
   embeddedLanguage?: 'javascript' | 'json' | 'css' | 'xml' | 'other';
+  /** True when this column came from the workspace dictionary, not the platform pack. */
+  fromWorkspace?: boolean;
 }
+
+/** Which scripting-reference section a doc payload came from. */
+export type ScriptingDocSection = 'server' | 'runtime_item' | 'undocumented';
 
 /** Platform API or global binding name. */
 export interface PlatformApiSymbol extends RegistrySymbolBase {
@@ -93,6 +102,13 @@ export interface PlatformApiSymbol extends RegistrySymbolBase {
   writable?: boolean;
   /** True when merged from code supplements rather than an SN export pack. */
   fromSupplement?: boolean;
+  /**
+   * Scripting-reference row. Lookup tools read this instead of a side index.
+   * Lint ignores symbols that exist only to carry this payload (`docsOnly`).
+   */
+  doc?: Record<string, unknown>;
+  docSection?: ScriptingDocSection;
+  docsOnly?: boolean;
 }
 
 /** Technical scope namespace. */

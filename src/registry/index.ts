@@ -19,11 +19,20 @@ export {
   workspaceDeclarationsFromRegistry
 } from './lintGlobals';
 export { indexExportText, toCachedDeclaration } from './workspaceIndexer';
+export { scriptCompletions } from './scriptCompletion';
 export {
   loadDictionaryTables,
   DictionaryFieldIndex,
-  schemaAssetPaths
+  schemaAssetPaths,
+  mergeSchemaFields,
+  searchMergedSchema
 } from './schemaLoader';
+export { extractProjectSchema } from './projectSchema';
+export {
+  extractXmlReferences,
+  referenceTargetState,
+  referenceTargetIndex
+} from './xmlReferences';
 export { lintSchemaTableArgs, schemaMessagesToEslint } from './schemaLint';
 export {
   getOrParseXml,
@@ -31,3 +40,7 @@ export {
   resolveScriptIncludeReference
 } from './lazyParse';
 export { getRuntimeRegistry, getRuntimeFieldIndex } from './runtime';
+export {
+  attachScriptingDocs,
+  scriptingLookupFromRegistry
+} from './scriptingKnowledge';
