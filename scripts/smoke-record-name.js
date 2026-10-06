@@ -25,15 +25,64 @@ try {
   );
   assert.ok(
     manifest.contributes.configuration.properties[
+      'servicenowXml.mcp.enable'
+    ],
+    'mcp.enable setting must be registered'
+  );
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.mcp.registry'
+    ],
+    'mcp.registry setting must be registered'
+  );
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.mcp.instance'
+    ],
+    'mcp.instance setting must be registered'
+  );
+  assert.ok(
+    manifest.contributes.configuration.properties[
+      'servicenowXml.mcp.remote'
+    ],
+    'mcp.remote setting must be registered'
+  );
+  // Old settings must not be registered.
+  assert.ok(
+    !manifest.contributes.configuration.properties[
       'servicenowXml.cursorHelpers.enable'
     ],
-    'cursorHelpers.enable setting must be registered'
+    'cursorHelpers.enable setting must not be registered'
+  );
+  assert.ok(
+    !manifest.contributes.configuration.properties[
+      'servicenowXml.cursorHelpers.installIndexHook'
+    ],
+    'cursorHelpers.installIndexHook setting must not be registered'
+  );
+  assert.ok(
+    !manifest.contributes.configuration.properties[
+      'servicenowXml.cursorHelpers.pythonPath'
+    ],
+    'cursorHelpers.pythonPath setting must not be registered'
   );
   assert.ok(
     manifest.contributes.commands.some(
+      (c) => c.command === 'servicenowXml.installHelpers'
+    ),
+    'Install Agent Helpers command must be registered'
+  );
+  assert.ok(
+    !manifest.contributes.commands.some(
       (c) => c.command === 'servicenowXml.cursor.installHelpers'
     ),
-    'Install Cursor Helpers command must be registered'
+    'Legacy Install Cursor Helpers command must not be registered'
+  );
+  assert.ok(
+    !manifest.contributes.commands.some(
+      (c) => c.command === 'servicenowXml.cursor.runIndexer'
+    ),
+    'Run Repo Indexer command must not be registered'
   );
   assert.equal(
     manifest.contributes.views['servicenow-xml'][0].when,
@@ -91,6 +140,7 @@ try {
     action: 'INSERT_OR_UPDATE',
     apiName: 'x_example.HelloWorld',
     sysModCount: 1,
+    sysUpdatedOn: '2026-01-01 00:00:00',
     startOffset: fixtureText.indexOf('<sys_script_include action=')
   });
 

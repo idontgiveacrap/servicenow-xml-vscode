@@ -1,5 +1,6 @@
 import { SnDiagnostic } from './kinds/types';
-import { JsonRegion, mapScriptOffsetToXml } from './scriptRegions';
+import { mapDecodedLintPosToXml } from './jsLint';
+import { JsonRegion } from './scriptRegions';
 
 /**
  * Validate embedded JSON field bodies; map parse errors onto the host XML.
@@ -28,25 +29,16 @@ export function lintJsonRegions(regions: JsonRegion[]): SnDiagnostic[] {
         colIn = mapped.character;
       }
 
-      // Map using raw field content when it matches decoded (typical for data exports).
-      // For entity-encoded UX fields, positions are approximate on the opening of the field.
-      let mapRegion = region;
-      if (region.content.trim() === text) {
-        const trimOffset = Math.max(0, region.content.indexOf(text));
-        const trimPosition = offsetInString(region.content, trimOffset);
-        mapRegion = {
-          ...region,
-          content: text,
-          bodyStartOffset: region.bodyStartOffset + trimOffset,
-          bodyStartLine: region.bodyStartLine + trimPosition.line,
-          bodyStartCharacter:
-            trimPosition.line === 0
-              ? region.bodyStartCharacter + trimPosition.character
-              : trimPosition.character
-        };
-      }
-
-      const start = mapScriptOffsetToXml(mapRegion, lineIn, colIn);
+      // Error coordinates are in the trimmed decoded body. Shift them back
+      // onto decodedContent, then through the same raw-XML map as JS lint.
+      const lead =
+        region.decodedContent.length - region.decodedContent.trimStart().length;
+      const leadPos = offsetInString(region.decodedContent, lead);
+      const start = mapDecodedLintPosToXml(
+        region,
+        leadPos.line + lineIn,
+        lineIn === 0 ? leadPos.character + colIn : colIn
+      );
 
       out.push({
         message: `[${region.fieldName}] Invalid JSON: ${message}`,

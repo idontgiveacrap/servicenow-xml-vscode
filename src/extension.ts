@@ -23,13 +23,13 @@ import {
 } from './navigator/gitStatus';
 import { SnWorkspaceGate } from './snWorkspaceGate';
 import {
-  cursorHelpersNeedReload,
-  installCursorHelpers,
+  agentHelpersNeedReload,
+  installAgentHelpers,
   isCursorHost,
-  registerCursorHelpersDisposal,
-  runRepoIndexer,
-  suggestReloadAfterCursorHelpers
-} from './cursorHelpers';
+  registerAgentHelpersDisposal,
+  suggestReloadAfterAgentHelpers
+} from './agentHelpers';
+import { registerVsCodeMcp } from './vscodeMcp';
 import { registerJsonStringEditor } from './jsonStringEditor';
 import { registerEmbeddedFormatter } from './formatEmbedded';
 import { looksLikeSnExportDocument } from './snDocumentShape';
@@ -101,7 +101,9 @@ export function activate(context: vscode.ExtensionContext): void {
     getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
     getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
     getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
-    getRestrictTableAccess: () => gate.getRestrictTableAccess()
+    getRestrictTableAccess: () => gate.getRestrictTableAccess(),
+    getWorkspaceAppVersion: () => gate.getWorkspaceAppVersion(),
+    getWorkspaceAppShortDescription: () => gate.getWorkspaceAppShortDescription()
   });
   const declarationIndex = new ScriptDeclarationIndex(context.workspaceState);
   declarationIndex.configure({
@@ -116,7 +118,9 @@ export function activate(context: vscode.ExtensionContext): void {
     getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
     getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
     getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
-    getRestrictTableAccess: () => gate.getRestrictTableAccess()
+    getRestrictTableAccess: () => gate.getRestrictTableAccess(),
+    getWorkspaceAppVersion: () => gate.getWorkspaceAppVersion(),
+    getWorkspaceAppShortDescription: () => gate.getWorkspaceAppShortDescription()
   });
   const treeProvider = new RecordsTreeProvider(catalog);
   const treeView = vscode.window.createTreeView<TreeNode>('servicenowXml.records', {
@@ -232,27 +236,28 @@ export function activate(context: vscode.ExtensionContext): void {
 
   maybeStartDeclarationIndex(declarationIndex);
 
-  // Cursor-only helpers: fire-and-forget after core features. Missing Python must
-  // not delay or break lint/navigator (installCursorHelpers never throws).
-  if (isCursorHost()) {
-    void installCursorHelpers(context)
-      .then((result) => {
-        registerCursorHelpersDisposal(context, result.pluginPath);
-        if (result.messages.length > 0) {
-          console.log(
-            '[servicenow-xml] cursor helpers:',
-            result.messages.join(' | ')
-          );
-        }
-        if (cursorHelpersNeedReload(result)) {
-          void suggestReloadAfterCursorHelpers('Cursor helpers installed.');
-        }
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('[servicenow-xml] cursor helpers failed (non-fatal):', message);
-      });
-  }
+  // MCP registration is host-specific. Cursor uses cursor.mcp.registerServer.
+  // VS Code publishes through the Copilot MCP provider API. Agent helpers
+  // (scripts, rules, Cursor plugin adapter) install on both hosts and must not
+  // delay or break lint/navigator (installAgentHelpers never throws).
+  registerVsCodeMcp(context);
+  void installAgentHelpers(context)
+    .then((result) => {
+      registerAgentHelpersDisposal(context, result.pluginPath);
+      if (result.messages.length > 0) {
+        console.log(
+          '[servicenow-xml] agent helpers:',
+          result.messages.join(' | ')
+        );
+      }
+      if (agentHelpersNeedReload(result)) {
+        void suggestReloadAfterAgentHelpers('Agent helpers installed.');
+      }
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[servicenow-xml] agent helpers failed (non-fatal):', message);
+    });
 }
 
 /**
@@ -473,27 +478,18 @@ function activateDiagnosticsAndCommands(
         }
       }
     ),
-    vscode.commands.registerCommand('servicenowXml.cursor.installHelpers', async () => {
-      const result = await installCursorHelpers(context, { force: true });
-      registerCursorHelpersDisposal(context, result.pluginPath);
-      if (result.skippedReason === 'not-cursor') {
-        void vscode.window.showInformationMessage(
-          'Cursor helpers only apply in Cursor (VS Code is unchanged).'
-        );
-        return;
-      }
+    vscode.commands.registerCommand('servicenowXml.installHelpers', async () => {
+      const result = await installAgentHelpers(context, { force: true });
+      registerAgentHelpersDisposal(context, result.pluginPath);
       if (!result.installed) {
         void vscode.window.showInformationMessage(
-          result.messages.join(' ') || 'Cursor helpers did not install.'
+          result.messages.join(' ') || 'Agent helpers did not install.'
         );
         return;
       }
-      await suggestReloadAfterCursorHelpers(
-        `Cursor helpers installed. MCP: ${result.mcpRegistered.join(', ') || 'none'}.`
+      await suggestReloadAfterAgentHelpers(
+        `Agent helpers installed. MCP: ${result.mcpRegistered.join(', ') || 'none'}.`
       );
-    }),
-    vscode.commands.registerCommand('servicenowXml.cursor.runIndexer', async () => {
-      await runRepoIndexer(context);
     })
   );
 
@@ -554,23 +550,27 @@ function activateDiagnosticsAndCommands(
       if (e.affectsConfiguration('servicenowXml.snc.path')) {
         void refreshSncContext();
       }
-      const cursorHelpersCfg =
-        e.affectsConfiguration('servicenowXml.cursorHelpers.enable') ||
-        e.affectsConfiguration('servicenowXml.cursorHelpers.installIndexHook') ||
-        e.affectsConfiguration('servicenowXml.cursorHelpers.pythonPath') ||
+      const mcpCfg =
+        e.affectsConfiguration('servicenowXml.mcp.enable') ||
+        e.affectsConfiguration('servicenowXml.mcp.registry') ||
+        e.affectsConfiguration('servicenowXml.mcp.instance') ||
+        e.affectsConfiguration('servicenowXml.mcp.remote') ||
         e.affectsConfiguration('servicenowXml.snc.path') ||
         e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
-      if (isCursorHost() && cursorHelpersCfg) {
-        void installCursorHelpers(context).then((result) => {
-          registerCursorHelpersDisposal(context, result.pluginPath);
+      if (mcpCfg) {
+        void installAgentHelpers(context, { force: true }).then((result) => {
+          registerAgentHelpersDisposal(context, result.pluginPath);
           const sncMcpCfg =
             e.affectsConfiguration('servicenowXml.snc.path') ||
-            e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
+            e.affectsConfiguration('servicenowXml.snc.mcpProfiles') ||
+            e.affectsConfiguration('servicenowXml.mcp.registry') ||
+            e.affectsConfiguration('servicenowXml.mcp.instance') ||
+            e.affectsConfiguration('servicenowXml.mcp.remote');
           if (
-            cursorHelpersNeedReload(result) ||
-            (result.installed && sncMcpCfg)
+            agentHelpersNeedReload(result) ||
+            (result.installed && sncMcpCfg && isCursorHost())
           ) {
-            void suggestReloadAfterCursorHelpers('Cursor helpers updated.');
+            void suggestReloadAfterAgentHelpers('Agent helpers updated.');
           }
         });
       }

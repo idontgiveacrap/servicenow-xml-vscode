@@ -44,6 +44,8 @@ export interface RecordSymbol extends RegistrySymbolBase {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   startOffset: number;
   mtimeMs?: number;
 }

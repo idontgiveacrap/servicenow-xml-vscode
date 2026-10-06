@@ -2,11 +2,11 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "3.1.0",
+  "version": "3.4.7",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.101.0"
   },
   "categories": [
     "Linters",
@@ -14,8 +14,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onLanguage:xml"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -73,12 +72,8 @@
         "title": "Delete from disk…"
       },
       {
-        "command": "servicenowXml.cursor.installHelpers",
-        "title": "ServiceNow XML: Install Cursor Helpers"
-      },
-      {
-        "command": "servicenowXml.cursor.runIndexer",
-        "title": "ServiceNow XML: Run Repo Indexer"
+        "command": "servicenowXml.installHelpers",
+        "title": "ServiceNow XML: Install Agent Helpers"
       },
       {
         "command": "servicenowXml.editJsonStringCode",
@@ -282,25 +277,30 @@
           ],
           "description": "Sort order for Records navigator tables and records."
         },
-        "servicenowXml.cursorHelpers.enable": {
+        "servicenowXml.mcp.enable": {
           "type": "boolean",
           "default": true,
-          "description": "In Cursor only: install ServiceNow MCP servers, user rules, and the repo indexer on activation. No-op in VS Code."
+          "description": "Register ServiceNow MCP servers and install agent helpers (rules + scripts). In Cursor this also registers the Cursor plugin adapter."
         },
-        "servicenowXml.cursorHelpers.installIndexHook": {
+        "servicenowXml.mcp.registry": {
           "type": "boolean",
           "default": true,
-          "description": "In Cursor only: add a user sessionStart hook that points agents at the ServiceNow Registry and instance MCP servers for export workspaces."
+          "description": "Register the servicenow-xml-registry MCP server (schema, scripting, JS performance, workspace discovery)."
         },
-        "servicenowXml.cursorHelpers.pythonPath": {
-          "type": "string",
-          "default": "python",
-          "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference, instance), and sessionStart hook."
+        "servicenowXml.mcp.instance": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register the servicenow-xml-instance MCP server (read-only snc queries). Also requires snc on PATH or servicenowXml.snc.path."
+        },
+        "servicenowXml.mcp.remote": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register git-based remote MCP servers (servicenow-xml-docs and servicenow-xml-ui-examples via gitmcp.io)."
         },
         "servicenowXml.snc.path": {
           "type": "string",
           "default": "snc",
-          "description": "ServiceNow CLI executable for pruning redundant DELETE exports and the Cursor instance MCP. Leave as snc when the CLI is on PATH."
+          "description": "ServiceNow CLI executable for pruning redundant DELETE exports and the instance MCP. Leave as snc when the CLI is on PATH."
         },
         "servicenowXml.snc.mcpProfiles": {
           "type": "array",
@@ -308,10 +308,16 @@
             "type": "string"
           },
           "default": [],
-          "description": "Cursor instance MCP allowlist of snc profile names. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
+          "description": "Instance MCP allowlist of snc profile names for Cursor and VS Code. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
         }
       }
     },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "servicenow-xml",
+        "label": "ServiceNow XML"
+      }
+    ],
     "configurationDefaults": {
       "[xml]": {
         "editor.defaultFormatter": "local.servicenow-xml"
@@ -339,23 +345,21 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-instance-mcp.js && tsc --noEmit"
   },
   "devDependencies": {
-    "@types/eslint": "^9.6.1",
+    "@types/eslint": "^8.56.12",
     "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "~1.101.0",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.28.1",
-    "typescript": "^5.6.0",
-    "vscode-oniguruma": "^2.0.1",
-    "vscode-textmate": "^9.3.2"
-  },
-  "dependencies": {
     "eslint": "^8.57.1",
     "eslint-plugin-servicenow": "^2.0.0",
     "fast-xml-parser": "^5.10.1",
     "jsonc-parser": "^3.3.1",
-    "minimatch": "^9.0.5"
+    "minimatch": "^9.0.5",
+    "typescript": "^5.6.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }

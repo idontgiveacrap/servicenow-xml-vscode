@@ -39,19 +39,30 @@ const extensionOptions = {
   logLevel: 'info'
 };
 
-/** @type {import('esbuild').BuildOptions} */
-const mcpOptions = {
-  entryPoints: ['src/registry/mcpServer.ts'],
-  bundle: true,
-  outfile: 'dist/registryMcp.js',
-  format: 'cjs',
-  platform: 'node',
-  target: 'node18',
-  sourcemap: !production,
-  minify: production,
-  legalComments: 'none',
-  logLevel: 'info'
-};
+/** @type {Array<{ entry: string; outfile: string }>} */
+const mcpBundles = [
+  { entry: 'src/registry/mcpServer.ts', outfile: 'dist/registryMcp.js' },
+  { entry: 'src/instance/mcpServer.ts', outfile: 'dist/instanceMcp.js' }
+];
+
+/**
+ * @param {{ entry: string; outfile: string }} bundle
+ * @returns {import('esbuild').BuildOptions}
+ */
+function mcpBundleOptions(bundle) {
+  return {
+    entryPoints: [bundle.entry],
+    bundle: true,
+    outfile: bundle.outfile,
+    format: 'cjs',
+    platform: 'node',
+    target: 'node18',
+    sourcemap: !production,
+    minify: production,
+    legalComments: 'none',
+    logLevel: 'info'
+  };
+}
 
 async function main() {
   // Schema packs stay external (gzipped fields are ~12MB uncompressed).
@@ -74,15 +85,18 @@ async function main() {
     }
   }
 
+  const mcpBuilds = mcpBundles.map((bundle) => mcpBundleOptions(bundle));
   if (watch) {
     const ctx = await esbuild.context(extensionOptions);
-    const mcpCtx = await esbuild.context(mcpOptions);
-    await Promise.all([ctx.watch(), mcpCtx.watch()]);
+    const mcpContexts = await Promise.all(
+      mcpBuilds.map((options) => esbuild.context(options))
+    );
+    await Promise.all([ctx.watch(), ...mcpContexts.map((ctx) => ctx.watch())]);
     console.log('watching…');
   } else {
     await Promise.all([
       esbuild.build(extensionOptions),
-      esbuild.build(mcpOptions)
+      ...mcpBuilds.map((options) => esbuild.build(options))
     ]);
   }
 }

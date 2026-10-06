@@ -14,6 +14,8 @@ export interface RecordIdentity {
   apiName?: string;
   /** ServiceNow update counter from `<sys_mod_count>`, when present. */
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   /** Zero-based UTF-16 offset of the record row's opening tag. */
   startOffset: number;
 }
@@ -118,6 +120,7 @@ function buildIdentity(
     action,
     apiName: apiName || undefined,
     sysModCount,
+    sysUpdatedOn: extractRowFieldText(recordText, 'sys_updated_on') || undefined,
     startOffset
   };
 }

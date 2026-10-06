@@ -86,7 +86,7 @@ const ANSI_RE = /\u001B\[[0-9;]*[A-Za-z]/g;
  * status banner before the payload, so the raw stdout is never valid JSON.
  * Returns undefined when no parseable document follows that preamble.
  */
-function parseCliJson(stdout: string): unknown | undefined {
+export function parseCliJson(stdout: string): unknown | undefined {
   const cleaned = stdout.replace(ANSI_RE, '');
   const start = cleaned.search(/[[{]/);
   if (start < 0) {

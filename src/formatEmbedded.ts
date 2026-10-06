@@ -3,7 +3,11 @@
  * format of script- and JSON-typed fields through encodeThroughLayers.
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { ensureGitignoreEntry } from './jsonStringEditor/drafts';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { parseSnXml } from './parseSnXml';
 import {
@@ -15,6 +19,9 @@ import {
   stripIndent,
   type ScriptHit
 } from './scriptHits';
+
+/** Sub-directory under the workspace `.servicenow-xml/` for format scratch files. */
+const FORMAT_TEMP_SUBDIR = path.join('.servicenow-xml', 'format-tmp');
 
 /**
  * Documents currently inside the nested `executeFormatDocumentProvider` call, so
@@ -67,19 +74,7 @@ async function formatSnXmlRange(
   const hit = scriptAt(text, offset);
   if (hit?.role === 'scriptField') {
     const original = text.slice(hit.hostStart, hit.hostEnd);
-    const scratchDocs: vscode.TextDocument[] = [];
-    let formatted: string | undefined;
-    try {
-      formatted = await formatOneHit(
-        hit,
-        'javascript',
-        options,
-        token,
-        scratchDocs
-      );
-    } finally {
-      await closeScratchTabs(scratchDocs);
-    }
+    const formatted = await formatOneHit(hit, 'javascript', options, token);
     if (formatted === undefined || formatted === original) {
       return [];
     }
@@ -172,29 +167,18 @@ async function formatSnXmlDocument(
   }
 
   const offsetEdits: Array<{ start: number; end: number; text: string }> = [];
-  const scratchDocs: vscode.TextDocument[] = [];
-  try {
-    for (const { hit, language } of targets) {
-      if (token.isCancellationRequested) {
-        return undefined;
-      }
-      const encoded = await formatOneHit(
-        hit,
-        language,
-        options,
-        token,
-        scratchDocs
-      );
-      if (encoded === undefined) {
-        continue;
-      }
-      const current = text.slice(hit.hostStart, hit.hostEnd);
-      if (encoded !== current) {
-        offsetEdits.push({ start: hit.hostStart, end: hit.hostEnd, text: encoded });
-      }
+  for (const { hit, language } of targets) {
+    if (token.isCancellationRequested) {
+      return undefined;
     }
-  } finally {
-    await closeScratchTabs(scratchDocs);
+    const encoded = await formatOneHit(hit, language, options, token);
+    if (encoded === undefined) {
+      continue;
+    }
+    const current = text.slice(hit.hostStart, hit.hostEnd);
+    if (encoded !== current) {
+      offsetEdits.push({ start: hit.hostStart, end: hit.hostEnd, text: encoded });
+    }
   }
 
   text = applyOffsetEdits(text, offsetEdits);
@@ -221,8 +205,7 @@ async function formatOneHit(
   hit: ScriptHit,
   language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
-  token: vscode.CancellationToken,
-  scratchDocs: vscode.TextDocument[]
+  token: vscode.CancellationToken
 ): Promise<string | undefined> {
   // A JSON formatter given a malformed document can drop or reorder the text it
   // cannot parse, which would silently destroy the field. Invalid JSON is
@@ -231,13 +214,7 @@ async function formatOneHit(
     return undefined;
   }
   const stripped = stripIndent(hit.code, hit.indent);
-  const formatted = await formatThroughProvider(
-    stripped,
-    language,
-    options,
-    token,
-    scratchDocs
-  );
+  const formatted = await formatThroughProvider(stripped, language, options, token);
   if (formatted === undefined) {
     return undefined;
   }
@@ -259,23 +236,50 @@ function isParseableJson(code: string): boolean {
 }
 
 /**
- * Format `code` with whichever provider is registered for `language`, by way of
- * an in-memory document. Picks up Prettier and friends the same way the editor
- * would for a real file of that language.
+ * Format `code` with whichever provider is registered for `language`.
  *
- * `openTextDocument({ content })` yields a dirty untitled document. Closing
- * that tab goes through revert-and-close so the editor does not ask to save it.
+ * Writes `code` to a scratch file under `.servicenow-xml/format-tmp/` (or the
+ * OS temp dir when no workspace is open) and formats that file. `openTextDocument`
+ * on a real file URI does not open a tab, unlike the untitled-document form which
+ * in practice does — so the scratch file avoids leaking a tab per embedded
+ * field. The file is deleted in a `finally` block.
+ *
+ * Falls back to an in-memory untitled document if the scratch file cannot be
+ * created (read-only filesystem, etc.).
  */
 async function formatThroughProvider(
   code: string,
   language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
-  token: vscode.CancellationToken,
-  scratchDocs: vscode.TextDocument[]
+  token: vscode.CancellationToken
 ): Promise<string | undefined> {
   if (token.isCancellationRequested) {
     return undefined;
   }
+
+  const temp = createFormatTempFile(code, language);
+  if (temp) {
+    try {
+      const doc = await vscode.workspace.openTextDocument(temp.uri);
+      const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+        'vscode.executeFormatDocumentProvider',
+        doc.uri,
+        options
+      );
+      if (!edits?.length) {
+        return code;
+      }
+      return applyTextEdits(code, edits, doc);
+    } finally {
+      try {
+        fs.rmSync(temp.path, { force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+
+  // Fallback: untitled in-memory document when a scratch file could not be created.
   let doc: vscode.TextDocument;
   try {
     doc = await vscode.workspace.openTextDocument({
@@ -285,61 +289,68 @@ async function formatThroughProvider(
   } catch {
     return code;
   }
-  scratchDocs.push(doc);
-  const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+  const fallbackEdits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
     'vscode.executeFormatDocumentProvider',
     doc.uri,
     options
   );
-  if (!edits?.length) {
+  if (!fallbackEdits?.length) {
     return code;
   }
-  return applyTextEdits(code, edits, doc);
+  return applyTextEdits(code, fallbackEdits, doc);
+}
+
+/** Temp-file info for the formatting scratch file. */
+interface FormatTempFile {
+  uri: vscode.Uri;
+  path: string;
 }
 
 /**
- * Close tabs the scratch formatter documents opened.
+ * Resolve the directory for formatting scratch files.
  *
- * Those documents are untitled and dirty as soon as they have content, and
- * `tabGroups.close` confirms before discarding that. Revert-and-close drops
- * the dirty state and closes without a save prompt. The editor that was active
- * before the close (the XML file being formatted) is focused again afterward.
+ * Prefers `.servicenow-xml/format-tmp/` in the first workspace folder so the
+ * files are gitignored and co-located with other extension data. Falls back to
+ * a directory under the OS temp dir when no workspace folder is open.
  */
-async function closeScratchTabs(
-  scratchDocs: vscode.TextDocument[]
-): Promise<void> {
-  if (scratchDocs.length === 0) {
-    return;
-  }
-  const uris = new Set(scratchDocs.map((doc) => doc.uri.toString()));
-  const previous = vscode.window.activeTextEditor;
-  const tabs: Array<{ uri: vscode.Uri; viewColumn: vscode.ViewColumn }> = [];
-  for (const group of vscode.window.tabGroups.all) {
-    for (const tab of group.tabs) {
-      if (
-        tab.input instanceof vscode.TabInputText &&
-        uris.has(tab.input.uri.toString())
-      ) {
-        tabs.push({ uri: tab.input.uri, viewColumn: group.viewColumn });
-      }
+function resolveFormatTempDir(): string | undefined {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder && folder.uri.scheme === 'file') {
+    const dir = path.join(folder.uri.fsPath, FORMAT_TEMP_SUBDIR);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      ensureGitignoreEntry(folder.uri.fsPath);
+      return dir;
+    } catch {
+      return undefined;
     }
   }
-  for (const { uri, viewColumn } of tabs) {
-    await vscode.window.showTextDocument(uri, {
-      viewColumn,
-      preview: true,
-      preserveFocus: false
-    });
-    await vscode.commands.executeCommand(
-      'workbench.action.revertAndCloseActiveEditor'
+  // No workspace folder (or non-file scheme): use OS temp dir as a last resort.
+  return undefined;
+}
+
+/**
+ * Write `code` to a uniquely-named scratch file and return its path/URI.
+ * Returns undefined if the file cannot be created.
+ */
+function createFormatTempFile(
+  code: string,
+  language: 'javascript' | 'json'
+): FormatTempFile | undefined {
+  const ext = language === 'javascript' ? '.js' : '.json';
+  const baseDir =
+    resolveFormatTempDir() ??
+    path.join(os.tmpdir(), 'servicenow-xml-format-tmp');
+  try {
+    fs.mkdirSync(baseDir, { recursive: true });
+    const tmpPath = path.join(
+      baseDir,
+      `format-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
     );
-  }
-  if (previous && !uris.has(previous.document.uri.toString())) {
-    await vscode.window.showTextDocument(previous.document, {
-      viewColumn: previous.viewColumn,
-      selection: previous.selection,
-      preserveFocus: true
-    });
+    fs.writeFileSync(tmpPath, code, 'utf8');
+    return { uri: vscode.Uri.file(tmpPath), path: tmpPath };
+  } catch {
+    return undefined;
   }
 }
 

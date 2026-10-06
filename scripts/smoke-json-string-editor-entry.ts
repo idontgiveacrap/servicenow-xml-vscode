@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import {
   buildDecodedToRawMap,
+  buildNormalizedDecodedToRawMap,
   hasJavascriptWrapper,
   mapDecodedRangeToRaw,
   restoreJavascriptWrapper,
@@ -82,6 +83,30 @@ section('CDATA / XML entities');
   assert.equal(map!.length, decoded.length);
   const range = mapDecodedRangeToRaw(map!, 0, decoded.length, raw.length);
   assert.deepEqual(range, { rawStart: 0, rawEnd: raw.length });
+
+  // CRLF collapse must not drop the first character of the next line.
+  const crlf = 'ab\r\ncd';
+  const crlfNorm = buildNormalizedDecodedToRawMap(crlf, (s) => s);
+  assert.ok(crlfNorm);
+  assert.equal(crlfNorm!.normalized, 'ab\ncd');
+  assert.equal(crlfNorm!.normalizedToRaw[crlfNorm!.normalized.indexOf('c')], crlf.indexOf('c'));
+
+  // A literal `&` in CDATA is not an entity, even when a `;` follows later.
+  const script = 'if (a && b) {\r\n  return;\r\n}';
+  const scriptNorm = buildNormalizedDecodedToRawMap(script, (s) => s);
+  assert.ok(scriptNorm);
+  assert.equal(scriptNorm!.normalized, 'if (a && b) {\n  return;\n}');
+  const amp = scriptNorm!.normalized.indexOf('&');
+  assert.equal(scriptNorm!.normalizedToRaw[amp], script.indexOf('&'));
+
+  // `&#13;` plus a file newline is one logical line break, and the next
+  // character keeps its raw index.
+  const encoded = 'var x;&#13;\nvar y;';
+  const encodedNorm = buildNormalizedDecodedToRawMap(encoded, decodeXmlEntities);
+  assert.ok(encodedNorm);
+  assert.equal(encodedNorm!.normalized, 'var x;\nvar y;');
+  const yAt = encodedNorm!.normalized.indexOf('y');
+  assert.equal(encodedNorm!.normalizedToRaw[yAt], encoded.indexOf('y'));
 }
 
 section('eligibility + draft keys');

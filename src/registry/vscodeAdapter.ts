@@ -7,6 +7,7 @@ import * as path from 'path';
 import * as vscode from 'vscode';
 import { getIgnoreGlobs } from '../ignorePaths';
 import { ScriptDeclaration } from '../scriptDeclarations';
+import { ensureGitignoreEntry } from '../jsonStringEditor/drafts';
 import {
   CachedApp,
   CachedDeclaration,
@@ -39,6 +40,7 @@ export class WorkspaceRegistryService implements vscode.Disposable {
   private workspaceSchema: CachedSchemaField[] = [];
   private workspaceReferences: CachedReference[] = [];
   private workspaceApp: CachedApp | undefined;
+  private workspaceDuplicateSysIds: Array<{ sysId: string; table: string; count: number }> = [];
 
   constructor() {
     this.loadStatic();
@@ -92,6 +94,7 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     if (options.references !== undefined) {
       this.workspaceReferences = options.references.slice(0, MAX_REFERENCE_EDGES);
     }
+    this.workspaceDuplicateSysIds = computeDuplicateSysIds(options.records);
     this.applyWorkspaceSymbols();
   }
 
@@ -128,6 +131,10 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     return this.workspaceApp;
   }
 
+  getDuplicateSysIds(): Array<{ sysId: string; table: string; count: number }> {
+    return this.workspaceDuplicateSysIds;
+  }
+
   /**
    * Script declarations for ESLint (undefined when none indexed yet).
    */
@@ -146,6 +153,10 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     if (!folder || folder.uri.scheme !== 'file') {
       return;
     }
+    // Ensure .servicenow-xml/ is gitignored whenever the extension creates it in
+    // a workspace folder — the drafts path does this in ensureDraftsDir, but the
+    // registry cache is the first workspace-side writer when the navigator is off.
+    ensureGitignoreEntry(folder.uri.fsPath);
     const cachePath = registryCachePath(folder.uri.fsPath);
     const cache = createRegistryCache({
       workspaceKey,
@@ -155,7 +166,8 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       declarations: this.workspaceDeclarations,
       app: this.workspaceApp,
       schemaFields: this.workspaceSchema,
-      references: this.workspaceReferences
+      references: this.workspaceReferences,
+      duplicateSysIds: this.workspaceDuplicateSysIds
     });
     try {
       await saveRegistryCacheFile(this.fs, cachePath, cache);
@@ -200,6 +212,31 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       listener();
     }
   }
+}
+
+/**
+ * Find sys_ids that appear in multiple active (non-DELETE) records.
+ */
+export function computeDuplicateSysIds(
+  records: CachedRecord[]
+): Array<{ sysId: string; table: string; count: number }> {
+  const byId = new Map<string, { table: string; count: number }>();
+  for (const record of records) {
+    if (!record.sysId || record.action === 'DELETE') {
+      continue;
+    }
+    const key = record.sysId.toLowerCase();
+    const existing = byId.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byId.set(key, { table: record.table, count: 1 });
+    }
+  }
+  return Array.from(byId.entries())
+    .filter(([_, info]) => info.count > 1)
+    .map(([sysId, info]) => ({ sysId, table: info.table, count: info.count }))
+    .sort((a, b) => b.count - a.count || a.sysId.localeCompare(b.sysId));
 }
 
 /** Singleton used by extension, lint, and navigator facades. */

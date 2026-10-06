@@ -56,6 +56,10 @@ export interface SysAppMetadata {
   jsLevel?: JavaScriptSupport;
   /** `sys_app.restrict_table_access` when the element is present. */
   restrictTableAccess?: boolean;
+  /** `sys_app.version`, when present. */
+  version?: string;
+  /** `sys_app.short_description`, when present. */
+  shortDescription?: string;
 }
 
 /**
@@ -72,14 +76,18 @@ export function detectSysAppMetadata(xml: string): SysAppMetadata | undefined {
   const restrictRaw = extractRowFieldText(appRow, 'restrict_table_access');
   const restrictTableAccess =
     restrictRaw === undefined ? undefined : /^(true|1)$/i.test(restrictRaw.trim());
-  if (!sysId && !scope && !jsLevel && restrictTableAccess === undefined) {
+  const version = extractRowFieldText(appRow, 'version');
+  const shortDescription = extractRowFieldText(appRow, 'short_description');
+  if (!sysId && !scope && !jsLevel && restrictTableAccess === undefined && !version && !shortDescription) {
     return {};
   }
   return {
     sysId,
     scope,
     jsLevel,
-    restrictTableAccess
+    restrictTableAccess,
+    version,
+    shortDescription
   };
 }
 

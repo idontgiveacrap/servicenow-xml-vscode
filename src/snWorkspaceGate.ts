@@ -28,6 +28,8 @@ interface GateCache {
   appScope?: string;
   appJavaScriptSupport?: JavaScriptSupport;
   appRestrictTableAccess?: boolean;
+  appVersion?: string;
+  appShortDescription?: string;
   markerWorkspaceFolder?: string;
 }
 
@@ -41,6 +43,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
   private appScope: string | undefined;
   private appJavaScriptSupport: JavaScriptSupport | undefined;
   private appRestrictTableAccess: boolean | undefined;
+  private appVersion: string | undefined;
+  private appShortDescription: string | undefined;
   private markerWorkspaceFolder: string | undefined;
   private probeTimer: NodeJS.Timeout | undefined;
   private probeGeneration = 0;
@@ -120,6 +124,12 @@ export class SnWorkspaceGate implements vscode.Disposable {
   getRestrictTableAccess(): boolean | undefined {
     return this.appRestrictTableAccess;
   }
+  getWorkspaceAppVersion(): string | undefined {
+    return this.appVersion;
+  }
+  getWorkspaceAppShortDescription(): string | undefined {
+    return this.appShortDescription;
+  }
 
   /**
    * True when a document belongs to the workspace folder containing the
@@ -189,6 +199,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
     this.appScope = cached.appScope;
     this.appJavaScriptSupport = cached.appJavaScriptSupport;
     this.appRestrictTableAccess = cached.appRestrictTableAccess;
+    this.appVersion = cached.appVersion;
+    this.appShortDescription = cached.appShortDescription;
     this.markerWorkspaceFolder = cached.markerWorkspaceFolder;
     // Publish immediately so the Records view `when` clause can show on reload
     // without waiting for findFiles.
@@ -202,6 +214,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
       appScope: this.appScope,
       appJavaScriptSupport: this.appJavaScriptSupport,
       appRestrictTableAccess: this.appRestrictTableAccess,
+      appVersion: this.appVersion,
+      appShortDescription: this.appShortDescription,
       markerWorkspaceFolder: this.markerWorkspaceFolder
     };
     void this.workspaceState.update(STATE_KEY, value);
@@ -229,6 +243,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
     const appScope = appMeta?.scope;
     const appJavaScriptSupport = appMeta?.javascriptSupport;
     const appRestrictTableAccess = appMeta?.restrictTableAccess;
+    const appVersion = appMeta?.version;
+    const appShortDescription = appMeta?.shortDescription;
     const markerWorkspaceFolder = marker
       ? vscode.workspace.getWorkspaceFolder(marker.uri)?.uri.toString()
       : undefined;
@@ -238,6 +254,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
       appScope === this.appScope &&
       appJavaScriptSupport === this.appJavaScriptSupport &&
       appRestrictTableAccess === this.appRestrictTableAccess &&
+      appVersion === this.appVersion &&
+      appShortDescription === this.appShortDescription &&
       markerWorkspaceFolder === this.markerWorkspaceFolder
     ) {
       await this.publishContext();
@@ -249,6 +267,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
     this.appScope = appScope;
     this.appJavaScriptSupport = appJavaScriptSupport;
     this.appRestrictTableAccess = appRestrictTableAccess;
+    this.appVersion = appVersion;
+    this.appShortDescription = appShortDescription;
     this.markerWorkspaceFolder = markerWorkspaceFolder;
     await this.publishContext();
     this.persistCache();
@@ -291,6 +311,8 @@ export class SnWorkspaceGate implements vscode.Disposable {
     scope?: string;
     javascriptSupport: JavaScriptSupport;
     restrictTableAccess?: boolean;
+    version?: string;
+    shortDescription?: string;
   }> {
     try {
       const bytes = await vscode.workspace.fs.readFile(uri);
@@ -299,7 +321,9 @@ export class SnWorkspaceGate implements vscode.Disposable {
       return {
         scope: meta?.scope?.trim() || undefined,
         javascriptSupport: detectJavaScriptSupport(xml),
-        restrictTableAccess: meta?.restrictTableAccess
+        restrictTableAccess: meta?.restrictTableAccess,
+        version: meta?.version,
+        shortDescription: meta?.shortDescription
       };
     } catch {
       return { javascriptSupport: 'ES5' };

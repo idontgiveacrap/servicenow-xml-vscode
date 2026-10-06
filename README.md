@@ -6,9 +6,9 @@ Cursor / VS Code extension that:
 2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022), across every script-typed field in the bundled dictionary table, including scripts nested in update-set payloads
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
 4. **Edits embedded scripts** — right-click any script, however it is encoded (CDATA, entity-escaped, nested inside an update-set `<payload>`, or inside a JSON string), edit it in a temp JS tab, and save to write it back through the same encodings
-5. **Formats** ServiceNow XML (default XML formatter) by running another XML formatter, then the editor’s JavaScript formatter on script-typed fields
+5. **Formats** ServiceNow XML (default XML formatter) by running another XML formatter, then the editor’s JavaScript formatter on script-typed fields. Formatter requires languageId support.
 6. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
-7. **Cursor helpers (optional)** — ServiceNow MCP servers, user rules, and repo indexer (no-op in VS Code)
+7. **MCP servers and agent helpers** — Registry, instance, docs, and UI-example MCP in Cursor and VS Code; shared helpers under `~/.servicenow-xml/` with rules for multiple agents (Cursor plugin adapter when running in Cursor).
 
 ## Install (Cursor)
 
@@ -53,7 +53,7 @@ Two things are weaker in a folderless window: the `{sys_id}/sys_app_{sys_id}.xml
 
 ### What the document gate does not enable
 
-Navigator indexing, Go to Record, workspace symbols, and the Cursor helpers all need a folder to scan and stay workspace-gated. The Records view becomes *visible* when an export-shaped file is open, but it can only list records the workspace scan found — see [Records navigator](#records-navigator-optional-lazy).
+Navigator indexing, Go to Record, workspace symbols, and agent helpers all need a folder to scan and stay workspace-gated. The Records view becomes *visible* when an export-shaped file is open, but it can only list records the workspace scan found — see [Records navigator](#records-navigator-optional-lazy).
 
 ## Embedded script editor
 
@@ -388,28 +388,43 @@ Status bar shows the active kind so misclassification is obvious.
 | `servicenowXml.navigator.enable` | `false` | Enable the ServiceNow Records navigator. No indexing runs until the view is opened or Go to Record is used. |
 | `servicenowXml.navigator.excludeDelete` | `false` | Hide `action=DELETE` records from the navigator. |
 | `servicenowXml.navigator.sortBy` | `mostOpened` | Sort order for Records navigator tables and records: `mostOpened`, `recentlyOpened`, `recentlyUpdated`, `sysModCount`, `name`. |
-| `servicenowXml.cursorHelpers.enable` | `true` | **Cursor only.** On activate, idempotently install ServiceNow MCP servers, user rules, and the Python repo indexer. No-op in VS Code. |
-| `servicenowXml.cursorHelpers.installIndexHook` | `true` | **Cursor only.** Add/update a user `sessionStart` hook that points agents at the Registry and instance MCP servers for ServiceNow export workspaces. |
-| `servicenowXml.cursorHelpers.pythonPath` | `python` | Python executable for the indexer, local MCP servers, and sessionStart hook. |
-| `servicenowXml.snc.path` | `snc` | ServiceNow CLI executable for prune-redundant-DELETE and the Cursor instance MCP. |
-| `servicenowXml.snc.mcpProfiles` | `[]` | **Cursor only.** Allowlist of snc profile names for `servicenow-xml-instance`. Empty means every snc profile is available to the MCP. Does not change the prune UI. |
+| `servicenowXml.mcp.enable` | `true` | Register ServiceNow MCP servers and install agent helpers (scripts + multi-tool rules). In Cursor this also registers the Cursor plugin adapter. In VS Code MCP is published for Copilot. |
+| `servicenowXml.mcp.registry` | `true` | Register `servicenow-xml-registry` (schema, scripting, JS performance, workspace discovery). |
+| `servicenowXml.mcp.instance` | `true` | Register `servicenow-xml-instance` (read-only snc queries). Also requires snc on PATH or `servicenowXml.snc.path`. |
+| `servicenowXml.mcp.remote` | `true` | Register git-based remote MCP servers (`servicenow-xml-docs`, `servicenow-xml-ui-examples` via gitmcp.io). |
+| `servicenowXml.snc.path` | `snc` | ServiceNow CLI executable for prune-redundant-DELETE and the instance MCP. |
+| `servicenowXml.snc.mcpProfiles` | `[]` | Allowlist of snc profile names for `servicenow-xml-instance` in Cursor and VS Code. Empty means every snc profile is available to the MCP. Does not change the prune UI. |
 
-## Cursor helpers (Cursor only)
+## Agent helpers
 
-On activation in Cursor (or via **ServiceNow XML: Install Cursor Helpers**), the extension installs into `~/.cursor/servicenow-xml/` (`%USERPROFILE%\.cursor\servicenow-xml\` on Windows):
+On activation (or via **ServiceNow XML: Install Agent Helpers**), the extension installs into `~/.servicenow-xml/` (`%USERPROFILE%\.servicenow-xml\` on Windows). That tree is shared by all hosts; Cursor/VS Code/other agents are adapters that register MCP or copy rules from it. A prior install under `~/.cursor/servicenow-xml/` is migrated into the new path when the new root is missing.
 
-| Piece | Path under `~/.cursor/servicenow-xml/` |
-|-------|----------------------------------------|
+| Piece | Path under `~/.servicenow-xml/` |
+|-------|--------------------------------|
 | **Registry MCP script** | `scripts/registryMcp.js` (Node; schema + scripting/performance + workspace discovery) |
 | **Registry data** | `data/` (packed dictionary, fieldKinds, Script Includes, scopes, platform globals, scripting reference, JS performance) |
-| **Indexer** | `scripts/servicenow_repo_index.py` (not used by agents; discovery is Registry MCP) |
-| **Instance MCP script** | `scripts/instance_mcp_server.py` (spawns `snc`; skipped if snc is missing) |
+| **Instance MCP script** | `scripts/instanceMcp.js` (Node; spawns `snc`; skipped if snc is missing) |
 | **MCP usage log** | `mcp-usage.log` (one UTC line per local MCP tool call: timestamp, server id, tool name) |
-| **sessionStart hook** | `hooks/session_start_index.py` (tells the agent to use Registry and instance MCP; does not refresh `index.json`) |
-| **Plugin (rules)** | `plugin/rules/servicenow-xml-*.mdc` |
-| **MCP servers** | `servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry` (always when bundle exists), `servicenow-xml-instance` (only when Python + `mcp` + `snc` exist). Python `servicenow-xml-db-schema` / `servicenow-xml-scripting` are removed. |
-| **User rules** | Also synced to `~/.cursor/rules/servicenow-xml-*.mdc` (`<!-- managed-by: servicenow-xml -->`) |
-| **Cursor plugin** | `plugin/` registered as `servicenow-xml` |
+| **Canonical rules** | `rules/standards.md` |
+| **Cursor plugin adapter** | `plugin/` (`.cursor-plugin` + `rules/servicenow-xml-standards.mdc`; registered only in Cursor) |
+
+**Retired Python MCP servers** — `db_schema_mcp_server.py`, `scripting_mcp_server.py`, `mcp_usage_log.py`, and `instance_mcp_server.py` (last in commits `09de61c` and `0a22a2d` respectively) and their data (`sys_dictionary.csv.gz`) have been removed. The `servicenow-xml-instance` server ID was retained and now runs as Node; only its implementation changed. If you still see `servicenow-xml-db-schema`, `servicenow-xml-scripting`, `servicenow-docs`, or `servicenow-db-schema` in `~/.cursor/mcp.json`, remove those entries manually.
+
+The same `standards.md` is installed for each agent that supports dedicated rule files or marked instruction blocks. It applies only to ServiceNow scoped-app exports, ServiceNow scripts, and ServiceNow platform or instance questions. Unix destinations are relative symlinks to `rules/standards.md`. Windows copies the file (no extra privileges). Shared single-file configs are updated only between `<!-- begin managed-by: servicenow-xml -->` and `<!-- end managed-by: servicenow-xml -->`.
+
+| Tool | Destination |
+|------|-------------|
+| Cursor user rules | `~/.cursor/rules/servicenow-xml-standards.mdc` |
+| Claude Code | `~/.claude/rules/servicenow-xml-standards.md` |
+| Cline | `~/.clinerules/servicenow-xml-standards.md` |
+| PearAI | `~/.pearai/rules/servicenow-xml-standards.md` |
+| Aider | `~/.ai-rules/servicenow-xml-standards.md`, plus a `read:` line in `~/.aider.conf.yml` |
+| Windsurf | `~/.codeium/windsurf/memories/global_rules.md` (marker block) |
+| Copilot in Visual Studio / SSMS | `~/copilot-instructions.md` (marker block) |
+| Copilot CLI | `~/.copilot/copilot-instructions.md` (marker block) |
+| Copilot in VS Code | `~/.copilot/instructions/servicenow-xml-standards.instructions.md` |
+
+An existing dedicated file that does not contain `<!-- managed-by: servicenow-xml -->` is left in place. GitHub account and organization custom instructions on github.com are not updated. On Windows, copies stay as they were until the next helper install; activation runs that install.
 
 ### Dictionary pack refresh
 
@@ -432,22 +447,25 @@ python scripts/pack-scripting-reference.py "path/to/ServiceNow scripting referen
 
 Writes `src/data/scripting_reference.json.gz`. Rebuild/reinstall helpers afterward. Registry MCP also reads `src/data/js_performance.json` for performance tools (scoped `es_latest` server measurements only).
 
-### Install / reinstall Cursor helpers
+### Install / reinstall agent helpers
 
-**How:** Command Palette → **ServiceNow XML: Install Cursor Helpers**, then **Developer: Reload Window** (the extension prompts for reload). The same copy/register path runs on Cursor activation when `servicenowXml.cursorHelpers.enable` is true.
+**How:** Command Palette → **ServiceNow XML: Install Agent Helpers**, then **Developer: Reload Window** when prompted (files or rules changed). The same copy path runs on activation when `servicenowXml.mcp.enable` is true. File copy is skipped when the install is already current. In Cursor, the plugin path and MCP servers are registered again every window — those Cursor APIs do not survive reload, and shutdown unregisters the plugin path. The Records navigator does not depend on that registration.
 
-**What it does:** copies scripts, `dist/data` packs, and rules under `~/.cursor/servicenow-xml/`, re-registers MCP ids (`servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry`, and `servicenow-xml-instance` when snc is available), and syncs user rules (`<!-- managed-by: servicenow-xml -->`).
+**What it does:** copies scripts, `dist/data` packs, and `rules/standards.md` under `~/.servicenow-xml/`, installs that rules file for the agents listed above (`<!-- managed-by: servicenow-xml -->`), and on Cursor registers MCP ids (`servicenow-xml-docs` + `servicenow-xml-ui-examples` via `mcp.remote`, `servicenow-xml-registry` when bundle exists, `servicenow-xml-instance` when snc is available) plus the Cursor plugin adapter.
 
 **When to re-run:**
 
 - VSIX / extension upgrade that changed helper scripts, rules, or bundled data
 - MCP servers missing, duplicated, or stale after a Cursor update
-- `servicenowXml.snc.path`, `servicenowXml.snc.mcpProfiles`, or `servicenowXml.cursorHelpers.pythonPath` did not take effect (activation also re-registers when those settings change; reload is still required so Cursor picks up MCP env)
-- Python `mcp` package missing or broken when using instance MCP (`python -m pip install --user mcp`)
-- Corrupted or deleted `~/.cursor/servicenow-xml/`
+- `servicenowXml.mcp.*`, `servicenowXml.snc.path`, or `servicenowXml.snc.mcpProfiles` did not take effect (activation also re-registers when those settings change; reload is still required so Cursor picks up MCP env)
+- Corrupted or deleted `~/.servicenow-xml/`
 - New snc profiles do **not** need a reinstall: `list_profiles` reads live `snc configure profile list`. Reinstall (or change `mcpProfiles`) only if you are tightening the allowlist
 
-Registry MCP install does **not** require Python or `pip install mcp`. When snc is present, helper install may install the Python `mcp` package for the instance MCP only. If Python is missing, instance MCP and the index hook are skipped; Registry MCP, lint, colorize, and the Records navigator keep working.
+Registry and instance MCP servers are Node. They do not need Python. Instance MCP is skipped when `snc` is missing. No Python dependency remains at runtime.
+
+### VS Code MCP
+
+On activation in VS Code, when `servicenowXml.mcp.enable` is true and the editor exposes `vscode.lm.registerMcpServerDefinitionProvider` (VS Code 1.101+), the extension publishes MCP servers for Copilot: docs + UI examples (via `mcp.remote`), Registry (via `mcp.registry`), and instance (via `mcp.instance`, only when `snc` is found). Per-server toggles in `mcp.*` let you disable individual servers. Changing any `mcp.*` or `snc.*` setting refreshes those definitions. Older VS Code builds keep lint, colorize, and the navigator; they just do not receive the MCP servers.
 
 ### Instance MCP (`servicenow-xml-instance`)
 

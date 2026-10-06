@@ -47,6 +47,8 @@ export interface CatalogRecord {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   /** Indexed row offset, used to disambiguate records when opening at their line. */
   startOffset: number;
   /**
@@ -94,6 +96,8 @@ export class RecordCatalog implements vscode.Disposable {
   private lastReferences: CachedReference[] = [];
   private getWorkspaceAppSysId: () => string | undefined = () => undefined;
   private getWorkspaceAppScope: () => string | undefined = () => undefined;
+  private getWorkspaceAppVersion: () => string | undefined = () => undefined;
+  private getWorkspaceAppShortDescription: () => string | undefined = () => undefined;
   private getWorkspaceJavaScriptSupport: () => string | undefined = () =>
     undefined;
   private getRestrictTableAccess: () => boolean | undefined = () => undefined;
@@ -185,6 +189,8 @@ export class RecordCatalog implements vscode.Disposable {
     getWorkspaceAppScope: () => string | undefined;
     getWorkspaceJavaScriptSupport?: () => string | undefined;
     getRestrictTableAccess?: () => boolean | undefined;
+    getWorkspaceAppVersion?: () => string | undefined;
+    getWorkspaceAppShortDescription?: () => string | undefined;
   }): void {
     this.getWorkspaceAppSysId = options.getWorkspaceAppSysId;
     this.getWorkspaceAppScope = options.getWorkspaceAppScope;
@@ -193,6 +199,12 @@ export class RecordCatalog implements vscode.Disposable {
     }
     if (options.getRestrictTableAccess) {
       this.getRestrictTableAccess = options.getRestrictTableAccess;
+    }
+    if (options.getWorkspaceAppVersion) {
+      this.getWorkspaceAppVersion = options.getWorkspaceAppVersion;
+    }
+    if (options.getWorkspaceAppShortDescription) {
+      this.getWorkspaceAppShortDescription = options.getWorkspaceAppShortDescription;
     }
   }
 
@@ -583,6 +595,7 @@ export class RecordCatalog implements vscode.Disposable {
       action: record.action,
       apiName: record.apiName,
       sysModCount: record.sysModCount,
+      sysUpdatedOn: record.sysUpdatedOn,
       startOffset: record.startOffset,
       mtimeMs: record.mtimeMs,
       uri: record.uri.toString(),
@@ -602,7 +615,9 @@ export class RecordCatalog implements vscode.Disposable {
           Boolean(scope) &&
           scope !== 'global' &&
           (jsLevel === 'ES12' || jsLevel === 'es_latest'),
-        restrictTableAccess: this.getRestrictTableAccess()
+        restrictTableAccess: this.getRestrictTableAccess(),
+        version: this.getWorkspaceAppVersion(),
+        shortDescription: this.getWorkspaceAppShortDescription()
       },
       schemaFields: this.lastSchemaFields,
       references: this.lastReferences

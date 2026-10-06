@@ -72,6 +72,7 @@ function bootRegistry(): {
   fieldIndex: DictionaryFieldIndex;
   scripting: ScriptingKnowledge;
   app?: CachedApp;
+  duplicateSysIds: Array<{ sysId: string; table: string; count: number }>;
 } {
   const registry = new Registry();
   const dir = dataDir();
@@ -91,6 +92,7 @@ function bootRegistry(): {
   const scripting = loadScriptingKnowledge(dir, registry);
 
   let app: CachedApp | undefined;
+  let duplicateSysIds: Array<{ sysId: string; table: string; count: number }> = [];
   const cachePath = resolveCachePath();
   if (cachePath) {
     try {
@@ -103,6 +105,7 @@ function bootRegistry(): {
       const records = cache?.records ?? parsed.records ?? [];
       const declarations = cache?.declarations ?? parsed.declarations ?? [];
       app = cache?.app ?? parsed.app;
+      duplicateSysIds = cache?.duplicateSysIds ?? parsed.duplicateSysIds ?? [];
       if (Array.isArray(records)) {
         registry.upsertMany(cachedRecordsToSymbols(records));
       }
@@ -125,7 +128,7 @@ function bootRegistry(): {
     }
   }
 
-  return { registry, fieldIndex, scripting, app };
+  return { registry, fieldIndex, scripting, app, duplicateSysIds };
 }
 
 function appFromSysAppRecords(registry: Registry): CachedApp | undefined {
@@ -148,7 +151,8 @@ function dispatch(
   registry: Registry,
   fieldIndex: DictionaryFieldIndex,
   scripting: ScriptingKnowledge,
-  app: CachedApp | undefined
+  app: CachedApp | undefined,
+  duplicateSysIds: Array<{ sysId: string; table: string; count: number }>
 ): unknown {
   const limit = Math.min(Number(args.limit) || 50, 100);
   switch (name) {
@@ -264,6 +268,19 @@ function dispatch(
       }
       return { issues, total: matched };
     }
+    case 'list_diagnostics': {
+      const ctx = registry.getDiagnosticsContext();
+      const targetState = referenceTargetIndex(registry.listRecords());
+      const refEdgeCount = registry.listReferenceEdges().filter(
+        (e) => targetState(e.toSysId) === 'deleted'
+      ).length;
+      return {
+        counts: ctx,
+        duplicateSysIds: duplicateSysIds.slice(0, limit),
+        duplicateSysIdCount: duplicateSysIds.length,
+        referenceIssuesCount: refEdgeCount
+      };
+    }
     case 'lookup_platform_api': {
       const apiName = String(args.name ?? '');
       return {
@@ -291,17 +308,24 @@ function dispatch(
             (r.relativePath ?? '').toLowerCase().includes(q)
         );
       }
+      // Sort by sys_updated_on descending so the canonical (latest) source appears first.
+      const sorted = [...records].sort((a, b) => {
+        const ta = a.sysUpdatedOn ?? '';
+        const tb = b.sysUpdatedOn ?? '';
+        return tb < ta ? -1 : tb > ta ? 1 : 0;
+      });
       return {
-        records: records.slice(0, limit).map((r) => ({
+        records: sorted.slice(0, limit).map((r) => ({
           table: r.table,
           displayName: r.displayName,
           sysId: r.sysId,
           action: r.action,
           apiName: r.apiName,
+          sysUpdatedOn: r.sysUpdatedOn,
           uri: r.uri,
           relativePath: r.relativePath
         })),
-        total: records.length
+        total: sorted.length
       };
     }
     case 'lookup_by_name': {
@@ -320,9 +344,14 @@ function dispatch(
       const decls = registry.listWorkspaceDeclarations().filter(
         (d) => d.name.toLowerCase() === q
       );
+      const sortedRecords = [...records].sort((a, b) => {
+        const ta = a.sysUpdatedOn ?? '';
+        const tb = b.sysUpdatedOn ?? '';
+        return tb < ta ? -1 : tb > ta ? 1 : 0;
+      });
       return {
         query: args.name ?? args.query,
-        records: records.slice(0, limit),
+        records: sortedRecords.slice(0, limit),
         declarations: decls.slice(0, limit)
       };
     }
@@ -394,7 +423,7 @@ function dispatch(
   }
 }
 
-const { registry, fieldIndex, scripting, app } = bootRegistry();
+const { registry, fieldIndex, scripting, app, duplicateSysIds } = bootRegistry();
 
 const tools = [
   {
@@ -448,7 +477,7 @@ const tools = [
   {
     name: 'search_records',
     description:
-      'Search workspace export records from the Registry cache (agent discovery).',
+      'Search workspace export records from the Registry cache (agent discovery). Results sorted by sysUpdatedOn descending so canonical sources appear first.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -461,7 +490,7 @@ const tools = [
   {
     name: 'lookup_by_name',
     description:
-      'Exact name / api_name lookup for workspace records and script declarations.',
+      'Exact name / api_name lookup for workspace records and script declarations. Records sorted by sysUpdatedOn descending so canonical sources appear first.',
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string' }, limit: { type: 'number' } },
@@ -512,7 +541,7 @@ const tools = [
   {
     name: 'get_workspace_app',
     description:
-      'Workspace sys_app metadata from Registry cache (scope, jsLevel, supportsES12, restrictTableAccess).',
+      'Workspace sys_app metadata from Registry cache (scope, jsLevel, supportsES12, restrictTableAccess, version, shortDescription).',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -592,6 +621,15 @@ const tools = [
         limit: { type: 'number' }
       }
     }
+  },
+  {
+    name: 'list_diagnostics',
+    description:
+      'Workspace diagnostic summary: symbol counts, duplicate sys_id count, and reference issue count. Duplicate sys_ids indicate multiple active rows for one sys_id; agents should use sys_updated_on to pick the canonical file.',
+    inputSchema: {
+      type: 'object',
+      properties: { limit: { type: 'number' } }
+    }
   }
 ];
 
@@ -600,5 +638,5 @@ runMcpStdio({
   version: '1.0.0',
   tools,
   callTool: async (name, args) =>
-    dispatch(name, args, registry, fieldIndex, scripting, app)
+    dispatch(name, args, registry, fieldIndex, scripting, app, duplicateSysIds)
 });

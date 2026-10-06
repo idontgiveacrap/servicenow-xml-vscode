@@ -152,7 +152,8 @@ export class DiagnosticsController implements vscode.Disposable {
 
     const snDiags: SnDiagnostic[] = [
       ...classification.diagnostics,
-      ...deletedReferenceDiagnostics(document, text)
+      ...deletedReferenceDiagnostics(document, text),
+      ...duplicateSysIdDiagnostics(parsed.rows)
     ];
 
     if (
@@ -291,6 +292,42 @@ function deletedReferenceDiagnostics(
       endLine: end.line,
       endCharacter: end.character,
       code: 'xml-reference-deleted'
+    });
+  }
+  return diagnostics;
+}
+
+/**
+ * Warning when a record's sys_id appears in multiple active rows across the
+ * workspace — agents cannot tell which file is canonical without sys_updated_on.
+ */
+function duplicateSysIdDiagnostics(
+  rows: Array<{ sysId?: string; sysIdLine?: number; sysIdCharacter?: number }>
+): SnDiagnostic[] {
+  const duplicates = getWorkspaceRegistryService().getDuplicateSysIds();
+  if (duplicates.length === 0) {
+    return [];
+  }
+  const duplicateMap = new Map(
+    duplicates.map((d) => [d.sysId.toLowerCase(), d])
+  );
+  const diagnostics: SnDiagnostic[] = [];
+  for (const row of rows) {
+    if (!row.sysId || row.sysIdLine == null || row.sysIdCharacter == null) {
+      continue;
+    }
+    const dup = duplicateMap.get(row.sysId.toLowerCase());
+    if (!dup) {
+      continue;
+    }
+    diagnostics.push({
+      message: `sys_id ${row.sysId} appears in ${dup.count} active rows; use sys_updated_on to pick the canonical file.`,
+      severity: 'warning',
+      line: row.sysIdLine,
+      character: row.sysIdCharacter,
+      endLine: row.sysIdLine,
+      endCharacter: row.sysIdCharacter + row.sysId.length,
+      code: 'xml-duplicate-sys-id'
     });
   }
   return diagnostics;

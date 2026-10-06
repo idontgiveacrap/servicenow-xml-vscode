@@ -97,6 +97,10 @@ export function buildNormalizedDecodedToRawMap(
       }
       normalizedChars.push('\n');
       normalizedToRaw.push(rawStart);
+      // The for-loop increments di. The scan already moved past the line break,
+      // so step back or the first character of the next line is dropped and
+      // every later column shifts by one per break.
+      di--;
       continue;
     }
     normalizedChars.push(decoded[di]);
@@ -141,21 +145,28 @@ export function buildDecodedToRawMap(
 
   while (ri < raw.length && di < decoded.length) {
     if (raw[ri] === '&') {
-      const semi = raw.indexOf(';', ri);
-      if (semi < 0) {
-        return null;
+      // Only a real entity (`&amp;`, `&#13;`, …). A later `;` in script text
+      // (`&&` … `return;`) is not an entity; swallowing through it maps the
+      // rest of the statement onto the `&`.
+      const entityMatch = /^&(?:#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos);/i.exec(
+        raw.slice(ri)
+      );
+      if (entityMatch) {
+        const entity = entityMatch[0];
+        const expanded = decode(entity);
+        if (
+          expanded &&
+          expanded !== entity &&
+          decoded.slice(di, di + expanded.length) === expanded
+        ) {
+          for (let k = 0; k < expanded.length; k++) {
+            map.push(ri);
+          }
+          di += expanded.length;
+          ri += entity.length;
+          continue;
+        }
       }
-      const entity = raw.slice(ri, semi + 1);
-      const expanded = decode(entity);
-      if (!expanded || decoded.slice(di, di + expanded.length) !== expanded) {
-        return null;
-      }
-      for (let k = 0; k < expanded.length; k++) {
-        map.push(ri);
-      }
-      di += expanded.length;
-      ri = semi + 1;
-      continue;
     }
     if (raw[ri] !== decoded[di]) {
       return null;

@@ -28,6 +28,8 @@ export interface ExportRecord {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   /** Indexed row offset, used to disambiguate records when opening at their line. */
   startOffset: number;
   uri: vscode.Uri;
@@ -155,6 +157,7 @@ export async function readExportRecordsWithDeclarations(
       action: record.action,
       apiName: record.apiName,
       sysModCount: record.sysModCount,
+      sysUpdatedOn: record.sysUpdatedOn,
       startOffset: record.startOffset,
       uri,
       relativePath: record.relativePath

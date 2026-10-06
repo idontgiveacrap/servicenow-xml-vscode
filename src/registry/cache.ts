@@ -22,6 +22,8 @@ export interface CachedRecord {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   startOffset: number;
   mtimeMs?: number;
   uri: string;
@@ -53,6 +55,10 @@ export interface CachedApp {
   supportsES12?: boolean;
   /** `sys_app.restrict_table_access`. Absent when the export omits the field. */
   restrictTableAccess?: boolean;
+  /** `sys_app.version`, when present. */
+  version?: string;
+  /** `sys_app.short_description`, when present. */
+  shortDescription?: string;
 }
 
 /** Project dictionary column (or table label when `element` is empty). */
@@ -90,6 +96,12 @@ export interface RegistryCacheFile {
   schemaFields?: CachedSchemaField[];
   /** sys_id edges collected while scanning exports. */
   references?: CachedReference[];
+  /**
+   * sys_ids that appear in multiple active (non-DELETE) rows during the
+   * workspace scan. Each entry has the sys_id, table, and count of active
+   * occurrences. Used for lint warnings and MCP diagnostic exposure.
+   */
+  duplicateSysIds?: Array<{ sysId: string; table: string; count: number }>;
 }
 
 /**
@@ -112,6 +124,7 @@ export function createRegistryCache(options: {
   app?: CachedApp;
   schemaFields?: CachedSchemaField[];
   references?: CachedReference[];
+  duplicateSysIds?: Array<{ sysId: string; table: string; count: number }>;
 }): RegistryCacheFile {
   return {
     version: REGISTRY_CACHE_VERSION,
@@ -122,7 +135,10 @@ export function createRegistryCache(options: {
     declarations: options.declarations,
     ...(options.app ? { app: options.app } : {}),
     ...(options.schemaFields ? { schemaFields: options.schemaFields } : {}),
-    ...(options.references ? { references: options.references } : {})
+    ...(options.references ? { references: options.references } : {}),
+    ...(options.duplicateSysIds
+      ? { duplicateSysIds: options.duplicateSysIds }
+      : {})
   };
 }
 
@@ -196,6 +212,7 @@ export function cachedRecordsToSymbols(records: CachedRecord[]): RecordSymbol[] 
     action: record.action,
     apiName: record.apiName,
     sysModCount: record.sysModCount,
+    sysUpdatedOn: record.sysUpdatedOn,
     startOffset: record.startOffset,
     mtimeMs: record.mtimeMs,
     uri: record.uri,

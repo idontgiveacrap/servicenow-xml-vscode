@@ -57,6 +57,7 @@ export function indexExportText(
       action: identity.action,
       apiName: identity.apiName,
       sysModCount: identity.sysModCount,
+      sysUpdatedOn: identity.sysUpdatedOn,
       startOffset: identity.startOffset,
       mtimeMs: options.mtimeMs,
       uri: options.uri,

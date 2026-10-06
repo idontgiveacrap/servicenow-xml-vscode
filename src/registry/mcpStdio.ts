@@ -128,7 +128,7 @@ export function runMcpStdio(handlers: {
         try {
           await handleMessage(JSON.parse(line) as JsonRpcRequest);
         } catch (error) {
-          console.error('[registry-mcp] bad line:', error);
+          console.error(`[${handlers.name}] bad line:`, error);
         }
         continue;
       }
@@ -149,7 +149,7 @@ export function runMcpStdio(handlers: {
       try {
         await handleMessage(JSON.parse(body) as JsonRpcRequest);
       } catch (error) {
-        console.error('[registry-mcp] bad message:', error);
+        console.error(`[${handlers.name}] bad message:`, error);
       }
     }
   }
@@ -166,7 +166,7 @@ function logMcpUse(server: string, tool: string): void {
     const raw = process.env.MCP_USAGE_LOG_PATH?.trim();
     const filePath = raw
       ? path.resolve(raw)
-      : path.join(os.homedir(), '.cursor', 'servicenow-xml', 'mcp-usage.log');
+      : path.join(os.homedir(), '.servicenow-xml', 'mcp-usage.log');
     const stamp = new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.appendFileSync(filePath, `${stamp} ${server} ${tool}\n`, 'utf8');

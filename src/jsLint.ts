@@ -1,7 +1,7 @@
 import type { Linter as LinterType, Rule, Scope } from 'eslint';
 import { buildNormalizedDecodedToRawMap } from './jsonStringEditor/escape';
 import { ScriptRegion, mapScriptOffsetToXml } from './scriptRegions';
-import { SnDiagnostic } from './kinds/types';
+import { EmbeddedFieldHit, SnDiagnostic } from './kinds/types';
 import { JavaScriptSupport } from './javascriptSupport';
 import { decodeXmlEntities } from './parseSnXml';
 import {
@@ -407,39 +407,19 @@ function legacyDecodedOffsetToRawOffset(encoded: string, decodedOffset: number):
   let encodedIndex = 0;
   while (encodedIndex < encoded.length && decodedIndex < decodedOffset) {
     if (encoded.charCodeAt(encodedIndex) === 38 /* & */) {
-      const semi = encoded.indexOf(';', encodedIndex + 1);
-      if (semi === -1) {
-        encodedIndex += 1;
-        decodedIndex += 1;
-        continue;
-      }
-      // One entity → one (or rarely more) decoded code unit(s); treat as one step for BMP entities.
-      const entity = encoded.slice(encodedIndex, semi + 1);
-      const piece = entity.replace(
-        /&(?:#(\d+)|#x([0-9a-f]+)|amp|lt|gt|quot|apos);/i,
-        (match, decimal: string | undefined, hex: string | undefined) => {
-          if (decimal || hex) {
-            const codePoint = Number.parseInt(decimal ?? hex ?? '', decimal ? 10 : 16);
-            return codePoint <= 0x10ffff ? String.fromCodePoint(codePoint) : match;
-          }
-          switch (match.toLowerCase()) {
-            case '&amp;':
-              return '&';
-            case '&lt;':
-              return '<';
-            case '&gt;':
-              return '>';
-            case '&quot;':
-              return '"';
-            case '&apos;':
-              return "'";
-            default:
-              return match;
-          }
-        }
+      const entityMatch = /^&(?:#\d+|#x[0-9a-f]+|amp|lt|gt|quot|apos);/i.exec(
+        encoded.slice(encodedIndex)
       );
-      decodedIndex += piece.length;
-      encodedIndex = semi + 1;
+      if (entityMatch) {
+        const piece = decodeXmlEntities(entityMatch[0]);
+        if (piece !== entityMatch[0]) {
+          decodedIndex += piece.length;
+          encodedIndex += entityMatch[0].length;
+          continue;
+        }
+      }
+      encodedIndex += 1;
+      decodedIndex += 1;
     } else {
       encodedIndex += 1;
       decodedIndex += 1;
@@ -451,8 +431,8 @@ function legacyDecodedOffsetToRawOffset(encoded: string, decodedOffset: number):
 /**
  * Map ESLint line/column (in decoded script space) to host XML coordinates.
  */
-function mapDecodedLintPosToXml(
-  region: ScriptRegion,
+export function mapDecodedLintPosToXml(
+  region: EmbeddedFieldHit,
   lineInDecoded: number,
   columnInDecoded: number
 ): { line: number; character: number } {

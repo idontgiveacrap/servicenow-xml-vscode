@@ -27,6 +27,8 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
   private readonly disposables: vscode.Disposable[] = [];
   private getWorkspaceAppSysId: () => string | undefined = () => undefined;
   private getWorkspaceAppScope: () => string | undefined = () => undefined;
+  private getWorkspaceAppVersion: () => string | undefined = () => undefined;
+  private getWorkspaceAppShortDescription: () => string | undefined = () => undefined;
   private getWorkspaceJavaScriptSupport: () => string | undefined = () =>
     undefined;
   private getRestrictTableAccess: () => boolean | undefined = () => undefined;
@@ -65,6 +67,8 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     getWorkspaceAppScope: () => string | undefined;
     getWorkspaceJavaScriptSupport?: () => string | undefined;
     getRestrictTableAccess?: () => boolean | undefined;
+    getWorkspaceAppVersion?: () => string | undefined;
+    getWorkspaceAppShortDescription?: () => string | undefined;
   }): void {
     this.isActive = options.isActive;
     this.getWorkspaceAppSysId = options.getWorkspaceAppSysId;
@@ -74,6 +78,12 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
     }
     if (options.getRestrictTableAccess) {
       this.getRestrictTableAccess = options.getRestrictTableAccess;
+    }
+    if (options.getWorkspaceAppVersion) {
+      this.getWorkspaceAppVersion = options.getWorkspaceAppVersion;
+    }
+    if (options.getWorkspaceAppShortDescription) {
+      this.getWorkspaceAppShortDescription = options.getWorkspaceAppShortDescription;
     }
   }
 
@@ -221,6 +231,7 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
         action: record.action,
         apiName: record.apiName,
         sysModCount: record.sysModCount,
+        sysUpdatedOn: record.sysUpdatedOn,
         startOffset: record.startOffset,
         uri: record.uri.toString(),
         relativePath: record.relativePath
@@ -252,7 +263,9 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
         Boolean(scope) &&
         scope !== 'global' &&
         (jsLevel === 'ES12' || jsLevel === 'es_latest'),
-      restrictTableAccess: this.getRestrictTableAccess()
+      restrictTableAccess: this.getRestrictTableAccess(),
+      version: this.getWorkspaceAppVersion(),
+      shortDescription: this.getWorkspaceAppShortDescription()
     };
   }
 
