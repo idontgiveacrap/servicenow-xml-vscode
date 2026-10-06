@@ -415,6 +415,18 @@ runMcpStdio({
     ).restrictTableAccess,
     false
   );
+  assert.strictEqual(
+    detectSysAppMetadata(
+      '<sys_app><scope>x_example</scope><version>1.2.3</version><short_description>My app</short_description></sys_app>'
+    ).version,
+    '1.2.3'
+  );
+  assert.strictEqual(
+    detectSysAppMetadata(
+      '<sys_app><scope>x_example</scope><version>1.2.3</version><short_description>My app</short_description></sys_app>'
+    ).shortDescription,
+    'My app'
+  );
 
   console.log('registry smoke tests passed');
 } finally {

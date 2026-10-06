@@ -85,6 +85,22 @@ try {
     !manifest.contributes.configuration.properties['servicenowXml.snc.profile'],
     'servicenowXml.snc.profile must not be registered'
   );
+  assert.ok(
+    manifest.contributes.configuration.properties['servicenowXml.mcp.enable'],
+    'servicenowXml.mcp.enable setting must be registered'
+  );
+  assert.ok(
+    manifest.contributes.configuration.properties['servicenowXml.mcp.remote'],
+    'servicenowXml.mcp.remote setting must be registered'
+  );
+  assert.ok(
+    !manifest.contributes.configuration.properties['servicenowXml.cursorHelpers.enable'],
+    'cursorHelpers.enable setting must not be registered'
+  );
+  assert.ok(
+    !manifest.contributes.configuration.properties['servicenowXml.cursorHelpers.pythonPath'],
+    'cursorHelpers.pythonPath setting must not be registered'
+  );
 
   esbuild.buildSync({
     entryPoints: [path.join(__dirname, '..', 'src', 'snc', 'parse.ts')],
