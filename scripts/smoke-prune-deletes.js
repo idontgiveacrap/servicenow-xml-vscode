@@ -376,6 +376,78 @@ try {
     { outcome: 'mismatch', removed: 1, expected: 2 }
   );
 
+  // DELETE plus only its version and delete-metadata: the file is the tombstone.
+  const tombstoneOnlyXml = `<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_ux_client_script">
+    <sys_ux_client_script action="DELETE">
+        <sys_id>${gone}</sys_id>
+        <sys_update_name>sys_ux_client_script_${gone}</sys_update_name>
+    </sys_ux_client_script>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <action>DELETE</action>
+        <name>sys_ux_client_script_${gone}</name>
+        <sys_id>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</sys_id>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_id>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_id>
+        <sys_metadata>${gone}</sys_metadata>
+        <sys_update_name>sys_ux_client_script_${gone}</sys_update_name>
+    </sys_metadata_delete>
+</record_update>
+`;
+  assert.deepStrictEqual(
+    removeDeleteRows(tombstoneOnlyXml, 'gone.xml', [gone]),
+    { outcome: 'delete-file', removed: 1 },
+    'a DELETE file that only has versions and metadata must be deleted'
+  );
+
+  // An unrelated record stays, including its own version; the pruned update does not.
+  const keeper = 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee';
+  const tombstoneMixedXml = `<?xml version="1.0" encoding="UTF-8"?><record_update table="sys_script_include">
+    <sys_script_include action="DELETE">
+        <name>Gone</name>
+        <sys_id>${gone}</sys_id>
+        <sys_update_name>sys_script_include_${gone}</sys_update_name>
+    </sys_script_include>
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <name>Keeper</name>
+        <sys_id>${keeper}</sys_id>
+        <sys_update_name>sys_script_include_${keeper}</sys_update_name>
+    </sys_script_include>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <name>sys_script_include_${gone}</name>
+        <sys_id>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa</sys_id>
+    </sys_update_version>
+    <sys_metadata_delete action="INSERT_OR_UPDATE">
+        <sys_id>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_id>
+        <sys_metadata>${gone}</sys_metadata>
+        <sys_update_name>sys_script_include_${gone}</sys_update_name>
+    </sys_metadata_delete>
+    <sys_update_version action="INSERT_OR_UPDATE">
+        <name>sys_script_include_${keeper}</name>
+        <sys_id>cccccccccccccccccccccccccccccccc</sys_id>
+    </sys_update_version>
+</record_update>
+`;
+  const rewrittenTombstone = removeDeleteRows(tombstoneMixedXml, 'mixed.xml', [gone]);
+  assert.equal(rewrittenTombstone.outcome, 'rewrite');
+  assert.equal(rewrittenTombstone.removed, 1);
+  assert.ok(
+    !rewrittenTombstone.text.includes(gone),
+    'the pruned DELETE and its companions must leave the file'
+  );
+  assert.ok(
+    !rewrittenTombstone.text.includes(`sys_script_include_${gone}`),
+    'the pruned update name must not remain on a version or metadata row'
+  );
+  assert.ok(
+    rewrittenTombstone.text.includes('<name>Keeper</name>'),
+    'an unrelated record in the same file must stay'
+  );
+  assert.ok(
+    rewrittenTombstone.text.includes(`sys_script_include_${keeper}`),
+    "an unrelated record's version must stay"
+  );
+
   console.log('prune DELETE smoke tests passed');
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
