@@ -16,10 +16,10 @@ export interface RecordRowTarget {
 }
 
 /**
- * Outcome of removing one record from an export.
+ * Outcome of removing one or more records from an export.
  *
- * `delete-file` means the record was the only one the file exports, so there is
- * no rewrite to make: an export with no rows left is not a valid export.
+ * `delete-file` means nothing the file exports remains, so there is no rewrite
+ * to make: an export with no rows left is not a valid export.
  */
 export type RemoveRecordRowResult =
   | { outcome: 'delete-file' }
@@ -27,18 +27,22 @@ export type RemoveRecordRowResult =
   | { outcome: 'not-found'; reason: string };
 
 /**
- * Remove one record row from an export's XML text, plus companion rows that
- * belong to the same application-file update name (`sys_update_version`,
- * `sys_metadata_delete`, and `delete_multiple` cleanup for the same sys_id).
+ * Remove one or more record rows from an export's XML text, plus companion
+ * rows that belong to the same application-file update name
+ * (`sys_update_version`, `sys_metadata_delete`, and `delete_multiple` cleanup
+ * for the same sys_id).
  *
- * Re-resolves the row from the current text (same matching as open-record) so a
- * stale catalog offset still finds the right row when the file shifted.
+ * Re-resolves each row from the current text (same matching as open-record) so
+ * a stale catalog offset still finds the right row when the file shifted. Every
+ * target is resolved before any text is cut, and companions for all of them
+ * leave in the same pass.
  */
 export function removeRecordRow(
   text: string,
   filePath: string | undefined,
-  target: RecordRowTarget
+  target: RecordRowTarget | readonly RecordRowTarget[]
 ): RemoveRecordRowResult {
+  const targets = Array.isArray(target) ? target : [target];
   const allBounds = scanActionRowBounds(text);
   const boundsByStart = new Map(allBounds.map((bounds) => [bounds.startOffset, bounds]));
   // extractRecordIdentities synthesizes a row for exports with no action
@@ -46,49 +50,53 @@ export function removeRecordRow(
   const primaryRows = extractRecordIdentities(text, filePath).filter((identity) =>
     boundsByStart.has(identity.startOffset)
   );
-  const candidates = primaryRows.filter((identity) => {
-    if (identity.table !== target.table) {
-      return false;
+
+  const removeStarts = new Set<number>();
+  for (const one of targets) {
+    const candidates = primaryRows.filter((identity) => {
+      if (identity.table !== one.table) {
+        return false;
+      }
+      if (one.sysId) {
+        return identity.sysId === one.sysId;
+      }
+      return (
+        identity.displayName === one.displayName &&
+        identity.apiName === one.apiName
+      );
+    });
+    if (candidates.length === 0) {
+      return { outcome: 'not-found', reason: 'record row not found in file' };
     }
-    if (target.sysId) {
-      return identity.sysId === target.sysId;
-    }
-    return (
-      identity.displayName === target.displayName &&
-      identity.apiName === target.apiName
+    candidates.sort(
+      (a, b) =>
+        Math.abs(a.startOffset - one.startOffset) -
+        Math.abs(b.startOffset - one.startOffset)
     );
-  });
-  if (candidates.length === 0) {
-    return { outcome: 'not-found', reason: 'record row not found in file' };
-  }
-  candidates.sort(
-    (a, b) =>
-      Math.abs(a.startOffset - target.startOffset) -
-      Math.abs(b.startOffset - target.startOffset)
-  );
 
-  const matched = candidates[0];
-  const matchedBounds = boundsByStart.get(matched.startOffset)!;
-  const matchedXml = text.slice(matchedBounds.startOffset, matchedBounds.endOffset);
-  const updateName = updateNameForRow(matched.table, matchedXml, matched.sysId);
-  const relatedSysIds = relatedSysIdsForRow(matched.table, matchedXml, matched.sysId);
-  // Trailing sys_id on the update name is the application file being versioned
-  // or deleted — keep it so cleanup rows and the live insert can join the set.
-  if (updateName) {
-    const trailing = updateName.match(/_([0-9a-f]{32})$/i);
-    if (trailing) {
-      relatedSysIds.add(trailing[1].toLowerCase());
+    const matched = candidates[0];
+    const matchedBounds = boundsByStart.get(matched.startOffset)!;
+    const matchedXml = text.slice(matchedBounds.startOffset, matchedBounds.endOffset);
+    const updateName = updateNameForRow(matched.table, matchedXml, matched.sysId);
+    const relatedSysIds = relatedSysIdsForRow(matched.table, matchedXml, matched.sysId);
+    // Trailing sys_id on the update name is the application file being versioned
+    // or deleted — keep it so cleanup rows and the live insert can join the set.
+    if (updateName) {
+      const trailing = updateName.match(/_([0-9a-f]{32})$/i);
+      if (trailing) {
+        relatedSysIds.add(trailing[1].toLowerCase());
+      }
     }
-  }
 
-  const removeStarts = new Set<number>([matched.startOffset]);
-  for (const bounds of allBounds) {
-    if (removeStarts.has(bounds.startOffset)) {
-      continue;
-    }
-    const rowXml = text.slice(bounds.startOffset, bounds.endOffset);
-    if (isCompanionRow(bounds.tableName, bounds.rawAction, rowXml, updateName, relatedSysIds)) {
-      removeStarts.add(bounds.startOffset);
+    removeStarts.add(matched.startOffset);
+    for (const bounds of allBounds) {
+      if (removeStarts.has(bounds.startOffset)) {
+        continue;
+      }
+      const rowXml = text.slice(bounds.startOffset, bounds.endOffset);
+      if (isCompanionRow(bounds.tableName, bounds.rawAction, rowXml, updateName, relatedSysIds)) {
+        removeStarts.add(bounds.startOffset);
+      }
     }
   }
 
@@ -129,6 +137,8 @@ function updateNameForRow(
   if (named) {
     return named;
   }
+  // Should always be true if it was generated by the system and has a sys_id.
+  // There are edge cases in which the update name ends in null, undefined, or another value (OOTB, expected), and cases that bypass the normal creation (e.g. importing XML with no sys_id but an update name) that would result in the update name ending in a different sys_id.
   if (sysId) {
     return `${table}_${sysId}`;
   }
@@ -193,14 +203,18 @@ function isCompanionRow(
     table === 'sys_update_version'
       ? extractRowFieldText(rowXml, 'name')
       : extractRowFieldText(rowXml, 'sys_update_name');
+      /// Consider that also filtering by application for cases in which the update name has no sys_id may be necessary.
   if (
     updateName &&
     rowUpdateName &&
-    rowUpdateName.toLowerCase() === updateName.toLowerCase()
+    rowUpdateName === updateName
   ) {
     return true;
   }
 
+  /// This should also include sys_metadata, but this is safer for regular deletes.
+  /// Both have sys_update_name equal to the application file's update name and sys_update_version with the sys_id of the sys_update_version record.
+  /// sys_metadata is the sys_id of the sys_metadata record, which is usually the same as the original record's sys_id.
   if (table === 'sys_metadata_delete') {
     const metadataId = extractRowFieldText(rowXml, 'sys_metadata');
     if (metadataId && relatedSysIds.has(metadataId.toLowerCase())) {

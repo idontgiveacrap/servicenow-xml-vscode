@@ -11,14 +11,20 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { Registry } from './Registry';
-import {
-  CachedApp,
-  cachedDeclarationsToSymbols,
-  cachedRecordsToSymbols,
-  readRegistryCache,
-  registryCachePath
-} from './cache';
+import { CachedApp } from './cache';
 import { runMcpStdio } from './mcpStdio';
+import { queryDependencies } from './dependencies';
+import { outlineScriptMethods, methodSourceExcerpt } from './lazyParse';
+import {
+  aggregateRecords,
+  pickCanonicalRecord,
+  readExportRecord,
+  workspaceFilePath
+} from './recordDetail';
+import {
+  McpWorkspaceState,
+  syncWorkspaceCache
+} from './workspaceCache';
 import {
   DictionaryFieldIndex,
   loadDictionaryTables,
@@ -49,20 +55,6 @@ function dataDir(): string {
   return path.join(__dirname, '..', 'src', 'data');
 }
 
-function resolveCachePath(): string | undefined {
-  if (process.env.REGISTRY_CACHE_PATH) {
-    return fs.existsSync(process.env.REGISTRY_CACHE_PATH)
-      ? process.env.REGISTRY_CACHE_PATH
-      : undefined;
-  }
-  const workspace = process.env.REGISTRY_WORKSPACE || process.cwd();
-  const candidate = registryCachePath(workspace);
-  if (fs.existsSync(candidate)) {
-    return candidate;
-  }
-  return undefined;
-}
-
 function loadJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as T;
 }
@@ -71,8 +63,7 @@ function bootRegistry(): {
   registry: Registry;
   fieldIndex: DictionaryFieldIndex;
   scripting: ScriptingKnowledge;
-  app?: CachedApp;
-  duplicateSysIds: Array<{ sysId: string; table: string; count: number }>;
+  workspace: McpWorkspaceState;
 } {
   const registry = new Registry();
   const dir = dataDir();
@@ -90,45 +81,31 @@ function bootRegistry(): {
   loadDictionaryTables(registry, paths.tables);
   const fieldIndex = new DictionaryFieldIndex(registry, paths.fieldsGz);
   const scripting = loadScriptingKnowledge(dir, registry);
-
-  let app: CachedApp | undefined;
-  let duplicateSysIds: Array<{ sysId: string; table: string; count: number }> = [];
-  const cachePath = resolveCachePath();
-  if (cachePath) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(cachePath, 'utf8'));
-      const cache = readRegistryCache(
-        parsed,
-        parsed.workspaceKey ?? '',
-        parsed.configKey ?? ''
-      );
-      const records = cache?.records ?? parsed.records ?? [];
-      const declarations = cache?.declarations ?? parsed.declarations ?? [];
-      app = cache?.app ?? parsed.app;
-      duplicateSysIds = cache?.duplicateSysIds ?? parsed.duplicateSysIds ?? [];
-      if (Array.isArray(records)) {
-        registry.upsertMany(cachedRecordsToSymbols(records));
-      }
-      if (Array.isArray(declarations)) {
-        registry.upsertMany(cachedDeclarationsToSymbols(declarations));
-      }
-      const schemaFields = cache?.schemaFields ?? parsed.schemaFields ?? [];
-      const references = cache?.references ?? parsed.references ?? [];
-      if (Array.isArray(schemaFields) || Array.isArray(references)) {
-        registry.setProjectOverlay(
-          Array.isArray(schemaFields) ? schemaFields : [],
-          Array.isArray(references) ? references : []
-        );
-      }
-      if (!app) {
-        app = appFromSysAppRecords(registry);
-      }
-    } catch (error) {
-      console.error('[registry-mcp] cache load failed:', error);
-    }
+  const workspace: McpWorkspaceState = { duplicateSysIds: [], cacheMtimeMs: 0 };
+  syncWorkspaceCache(registry, workspace);
+  if (!workspace.app) {
+    workspace.app = appFromSysAppRecords(registry);
   }
+  return { registry, fieldIndex, scripting, workspace };
+}
 
-  return { registry, fieldIndex, scripting, app, duplicateSysIds };
+/**
+ * Script body from a workspace Script Include or UI Script export.
+ */
+function scriptBodyForSymbol(symbol: {
+  uri?: string;
+  relativePath?: string;
+}): string {
+  const filePath = workspaceFilePath(symbol);
+  if (!filePath || !fs.existsSync(filePath)) {
+    return '';
+  }
+  const text = fs.readFileSync(filePath, 'utf8');
+  const match =
+    /<(?:script|client_script)[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/(?:script|client_script)>/i.exec(
+      text
+    );
+  return match?.[1] ?? match?.[2] ?? '';
 }
 
 function appFromSysAppRecords(registry: Registry): CachedApp | undefined {
@@ -151,16 +128,23 @@ function dispatch(
   registry: Registry,
   fieldIndex: DictionaryFieldIndex,
   scripting: ScriptingKnowledge,
-  app: CachedApp | undefined,
-  duplicateSysIds: Array<{ sysId: string; table: string; count: number }>
+  workspace: McpWorkspaceState
 ): unknown {
+  const app = workspace.app;
+  const duplicateSysIds = workspace.duplicateSysIds;
   const limit = Math.min(Number(args.limit) || 50, 100);
   switch (name) {
     case 'list_tables': {
       const q = String(args.query ?? '')
         .toLowerCase()
         .trim();
+      const source = args.source ? String(args.source) : '';
       let tables = registry.listTables();
+      if (source === 'project' || source === 'platform') {
+        tables = tables.filter((table) =>
+          source === 'project' ? table.fromWorkspace : !table.fromWorkspace
+        );
+      }
       if (q) {
         tables = tables.filter(
           (t) =>
@@ -168,10 +152,17 @@ function dispatch(
             (t.label ?? '').toLowerCase().includes(q)
         );
       }
+      tables.sort((a, b) => {
+        const rank = (table: { fromWorkspace?: boolean }) =>
+          table.fromWorkspace ? 0 : 1;
+        const bySource = rank(a) - rank(b);
+        return bySource || a.name.localeCompare(b.name);
+      });
       return {
         tables: tables.slice(0, limit).map((t) => ({
           name: t.name,
-          label: t.label
+          label: t.label,
+          source: t.fromWorkspace ? 'project' : 'platform'
         })),
         total: tables.length
       };
@@ -184,10 +175,12 @@ function dispatch(
         fieldIndex.fieldsFor(table),
         registry.listProjectFields(table)
       );
+      const parent = registry.projectTableExtends(table);
       return {
         table,
         label: registry.projectTableLabel(table) ?? info?.label,
         known: !!(info || fields.length || fieldIndex.hasTable(table)),
+        ...(parent ? { extends: parent } : {}),
         fields
       };
     }
@@ -308,6 +301,9 @@ function dispatch(
             (r.relativePath ?? '').toLowerCase().includes(q)
         );
       }
+      if (args.aggregate === true) {
+        return { aggregate: true, ...aggregateRecords(records) };
+      }
       // Sort by sys_updated_on descending so the canonical (latest) source appears first.
       const sorted = [...records].sort((a, b) => {
         const ta = a.sysUpdatedOn ?? '';
@@ -358,6 +354,8 @@ function dispatch(
     case 'lookup_script_include': {
       const siName = String(args.name ?? '');
       const scope = args.scope ? String(args.scope) : undefined;
+      const includeOutline = args.includeOutline === true;
+      const method = args.method ? String(args.method) : '';
       const matches = registry.lookup(siName).filter((s) => {
         if (s.kind !== 'ScriptInclude' && s.kind !== 'UiScript') {
           return false;
@@ -367,8 +365,68 @@ function dispatch(
         }
         return true;
       });
-      return { matches };
+      if (!includeOutline && !method) {
+        return { matches };
+      }
+      return {
+        matches: matches.map((symbol) => {
+          const script = scriptBodyForSymbol(symbol);
+          const outlined =
+            script && (includeOutline || method)
+              ? outlineScriptMethods(script)
+              : [];
+          const excerpt = script && method ? methodSourceExcerpt(script, method) : undefined;
+          return {
+            ...symbol,
+            ...(includeOutline
+              ? {
+                  methods: outlined.map((item) => ({
+                    name: item.name,
+                    params: item.params,
+                    line: item.line
+                  }))
+                }
+              : {}),
+            ...(method ? { excerpt: excerpt ?? null } : {})
+          };
+        })
+      };
     }
+    case 'get_record': {
+      const record = pickCanonicalRecord(registry.listRecords(), {
+        sysId: args.sys_id ? String(args.sys_id) : undefined,
+        table: args.table ? String(args.table) : undefined,
+        name: args.name ? String(args.name) : undefined
+      });
+      if (!record) {
+        throw new Error('record not found');
+      }
+      const includeEmbedded = args.includeEmbedded === true;
+      const duplicate = duplicateSysIds.find(
+        (row) => row.sysId.toLowerCase() === (record.sysId ?? '').toLowerCase()
+      );
+      return {
+        table: record.table,
+        displayName: record.displayName,
+        sysId: record.sysId,
+        action: record.action,
+        apiName: record.apiName,
+        sysUpdatedOn: record.sysUpdatedOn,
+        relativePath: record.relativePath,
+        uri: record.uri,
+        ...(duplicate && duplicate.count > 1 ? { duplicateCount: duplicate.count } : {}),
+        fields: readExportRecord(record, includeEmbedded)
+      };
+    }
+    case 'query_dependencies':
+      return queryDependencies({
+        kind: args.kind ? String(args.kind) : undefined,
+        from: args.from ? String(args.from) : undefined,
+        to: args.to ? String(args.to) : undefined,
+        limit,
+        references: registry.listReferenceEdges(),
+        dependencies: registry.listDependencyEdges()
+      });
     case 'get_workspace_app':
       return { app: app ?? null, source: app ? 'registry-cache' : 'none' };
     case 'registry_diagnostics_context':
@@ -423,22 +481,26 @@ function dispatch(
   }
 }
 
-const { registry, fieldIndex, scripting, app, duplicateSysIds } = bootRegistry();
+const { registry, fieldIndex, scripting, workspace } = bootRegistry();
 
 const tools = [
   {
     name: 'list_tables',
     description:
-      'List tables from the platform dictionary and project dictionary exports, as one set.',
+      'List tables from the platform dictionary and project dictionary exports, as one set. Project tables are first. Pass source "project" or "platform" to keep one side.',
     inputSchema: {
       type: 'object',
-      properties: { query: { type: 'string' }, limit: { type: 'number' } }
+      properties: {
+        query: { type: 'string' },
+        source: { type: 'string', enum: ['project', 'platform'] },
+        limit: { type: 'number' }
+      }
     }
   },
   {
     name: 'get_table',
     description:
-      'Get one table and its fields (name, label, type, reference, source). Project columns override the platform pack.',
+      'Get one table and its fields (name, label, type, reference, source). Project columns override the platform pack. extends is the parent table name when the export has one; call get_table on that name for inherited columns.',
     inputSchema: {
       type: 'object',
       properties: { table: { type: 'string' } },
@@ -477,13 +539,14 @@ const tools = [
   {
     name: 'search_records',
     description:
-      'Search workspace export records from the Registry cache (agent discovery). Results sorted by sysUpdatedOn descending so canonical sources appear first.',
+      'Search workspace export records from the Registry cache (agent discovery). Results sorted by sysUpdatedOn descending so canonical sources appear first. aggregate:true returns counts by table and action instead of row bodies.',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string' },
         table: { type: 'string' },
-        limit: { type: 'number' }
+        limit: { type: 'number' },
+        aggregate: { type: 'boolean' }
       }
     }
   },
@@ -499,10 +562,16 @@ const tools = [
   },
   {
     name: 'lookup_script_include',
-    description: 'Lookup Script Include / UI Script declarations (bundled + workspace).',
+    description:
+      'Lookup Script Include / UI Script declarations (bundled + workspace). includeOutline adds method name, params, and line. method adds a capped source excerpt for that method.',
     inputSchema: {
       type: 'object',
-      properties: { name: { type: 'string' }, scope: { type: 'string' } },
+      properties: {
+        name: { type: 'string' },
+        scope: { type: 'string' },
+        includeOutline: { type: 'boolean' },
+        method: { type: 'string' }
+      },
       required: ['name']
     }
   },
@@ -625,10 +694,38 @@ const tools = [
   {
     name: 'list_diagnostics',
     description:
-      'Workspace diagnostic summary: symbol counts, duplicate sys_id count, and reference issue count. Duplicate sys_ids indicate multiple active rows for one sys_id; agents should use sys_updated_on to pick the canonical file.',
+      'Workspace diagnostic summary: symbol counts, duplicate sys_id count, and reference issue count. Duplicate sys_ids indicate multiple active rows for one sys_id; agents should use sys_updated_on to pick the canonical file. projectFieldCount is workspace dictionary columns; platform fields stay in the packed dictionary.',
     inputSchema: {
       type: 'object',
       properties: { limit: { type: 'number' } }
+    }
+  },
+  {
+    name: 'get_record',
+    description:
+      'Parsed fields for one workspace export row (sys_id, or table plus exact name). Newest sysUpdatedOn wins when the sys_id is duplicated. Embedded script, JSON, XML, and CSS are lengths unless includeEmbedded is true, then a 2000-character excerpt. This is the export, not the live instance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string' },
+        table: { type: 'string' },
+        name: { type: 'string' },
+        includeEmbedded: { type: 'boolean' }
+      }
+    }
+  },
+  {
+    name: 'query_dependencies',
+    description:
+      'Filtered dependency edges. kind is sys_id_ref, calls, or extends. from and to match a sys_id, declaration name, or table name. Not a dump of the whole graph.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['sys_id_ref', 'calls', 'extends'] },
+        from: { type: 'string' },
+        to: { type: 'string' },
+        limit: { type: 'number' }
+      }
     }
   }
 ];
@@ -637,6 +734,11 @@ runMcpStdio({
   name: 'servicenow-xml-registry',
   version: '1.0.0',
   tools,
-  callTool: async (name, args) =>
-    dispatch(name, args, registry, fieldIndex, scripting, app, duplicateSysIds)
+  callTool: async (name, args) => {
+    syncWorkspaceCache(registry, workspace);
+    if (!workspace.app) {
+      workspace.app = appFromSysAppRecords(registry);
+    }
+    return dispatch(name, args, registry, fieldIndex, scripting, workspace);
+  }
 });

@@ -46,6 +46,10 @@ interface ScriptAstNode {
   object?: ScriptAstNode;
   property?: ScriptAstNode;
   body?: ScriptAstNode | ScriptAstNode[];
+  params?: ScriptAstNode[];
+  argument?: ScriptAstNode;
+  loc?: { start: { line: number; column: number } };
+  range?: [number, number];
 }
 
 /**
@@ -93,44 +97,76 @@ export function extractAndMergeMethods(
   }
   const methods: MethodSymbol[] = [];
   const seen = new Set<string>();
-  const add = (name: string | undefined): void => {
-    if (!name || seen.has(name) || name === 'type') {
-      return;
+  for (const found of listScriptMethods(program)) {
+    if (seen.has(found.name)) {
+      continue;
     }
-    seen.add(name);
+    seen.add(found.name);
     const symbol: MethodSymbol = {
       kind: 'Method',
-      name,
+      name: found.name,
       ownerName: options.ownerName,
       ownerUri: options.ownerUri,
       scope: options.scope,
-      uri: options.ownerUri
+      uri: options.ownerUri,
+      params: found.params,
+      line: found.line
     };
     registry.upsert(symbol);
     methods.push(symbol);
-  };
-  walkScript(program, (node) => {
-    if (
-      (node.type === 'Property' || node.type === 'MethodDefinition') &&
-      node.key?.type === 'Identifier' &&
-      !node.computed &&
-      isFunctionNode(node.value ?? node)
-    ) {
-      add(node.key.name);
-      return;
-    }
-    if (
-      node.type === 'AssignmentExpression' &&
-      node.left?.type === 'MemberExpression' &&
-      !node.left.computed &&
-      node.left.property?.type === 'Identifier' &&
-      isFunctionNode(node.right) &&
-      isPrototypeObject(node.left.object)
-    ) {
-      add(node.left.property.name);
-    }
-  });
+  }
   return methods;
+}
+
+/** Method name, parameter names, and 1-based line. `type` is skipped. */
+export interface ScriptMethodOutline {
+  name: string;
+  params: string[];
+  line?: number;
+  start: number;
+  end: number;
+}
+
+/**
+ * Methods in a Script Include body. Empty when the text does not parse.
+ */
+export function outlineScriptMethods(script: string): ScriptMethodOutline[] {
+  const program = parseEmbeddedScript(script);
+  if (!program) {
+    return [];
+  }
+  return listScriptMethods(program);
+}
+
+/** Hard caps for a single method excerpt returned to an agent. */
+export const METHOD_EXCERPT_LINES = 80;
+export const METHOD_EXCERPT_CHARS = 2000;
+
+/**
+ * Source of one method, cut to 80 lines or 2000 characters.
+ * Undefined when the name is not a method in `script`.
+ */
+export function methodSourceExcerpt(
+  script: string,
+  methodName: string
+): { excerpt: string; truncated: boolean; line?: number } | undefined {
+  const found = outlineScriptMethods(script).find((method) => method.name === methodName);
+  if (!found) {
+    return undefined;
+  }
+  const slice = script.slice(found.start, found.end);
+  const lines = slice.split(/\r?\n/);
+  let excerpt = slice;
+  let truncated = false;
+  if (lines.length > METHOD_EXCERPT_LINES) {
+    excerpt = lines.slice(0, METHOD_EXCERPT_LINES).join('\n');
+    truncated = true;
+  }
+  if (excerpt.length > METHOD_EXCERPT_CHARS) {
+    excerpt = excerpt.slice(0, METHOD_EXCERPT_CHARS);
+    truncated = true;
+  }
+  return { excerpt, truncated, line: found.line };
 }
 
 /**
@@ -181,6 +217,80 @@ export function resolveScriptIncludeReference(
     );
   }
   return methods;
+}
+
+/**
+ * Object-literal methods and `prototype.foo = function` assignments.
+ * `type` is the Script Include class marker, not a callable method.
+ */
+function listScriptMethods(program: ScriptAstNode): ScriptMethodOutline[] {
+  const methods: ScriptMethodOutline[] = [];
+  const seen = new Set<string>();
+  const add = (
+    name: string | undefined,
+    fn: ScriptAstNode | undefined,
+    owner: ScriptAstNode
+  ): void => {
+    if (!name || seen.has(name) || name === 'type' || !fn) {
+      return;
+    }
+    const range = owner.range ?? fn.range;
+    if (!range) {
+      return;
+    }
+    seen.add(name);
+    methods.push({
+      name,
+      params: paramNames(fn),
+      line: owner.loc?.start?.line ?? fn.loc?.start?.line,
+      start: range[0],
+      end: range[1]
+    });
+  };
+  walkScript(program, (node) => {
+    if (
+      (node.type === 'Property' || node.type === 'MethodDefinition') &&
+      node.key?.type === 'Identifier' &&
+      !node.computed &&
+      isFunctionNode(node.value ?? node)
+    ) {
+      add(node.key.name, node.value ?? node, node);
+      return;
+    }
+    if (
+      node.type === 'AssignmentExpression' &&
+      node.left?.type === 'MemberExpression' &&
+      !node.left.computed &&
+      node.left.property?.type === 'Identifier' &&
+      isFunctionNode(node.right) &&
+      isPrototypeObject(node.left.object)
+    ) {
+      add(node.left.property.name, node.right, node);
+    }
+  });
+  return methods;
+}
+
+function paramNames(fn: ScriptAstNode): string[] {
+  const names: string[] = [];
+  for (const param of fn.params ?? []) {
+    if (param.type === 'Identifier' && param.name) {
+      names.push(param.name);
+    } else if (
+      param.type === 'AssignmentPattern' &&
+      param.left?.type === 'Identifier' &&
+      param.left.name
+    ) {
+      names.push(param.left.name);
+    } else if (
+      param.type === 'RestElement' &&
+      param.argument?.type === 'Identifier' &&
+      param.argument.name
+    ) {
+      names.push(param.argument.name);
+    }
+  }
+  return names;
 }
 
 function isFunctionNode(node: ScriptAstNode | undefined): boolean {

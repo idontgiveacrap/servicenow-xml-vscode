@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { getIgnoreGlobs } from './ignorePaths';
 import type { CachedApp, CachedDeclaration } from './registry/cache';
+import { buildCachedDependencies } from './registry/dependencies';
 import {
   getWorkspaceRegistryService,
   registrySnapshotKeys
@@ -239,7 +240,12 @@ export class ScriptDeclarationIndex implements vscode.Disposable {
       declarations,
       app: this.workspaceApp(),
       schemaFields: scanned.schemaFields,
-      references: scanned.references
+      references: scanned.references,
+      dependencies: buildCachedDependencies({
+        schemaFields: scanned.schemaFields,
+        calls: scanned.callCandidates,
+        declarationNames: new Set(declarations.map((row) => row.name))
+      })
     });
     await service.persistToDisk(keys.workspaceKey, keys.configKey);
     this.loaded = true;

@@ -29,7 +29,7 @@ const WARNING_BODY = [
   'Existence is checked only against the ServiceNow instance and user on the selected snc profile (host / username). Default (no --profile) uses the CLI default profile. A record can still exist on other instances or under other logins.',
   'Tests suggest snc may bypass ACLs. A miss is not proof the record is gone from ServiceNow. If this profile’s query cannot see a row that still exists, pruning would drop a tombstone that install still needs.',
   'Nothing is removed until you check it in the table that follows. Only rows the query proved absent are checked for you; rows the instance still returns, and rows nothing was confirmed for, start unchecked so keeping the tombstone stays the default. You can review and prune without querying at all.',
-  'Files whose rows are all checked are deleted; files that mix DELETE with other actions, or that keep an unchecked DELETE row, lose only the checked rows. Nothing is removed from the instance.'
+  'A file is deleted when every remaining record is a checked DELETE row or a companion of one (sys_update_version, sys_metadata_delete, delete_multiple for that update). A file that still has another record, or an unchecked DELETE row, is rewritten and loses the checked rows and their companions. Nothing is removed from the instance.'
 ].join('\n\n');
 
 let output: vscode.OutputChannel | undefined;
@@ -437,8 +437,8 @@ async function applySelectedRows(
 }
 
 /**
- * Remove one file's confirmed DELETE rows, deleting the file when nothing else
- * remains in it.
+ * Remove one file's confirmed DELETE rows and their version / metadata
+ * companions, deleting the file when nothing else remains in it.
  *
  * Offsets are recomputed from the file on disk rather than reused from the
  * index, so an export edited since the scan is skipped instead of rewritten

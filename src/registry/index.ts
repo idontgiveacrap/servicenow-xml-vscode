@@ -37,9 +37,25 @@ export { lintSchemaTableArgs, schemaMessagesToEslint } from './schemaLint';
 export {
   getOrParseXml,
   extractAndMergeMethods,
-  resolveScriptIncludeReference
+  resolveScriptIncludeReference,
+  outlineScriptMethods,
+  methodSourceExcerpt
 } from './lazyParse';
-export { getRuntimeRegistry, getRuntimeFieldIndex } from './runtime';
+export {
+  extractCallCandidates,
+  buildCachedDependencies,
+  mergeDependencyEdges,
+  queryDependencies
+} from './dependencies';
+export {
+  pickCanonicalRecord,
+  parseExportRecordRow,
+  aggregateRecords,
+  readExportRecord,
+  RECORD_EXCERPT_CHARS
+} from './recordDetail';
+export { loadWorkspaceSnapshot, syncWorkspaceCache } from './workspaceCache';
+export { getRuntimeRegistry, getRuntimeFieldIndex, ensureStaticLoaded } from './runtime';
 export {
   attachScriptingDocs,
   scriptingLookupFromRegistry

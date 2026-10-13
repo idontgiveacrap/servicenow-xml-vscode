@@ -1,4 +1,4 @@
-import type { CachedReference, CachedSchemaField } from './cache';
+import type { CachedDependency, CachedReference, CachedSchemaField } from './cache';
 import {
   DependencyEdge,
   FieldSymbol,
@@ -30,6 +30,8 @@ export class Registry {
   /** Workspace dictionary columns. These win over the platform pack for the same table.element. */
   private projectFields: CachedSchemaField[] = [];
   private referenceEdges: CachedReference[] = [];
+  /** Call and extends edges. Separate from sys_id references. */
+  private dependencyEdges: CachedDependency[] = [];
   /** Parsed-document / AST payloads keyed by uri + version (Phase D). */
   private readonly parseCache = new Map<
     string,
@@ -46,6 +48,7 @@ export class Registry {
     this.edges.length = 0;
     this.projectFields = [];
     this.referenceEdges = [];
+    this.dependencyEdges = [];
   }
 
   /**
@@ -70,6 +73,7 @@ export class Registry {
     for (const id of remove) {
       this.removeSymbol(id);
     }
+    this.dependencyEdges = [];
   }
 
   /**
@@ -187,8 +191,26 @@ export class Registry {
       ?.label;
   }
 
+  /** Parent table from a workspace table-definition row, when the export has one. */
+  projectTableExtends(table: string): string | undefined {
+    return this.projectFields.find(
+      (field) => field.table === table && !field.element && field.extends
+    )?.extends;
+  }
+
   listReferenceEdges(): CachedReference[] {
     return this.referenceEdges;
+  }
+
+  /**
+   * Replace call and extends edges. Does not touch sys_id references.
+   */
+  setDependencyEdges(edges: CachedDependency[]): void {
+    this.dependencyEdges = edges;
+  }
+
+  listDependencyEdges(): CachedDependency[] {
+    return this.dependencyEdges;
   }
 
   /**
@@ -311,19 +333,30 @@ export class Registry {
     this.parseCache.delete(uri);
   }
 
-  /** Snapshot counts for MCP / diagnostics context. */
+  /**
+   * Snapshot counts for MCP / diagnostics context.
+   * Project columns stay in the overlay, so this does not count Field symbols.
+   */
   getDiagnosticsContext(): {
     recordCount: number;
     declarationCount: number;
     tableCount: number;
-    fieldCount: number;
+    projectTableCount: number;
+    projectFieldCount: number;
+    platformTableCount: number;
+    referenceCount: number;
     platformApiCount: number;
   } {
+    const tables = this.listTables();
+    const projectTableCount = tables.filter((table) => table.fromWorkspace).length;
     return {
       recordCount: this.listByKind('Record').length,
       declarationCount: this.listWorkspaceDeclarations().length,
-      tableCount: this.listByKind('Table').length,
-      fieldCount: this.listByKind('Field').length,
+      tableCount: tables.length,
+      projectTableCount,
+      projectFieldCount: this.projectFields.filter((field) => field.element).length,
+      platformTableCount: tables.length - projectTableCount,
+      referenceCount: this.referenceEdges.length,
       platformApiCount:
         this.listByKind('PlatformApi').length + this.listByKind('Global').length
     };

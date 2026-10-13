@@ -6,6 +6,7 @@ import type {
   CachedReference,
   CachedSchemaField
 } from '../registry/cache';
+import type { CallCandidate } from '../registry/dependencies';
 import { indexExportText } from '../registry/workspaceIndexer';
 
 /**
@@ -53,6 +54,7 @@ export interface ScanExportResult {
   declarations: CachedDeclaration[];
   schemaFields: CachedSchemaField[];
   references: CachedReference[];
+  callCandidates: CallCandidate[];
 }
 
 /**
@@ -80,6 +82,7 @@ export async function scanExportRecordsWithDeclarations(
   const declarations: CachedDeclaration[] = [];
   const schemaFields: CachedSchemaField[] = [];
   const references: CachedReference[] = [];
+  const callCandidates: CallCandidate[] = [];
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(SCAN_CONCURRENCY, uris.length) }, async () => {
@@ -101,10 +104,13 @@ export async function scanExportRecordsWithDeclarations(
         for (const edge of found.references) {
           references.push(edge);
         }
+        for (const call of found.callCandidates) {
+          callCandidates.push(call);
+        }
       }
     })
   );
-  return { records: out, declarations, schemaFields, references };
+  return { records: out, declarations, schemaFields, references, callCandidates };
 }
 
 /**
@@ -126,7 +132,13 @@ export async function readExportRecordsWithDeclarations(
   options: ScanExportOptions
 ): Promise<ScanExportResult> {
   if (isPathIgnored(uri.fsPath, options.ignoreGlobs)) {
-    return { records: [], declarations: [], schemaFields: [], references: [] };
+    return {
+      records: [],
+      declarations: [],
+      schemaFields: [],
+      references: [],
+      callCandidates: []
+    };
   }
   let text: string;
   try {
@@ -138,7 +150,13 @@ export async function readExportRecordsWithDeclarations(
         ? await fs.readFile(uri.fsPath, 'utf8')
         : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
   } catch {
-    return { records: [], declarations: [], schemaFields: [], references: [] };
+    return {
+      records: [],
+      declarations: [],
+      schemaFields: [],
+      references: [],
+      callCandidates: []
+    };
   }
   const relativePath = vscode.workspace.asRelativePath(uri, false);
   const indexed = indexExportText(text, {
@@ -164,6 +182,7 @@ export async function readExportRecordsWithDeclarations(
     })),
     declarations: indexed.declarations,
     schemaFields: indexed.schemaFields,
-    references: indexed.references
+    references: indexed.references,
+    callCandidates: indexed.callCandidates
   };
 }

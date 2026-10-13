@@ -11,6 +11,7 @@ import { extractRecordIdentities } from './navigator/recordName';
 import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
+import { inferXmlDiagnosticEnd } from './diagnosticRange';
 import { KindStatusBar } from './statusBar';
 import { isPathIgnored } from './ignorePaths';
 import { isEditableDocument } from './snDocumentShape';
@@ -227,11 +228,13 @@ function toVsDiagnostic(
   document: vscode.TextDocument
 ): vscode.Diagnostic {
   const start = clampPosition(document, d.line, d.character);
-  const end = clampPosition(
-    document,
-    d.endLine ?? d.line,
-    d.endCharacter ?? d.character + 1
-  );
+  const endLine = d.endLine ?? d.line;
+  const endCharacter =
+    d.endCharacter ??
+    (endLine === d.line
+      ? inferXmlDiagnosticEnd(document.lineAt(start.line).text, start.character)
+      : d.character + 1);
+  const end = clampPosition(document, endLine, endCharacter);
   const range = new vscode.Range(start, end);
   const severity = toSeverity(d.severity);
   const diagnostic = new vscode.Diagnostic(range, d.message, severity);

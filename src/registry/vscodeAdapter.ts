@@ -1,6 +1,8 @@
 /**
  * VS Code host adapter for the vscode-free Registry.
- * Owns static pack load, workspace sync, and disk cache persistence.
+ * Owns workspace sync and disk cache persistence. Static packs load lazily
+ * on first `registry` access (lint, completion, MCP) so activation-blocking
+ * features like the formatter are not delayed by synchronous file I/O.
  */
 
 import * as path from 'path';
@@ -11,11 +13,13 @@ import { ensureGitignoreEntry } from '../jsonStringEditor/drafts';
 import {
   CachedApp,
   CachedDeclaration,
+  CachedDependency,
   CachedRecord,
   CachedReference,
   CachedSchemaField,
   cachedDeclarationsToSymbols,
   cachedRecordsToSymbols,
+  computeDuplicateSysIds,
   createRegistryCache,
   loadRegistryCacheFile,
   registryCachePath,
@@ -23,27 +27,40 @@ import {
 } from './cache';
 import { MAX_REFERENCE_EDGES } from './xmlReferences';
 import { createNodeFileSystem } from './nodeFs';
-import { getRuntimeFieldIndex, getRuntimeRegistry } from './runtime';
+import { Registry } from './Registry';
+import { ensureStaticLoaded, getRuntimeFieldIndex, getRuntimeRegistry } from './runtime';
 import { workspaceDeclarationsFromRegistry } from './lintGlobals';
 
 type RegistryListener = () => void;
 
 /**
  * Extension-host owner of the shared Registry instance.
+ * Static packs are loaded lazily on first `registry` access, not at construction,
+ * so features that don't use the Registry (formatter) are not blocked.
  */
 export class WorkspaceRegistryService implements vscode.Disposable {
-  readonly registry = getRuntimeRegistry();
+  private _registry: Registry | undefined;
   private readonly listeners = new Set<RegistryListener>();
   private readonly fs = createNodeFileSystem();
   private workspaceRecords: CachedRecord[] = [];
   private workspaceDeclarations: CachedDeclaration[] = [];
   private workspaceSchema: CachedSchemaField[] = [];
   private workspaceReferences: CachedReference[] = [];
+  private workspaceDependencies: CachedDependency[] = [];
   private workspaceApp: CachedApp | undefined;
   private workspaceDuplicateSysIds: Array<{ sysId: string; table: string; count: number }> = [];
 
-  constructor() {
-    this.loadStatic();
+  /**
+   * Registry backing the LSP features (completion, hover, lint globals).
+   * Lazy: static packs are not loaded until first access, so callers that only
+   * need the navigator or formatter never pay the synchronous file-I/O cost.
+   */
+  get registry(): Registry {
+    if (!this._registry) {
+      this._registry = getRuntimeRegistry();
+    }
+    ensureStaticLoaded();
+    return this._registry;
   }
 
   /**
@@ -67,13 +84,6 @@ export class WorkspaceRegistryService implements vscode.Disposable {
   }
 
   /**
-   * Load bundled SI / scopes / platform globals / dictionary tables once.
-   */
-  loadStatic(): void {
-    getRuntimeRegistry();
-  }
-
-  /**
    * Replace workspace Record + declaration symbols and refresh indexes.
    */
   setWorkspaceData(options: {
@@ -82,6 +92,7 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     app?: CachedApp;
     schemaFields?: CachedSchemaField[];
     references?: CachedReference[];
+    dependencies?: CachedDependency[];
   }): void {
     this.workspaceRecords = options.records;
     this.workspaceDeclarations = options.declarations;
@@ -93,6 +104,9 @@ export class WorkspaceRegistryService implements vscode.Disposable {
     }
     if (options.references !== undefined) {
       this.workspaceReferences = options.references.slice(0, MAX_REFERENCE_EDGES);
+    }
+    if (options.dependencies !== undefined) {
+      this.workspaceDependencies = options.dependencies;
     }
     this.workspaceDuplicateSysIds = computeDuplicateSysIds(options.records);
     this.applyWorkspaceSymbols();
@@ -116,6 +130,7 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       cachedDeclarationsToSymbols(this.workspaceDeclarations)
     );
     this.registry.setProjectOverlay(this.workspaceSchema, this.workspaceReferences);
+    this.registry.setDependencyEdges(this.workspaceDependencies);
     this.notify();
   }
 
@@ -125,6 +140,18 @@ export class WorkspaceRegistryService implements vscode.Disposable {
 
   getCachedDeclarations(): CachedDeclaration[] {
     return this.workspaceDeclarations;
+  }
+
+  getCachedSchemaFields(): CachedSchemaField[] {
+    return this.workspaceSchema;
+  }
+
+  getCachedReferences(): CachedReference[] {
+    return this.workspaceReferences;
+  }
+
+  getCachedDependencies(): CachedDependency[] {
+    return this.workspaceDependencies;
   }
 
   getCachedApp(): CachedApp | undefined {
@@ -167,6 +194,7 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       app: this.workspaceApp,
       schemaFields: this.workspaceSchema,
       references: this.workspaceReferences,
+      dependencies: this.workspaceDependencies,
       duplicateSysIds: this.workspaceDuplicateSysIds
     });
     try {
@@ -202,7 +230,8 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       declarations: cache.declarations,
       app: cache.app,
       schemaFields: cache.schemaFields ?? [],
-      references: cache.references ?? []
+      references: cache.references ?? [],
+      dependencies: cache.dependencies ?? []
     });
     return true;
   }
@@ -212,31 +241,6 @@ export class WorkspaceRegistryService implements vscode.Disposable {
       listener();
     }
   }
-}
-
-/**
- * Find sys_ids that appear in multiple active (non-DELETE) records.
- */
-export function computeDuplicateSysIds(
-  records: CachedRecord[]
-): Array<{ sysId: string; table: string; count: number }> {
-  const byId = new Map<string, { table: string; count: number }>();
-  for (const record of records) {
-    if (!record.sysId || record.action === 'DELETE') {
-      continue;
-    }
-    const key = record.sysId.toLowerCase();
-    const existing = byId.get(key);
-    if (existing) {
-      existing.count += 1;
-    } else {
-      byId.set(key, { table: record.table, count: 1 });
-    }
-  }
-  return Array.from(byId.entries())
-    .filter(([_, info]) => info.count > 1)
-    .map(([sysId, info]) => ({ sysId, table: info.table, count: info.count }))
-    .sort((a, b) => b.count - a.count || a.sysId.localeCompare(b.sysId));
 }
 
 /** Singleton used by extension, lint, and navigator facades. */

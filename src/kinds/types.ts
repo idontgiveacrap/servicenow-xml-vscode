@@ -22,7 +22,11 @@ export interface SnDiagnostic {
   character: number;
   /** Optional end line (0-based); defaults to line */
   endLine?: number;
-  /** Optional end character; defaults to character + 1 */
+  /**
+   * Optional exclusive end character.
+   * When omitted on the same line, the underline runs through the XML tag
+   * or the element text that begins at `character`.
+   */
   endCharacter?: number;
   code?: string;
 }

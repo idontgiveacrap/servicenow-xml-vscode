@@ -68,8 +68,27 @@ export interface CachedSchemaField {
   label?: string;
   internalType?: string;
   reference?: string;
+  /**
+   * Parent table for an empty-element table row.
+   * From `sys_db_object.super_class` `name`, or a `<database>` collection `extends`.
+   */
+  extends?: string;
   uri: string;
   relativePath: string;
+}
+
+/**
+ * Call or table-parent edge. Kept off `references`, which is sys_id-only.
+ */
+export interface CachedDependency {
+  kind: 'calls' | 'extends';
+  /** Record sys_id for calls; child table name for extends. */
+  from: string;
+  /** Declaration name for calls; parent table name for extends. */
+  to: string;
+  fromTable?: string;
+  uri?: string;
+  relativePath?: string;
 }
 
 /** Outgoing sys_id reference stored on the workspace snapshot. */
@@ -96,6 +115,8 @@ export interface RegistryCacheFile {
   schemaFields?: CachedSchemaField[];
   /** sys_id edges collected while scanning exports. */
   references?: CachedReference[];
+  /** Script-include calls and table `extends` links. Not sys_id references. */
+  dependencies?: CachedDependency[];
   /**
    * sys_ids that appear in multiple active (non-DELETE) rows during the
    * workspace scan. Each entry has the sys_id, table, and count of active
@@ -124,6 +145,7 @@ export function createRegistryCache(options: {
   app?: CachedApp;
   schemaFields?: CachedSchemaField[];
   references?: CachedReference[];
+  dependencies?: CachedDependency[];
   duplicateSysIds?: Array<{ sysId: string; table: string; count: number }>;
 }): RegistryCacheFile {
   return {
@@ -136,6 +158,7 @@ export function createRegistryCache(options: {
     ...(options.app ? { app: options.app } : {}),
     ...(options.schemaFields ? { schemaFields: options.schemaFields } : {}),
     ...(options.references ? { references: options.references } : {}),
+    ...(options.dependencies ? { dependencies: options.dependencies } : {}),
     ...(options.duplicateSysIds
       ? { duplicateSysIds: options.duplicateSysIds }
       : {})
@@ -197,6 +220,31 @@ export async function saveRegistryCacheFile(
   const dir = path.replace(/[\\/][^\\/]+$/, '');
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path, JSON.stringify(cache), 'utf8');
+}
+
+/**
+ * Find sys_ids that appear in multiple active (non-DELETE) records.
+ */
+export function computeDuplicateSysIds(
+  records: Array<Pick<CachedRecord, 'sysId' | 'table' | 'action'>>
+): Array<{ sysId: string; table: string; count: number }> {
+  const byId = new Map<string, { table: string; count: number }>();
+  for (const record of records) {
+    if (!record.sysId || record.action === 'DELETE') {
+      continue;
+    }
+    const key = record.sysId.toLowerCase();
+    const existing = byId.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byId.set(key, { table: record.table, count: 1 });
+    }
+  }
+  return Array.from(byId.entries())
+    .filter(([, info]) => info.count > 1)
+    .map(([sysId, info]) => ({ sysId, table: info.table, count: info.count }))
+    .sort((a, b) => b.count - a.count || a.sysId.localeCompare(b.sysId));
 }
 
 /**

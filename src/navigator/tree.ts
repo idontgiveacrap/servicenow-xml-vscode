@@ -7,6 +7,16 @@ import { getWorkspaceRegistryService } from '../registry/vscodeAdapter';
 export type TreeNode = TableNode | RecordNode | MessageNode;
 
 /**
+ * Collapse root refreshes that land close together into one event.
+ *
+ * VS Code applies the first `onDidChangeTreeData` immediately and a second one
+ * about 200ms later. Each root refresh unregisters every folder. The later one
+ * drops handles the first refresh is still resolving, and the view then logs
+ * "No tree item with id '1/table:…' found" when it asks for that folder's children.
+ */
+const ROOT_REFRESH_DELAY_MS = 200;
+
+/**
  * Table folder. `id` doubles as the cache key and the `TreeItem.id`; the record
  * count is derived at render time so a filter change does not stale the node.
  */
@@ -129,6 +139,12 @@ export class RecordsTreeProvider
   /** URI key of the file in the active editor; empty means no record is marked. */
   private activeUriKey = '';
   /**
+   * Table folders the user (or a filter) has expanded. Element refresh sends
+   * collapsibleState again, so a folder that should stay open must still report
+   * Expanded; otherwise the view collapses it.
+   */
+  private readonly expandedTableIds = new Set<string>();
+  /**
    * Node instances already handed to VS Code, keyed by tree item id, plus a
    * URI-keyed index of the record nodes. Element-level refresh and `reveal`
    * resolve elements by object identity (microsoft/vscode#137251), so every
@@ -137,18 +153,39 @@ export class RecordsTreeProvider
   private readonly nodes = new Map<string, TreeNode>();
   private readonly recordNodesByUri = new Map<string, RecordNode[]>();
   private readonly disposables: vscode.Disposable[] = [];
+  /** Pending root refresh; a newer request replaces it so a burst emits once. */
+  private rootRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly catalog: RecordCatalog) {
     this.disposables.push(
-      this.catalog.onDidChange(() => this.fireRootRefresh()),
+      this.catalog.onDidChange(() => this.refreshRows()),
       this._onDidChangeTreeData,
       this._onDidChangeRecords
     );
   }
 
   dispose(): void {
+    if (this.rootRefreshTimer) {
+      clearTimeout(this.rootRefreshTimer);
+      this.rootRefreshTimer = undefined;
+    }
     for (const d of this.disposables) {
       d.dispose();
+    }
+  }
+
+  /**
+   * Remember whether a table folder is expanded. `getTreeItem` reports that
+   * state on later refreshes so an element update does not collapse it.
+   */
+  noteTableExpanded(element: TreeNode, expanded: boolean): void {
+    if (element.kind !== 'table') {
+      return;
+    }
+    if (expanded) {
+      this.expandedTableIds.add(element.id);
+    } else {
+      this.expandedTableIds.delete(element.id);
     }
   }
 
@@ -164,7 +201,7 @@ export class RecordsTreeProvider
    */
   setFilterQuery(query: string): void {
     this.filterQuery = query.trim().toLowerCase();
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   /**
@@ -175,7 +212,7 @@ export class RecordsTreeProvider
       return;
     }
     this.filterQuery = '';
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   /**
@@ -207,15 +244,79 @@ export class RecordsTreeProvider
   }
 
   /**
+   * Rebuild visible rows. Table folders stay registered when the folder set and
+   * order are unchanged.
+   *
+   * A root refresh unregisters every item, including expanded folders. The view
+   * then asks for children of a folder it still has open, using the handle
+   * `1/` plus that folder's id (`table:<name>`). The lookup misses, the
+   * extension host logs "No tree item with id … found", and the folder renders
+   * empty. That races active-file reveal, which expands the file's table while
+   * a catalog update (open-count rebuild, file watcher) refreshes the tree.
+   */
+  private refreshRows(): void {
+    if (!this.catalog.isLoaded() || this.loadError) {
+      this.fireRootRefresh();
+      return;
+    }
+    const nextIds: string[] = [];
+    for (const table of this.catalog.getTables()) {
+      if (this.filteredRecordsForTable(table).length === 0) {
+        continue;
+      }
+      nextIds.push(`table:${table}`);
+    }
+    const currentIds: string[] = [];
+    for (const [id, node] of this.nodes) {
+      if (node.kind === 'table') {
+        currentIds.push(id);
+      }
+    }
+    if (
+      currentIds.length === 0 ||
+      currentIds.length !== nextIds.length ||
+      currentIds.some((id, index) => id !== nextIds[index])
+    ) {
+      this.fireRootRefresh();
+      return;
+    }
+    const tables: TableNode[] = [];
+    for (const id of nextIds) {
+      const node = this.nodes.get(id);
+      if (node?.kind !== 'table') {
+        this.fireRootRefresh();
+        return;
+      }
+      tables.push(node);
+    }
+    for (const [id, node] of this.nodes) {
+      if (node.kind === 'record') {
+        this.nodes.delete(id);
+      }
+    }
+    this.recordNodesByUri.clear();
+    this._onDidChangeTreeData.fire(tables);
+    this._onDidChangeRecords.fire();
+  }
+
+  /**
    * Rebuild every row from scratch. Cached nodes are dropped because the catalog
    * hands out new record objects on each rebuild, and stale instances would keep
    * rendering stale names and paths.
    */
   private fireRootRefresh(): void {
-    this.nodes.clear();
-    this.recordNodesByUri.clear();
-    this._onDidChangeTreeData.fire();
-    this._onDidChangeRecords.fire();
+    if (this.rootRefreshTimer) {
+      clearTimeout(this.rootRefreshTimer);
+    }
+    // One event for a burst. Emitting the second root refresh while VS Code
+    // is still resolving the first unregisters folders it is fetching.
+    this.rootRefreshTimer = setTimeout(() => {
+      this.rootRefreshTimer = undefined;
+      this.nodes.clear();
+      this.recordNodesByUri.clear();
+      this._onDidChangeTreeData.fire();
+      this._onDidChangeRecords.fire();
+    }, ROOT_REFRESH_DELAY_MS);
   }
 
   /**
@@ -313,25 +414,41 @@ export class RecordsTreeProvider
    */
   setViewVisible(visible: boolean): void {
     this.viewVisible = visible;
-    if (visible && this.catalog.isEnabled()) {
-      this.loadError = '';
-      void this.catalog
-        .ensure({ showProgress: true })
-        .catch((error: unknown) => {
-          this.loadError =
-            error instanceof Error ? error.message : String(error);
-          void vscode.window.showErrorMessage(
-            `ServiceNow Records indexing failed: ${this.loadError}`
-          );
-        })
-        .finally(() => this.fireRootRefresh());
+    if (!visible) {
+      return;
     }
-    this.fireRootRefresh();
+    if (!this.catalog.isEnabled()) {
+      this.fireRootRefresh();
+      return;
+    }
+    this.loadError = '';
+    // One refresh when the view opens. An immediate refresh plus another in
+    // ensure()'s finally both cleared folder handles, and the second one landed
+    // while the view was still resolving children of the expanded table.
+    const wasLoaded = this.catalog.isLoaded();
+    void this.catalog.ensure({ showProgress: true }).then(
+      () => {
+        // A cold load notifies through catalog.onDidChange, which paints the
+        // rows. A warm catalog does not notify, so the tree still needs a refresh
+        // to leave the placeholder.
+        if (wasLoaded) {
+          this.refreshRows();
+        }
+      },
+      (error: unknown) => {
+        this.loadError =
+          error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(
+          `ServiceNow Records indexing failed: ${this.loadError}`
+        );
+        this.fireRootRefresh();
+      }
+    );
   }
 
   refreshTree(): void {
     this.loadError = '';
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -354,7 +471,7 @@ export class RecordsTreeProvider
       const count = tableRecords.length;
       const item = new vscode.TreeItem(
         element.table,
-        this.filterQuery
+        this.filterQuery || this.expandedTableIds.has(element.id)
           ? vscode.TreeItemCollapsibleState.Expanded
           : vscode.TreeItemCollapsibleState.Collapsed
       );

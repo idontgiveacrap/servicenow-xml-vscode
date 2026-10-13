@@ -16,6 +16,7 @@ import type {
   CachedReference,
   CachedSchemaField
 } from './cache';
+import { CallCandidate, extractCallCandidates } from './dependencies';
 import { extractProjectSchema } from './projectSchema';
 import { extractXmlReferences, MAX_REFERENCE_EDGES } from './xmlReferences';
 
@@ -35,6 +36,8 @@ export interface IndexedExport {
   declarations: CachedDeclaration[];
   schemaFields: CachedSchemaField[];
   references: CachedReference[];
+  /** Unfiltered call names. The catalog keeps only those that match a declaration. */
+  callCandidates: CallCandidate[];
 }
 
 /**
@@ -94,8 +97,12 @@ export function indexExportText(
     uri: options.uri,
     relativePath: options.relativePath
   }).slice(0, MAX_REFERENCE_EDGES);
+  const callCandidates = extractCallCandidates(text, records, {
+    uri: options.uri,
+    relativePath: options.relativePath
+  });
 
-  return { records, declarations, schemaFields, references };
+  return { records, declarations, schemaFields, references, callCandidates };
 }
 
 /**

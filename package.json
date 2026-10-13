@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "3.4.7",
+  "version": "3.5.2",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -345,7 +345,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-instance-mcp.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-instance-mcp.js && node scripts/smoke-records-tree.js && node scripts/smoke-diagnostic-range.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^8.56.12",

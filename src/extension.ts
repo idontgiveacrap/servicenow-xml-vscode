@@ -91,7 +91,9 @@ export function activate(context: vscode.ExtensionContext): void {
   registerEmbeddedFormatter(context, (document) => gate.isValidationAllowed(document));
 
   // Shared Registry (static packs + workspace symbols) for lint / navigator / MCP.
-  getWorkspaceRegistryService();
+  // Deferred: getWorkspaceRegistryService() is created lazily on first use.
+  // Static packs load on first registry access (lint, hover, completion), not here,
+  // so the formatter and workspace gate are not blocked by synchronous file I/O.
   registerRegistryLanguageProviders(context);
 
   // Register the Records tree before any heavier work so the activity-bar view
@@ -136,6 +138,12 @@ export function activate(context: vscode.ExtensionContext): void {
     treeView,
     treeView.onDidChangeVisibility((e) => {
       treeProvider.setViewVisible(e.visible);
+    }),
+    treeView.onDidExpandElement((e) => {
+      treeProvider.noteTableExpanded(e.element, true);
+    }),
+    treeView.onDidCollapseElement((e) => {
+      treeProvider.noteTableExpanded(e.element, false);
     })
   );
   if (treeView.visible) {
@@ -272,15 +280,24 @@ function maybeStartCatalogIndex(
   if (!catalog.isEnabled() || !gate.isLintActive()) {
     return;
   }
-  void catalog
-    .ensure({ showProgress: true })
-    .catch((error: unknown) => {
+  const wasLoaded = catalog.isLoaded();
+  void catalog.ensure({ showProgress: true }).then(
+    () => {
+      // A cold load already refreshes the tree from catalog.onDidChange.
+      // Refreshing again here unregistered expanded folders while that
+      // refresh was still resolving their children.
+      if (wasLoaded) {
+        treeProvider.refreshTree();
+      }
+    },
+    (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       void vscode.window.showErrorMessage(
         `ServiceNow Records indexing failed: ${message}`
       );
-    })
-    .finally(() => treeProvider.refreshTree());
+      treeProvider.refreshTree();
+    }
+  );
 }
 
 function maybeStartDeclarationIndex(index: ScriptDeclarationIndex): void {

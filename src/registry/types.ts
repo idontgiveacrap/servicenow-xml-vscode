@@ -129,6 +129,10 @@ export interface MethodSymbol extends RegistrySymbolBase {
   kind: 'Method';
   ownerName: string;
   ownerUri?: string;
+  /** Parameter names, without defaults. */
+  params?: string[];
+  /** 1-based line in the script body. */
+  line?: number;
 }
 
 export type RegistrySymbol =

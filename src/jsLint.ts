@@ -13,7 +13,7 @@ import {
   platformGlobalsMap,
   shadowAllowFromRegistry
 } from './registry/lintGlobals';
-import { getRuntimeFieldIndex, getRuntimeRegistry } from './registry/runtime';
+import { ensureStaticLoaded, getRuntimeFieldIndex, getRuntimeRegistry } from './registry/runtime';
 import {
   lintSchemaTableArgs,
   schemaMessagesToEslint
@@ -274,6 +274,7 @@ function configFor(
   // Indexed / bundled Script Include names come first so the hand-maintained
   // platform lists win if an instance ever ships a Script Include that shadows
   // a Glide API.
+  ensureStaticLoaded();
   const registry = getRuntimeRegistry();
   const globals = globalsForLint(registry, {
     profile,
@@ -535,6 +536,7 @@ export function lintScriptRegions(
     );
     const source = region.decodedContent;
     if (region.ownDeclarationName) {
+      ensureStaticLoaded();
       extractAndMergeMethods(getRuntimeRegistry(), {
         ownerName: region.ownDeclarationName,
         scope: region.callerScope,
@@ -561,6 +563,7 @@ export function lintScriptRegions(
     }
 
     // Schema-aware table/field checks share the Registry dictionary packs.
+    ensureStaticLoaded();
     const schemaMessages = lintSchemaTableArgs(
       source,
       getRuntimeRegistry(),

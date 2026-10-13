@@ -6,9 +6,14 @@ import {
 } from '../ignorePaths';
 import type {
   CachedDeclaration,
+  CachedDependency,
   CachedReference,
   CachedSchemaField
 } from '../registry/cache';
+import {
+  buildCachedDependencies,
+  replaceDependenciesForUris
+} from '../registry/dependencies';
 import {
   getWorkspaceRegistryService,
   registrySnapshotKeys
@@ -94,6 +99,7 @@ export class RecordCatalog implements vscode.Disposable {
   private lastDeclarations: CachedDeclaration[] = [];
   private lastSchemaFields: CachedSchemaField[] = [];
   private lastReferences: CachedReference[] = [];
+  private lastDependencies: CachedDependency[] = [];
   private getWorkspaceAppSysId: () => string | undefined = () => undefined;
   private getWorkspaceAppScope: () => string | undefined = () => undefined;
   private getWorkspaceAppVersion: () => string | undefined = () => undefined;
@@ -361,6 +367,9 @@ export class RecordCatalog implements vscode.Disposable {
       return false;
     }
     this.lastDeclarations = service.getCachedDeclarations();
+    this.lastSchemaFields = service.getCachedSchemaFields();
+    this.lastReferences = service.getCachedReferences();
+    this.lastDependencies = service.getCachedDependencies();
     this.applyRecords(restored);
     this.restoredFromCache = true;
     return true;
@@ -560,6 +569,11 @@ export class RecordCatalog implements vscode.Disposable {
     this.lastDeclarations = scanned.declarations;
     this.lastSchemaFields = scanned.schemaFields;
     this.lastReferences = scanned.references;
+    this.lastDependencies = buildCachedDependencies({
+      schemaFields: scanned.schemaFields,
+      calls: scanned.callCandidates,
+      declarationNames: new Set(scanned.declarations.map((row) => row.name))
+    });
     return scanned.records.map((record) => this.withUsage(record));
   }
 
@@ -620,7 +634,8 @@ export class RecordCatalog implements vscode.Disposable {
         shortDescription: this.getWorkspaceAppShortDescription()
       },
       schemaFields: this.lastSchemaFields,
-      references: this.lastReferences
+      references: this.lastReferences,
+      dependencies: this.lastDependencies
     });
     await service.persistToDisk(this.workspaceCacheKey(), this.configCacheKey());
   }
@@ -742,7 +757,8 @@ export class RecordCatalog implements vscode.Disposable {
             records: [] as CatalogRecord[],
             declarations: [] as CachedDeclaration[],
             schemaFields: [] as CachedSchemaField[],
-            references: [] as CachedReference[]
+            references: [] as CachedReference[],
+            callCandidates: []
           };
         }
         const found = await readExportRecordsWithDeclarations(uri, {
@@ -757,7 +773,8 @@ export class RecordCatalog implements vscode.Disposable {
           records: found.records.map((record) => this.withUsage(record)),
           declarations: found.declarations,
           schemaFields: found.schemaFields,
-          references: found.references
+          references: found.references,
+          callCandidates: found.callCandidates
         };
       })
     );
@@ -792,7 +809,11 @@ export class RecordCatalog implements vscode.Disposable {
         return true;
       }
     });
-    for (const { key, records, declarations, schemaFields, references } of updated) {
+    const pendingCalls: Array<{
+      schemaFields: CachedSchemaField[];
+      callCandidates: typeof updated[number]['callCandidates'];
+    }> = [];
+    for (const { key, records, declarations, schemaFields, references, callCandidates } of updated) {
       if (records.length > 0) {
         this.recordsByUri.set(key, records);
       } else {
@@ -807,7 +828,31 @@ export class RecordCatalog implements vscode.Disposable {
       for (const edge of references) {
         this.lastReferences.push(edge);
       }
+      pendingCalls.push({ schemaFields, callCandidates });
     }
+    const declarationNames = new Set(this.lastDeclarations.map((row) => row.name));
+    const nextDependencies: CachedDependency[] = [];
+    for (const pending of pendingCalls) {
+      nextDependencies.push(
+        ...buildCachedDependencies({
+          schemaFields: pending.schemaFields,
+          calls: pending.callCandidates,
+          declarationNames
+        })
+      );
+    }
+    this.lastDependencies = replaceDependenciesForUris(
+      this.lastDependencies,
+      changedKeys,
+      nextDependencies,
+      (uri) => {
+        try {
+          return uriKey(vscode.Uri.parse(uri));
+        } catch {
+          return uri;
+        }
+      }
+    );
     this.rebuildViews();
     this.notify();
 

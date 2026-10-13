@@ -30,14 +30,33 @@ let fieldIndex: DictionaryFieldIndex | undefined;
 let staticLoaded = false;
 
 /**
- * Shared Registry, with static packs loaded on first use.
+ * Shared Registry instance (created on first call). Static packs are NOT loaded
+ * here — they are deferred via {@link ensureStaticLoaded} so that callers like
+ * the embedded formatter, which never touch the Registry, are not blocked by
+ * synchronous file I/O during activation.
  */
 export function getRuntimeRegistry(): Registry {
   if (!registry) {
     registry = new Registry();
   }
-  ensureStaticLoaded(registry);
   return registry;
+}
+
+/**
+ * Load bundled SI / scopes / platform globals / dictionary tables into the
+ * shared Registry on first call. Idempotent — subsequent calls are a single
+ * boolean check. Call this before using Registry lookup methods that depend on
+ * static packs (lint, completion, MCP). The formatter never needs to call it.
+ */
+export function ensureStaticLoaded(): void {
+  if (!registry) {
+    registry = new Registry();
+  }
+  if (staticLoaded) {
+    return;
+  }
+  ensureStaticLoadedImpl(registry);
+  staticLoaded = true;
 }
 
 /**
@@ -63,7 +82,7 @@ export function resetRuntimeRegistry(): void {
   staticLoaded = false;
 }
 
-function ensureStaticLoaded(target: Registry): void {
+function ensureStaticLoadedImpl(target: Registry): void {
   if (staticLoaded) {
     return;
   }

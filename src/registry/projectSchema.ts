@@ -13,6 +13,8 @@ export interface ProjectSchemaField {
   label?: string;
   internalType?: string;
   reference?: string;
+  /** Parent table when `element` is empty. */
+  extends?: string;
 }
 
 /**
@@ -46,8 +48,14 @@ function extractDatabaseSchema(text: string): ProjectSchemaField[] {
   }
   const fields: ProjectSchemaField[] = [];
   const tableLabel = attr(collection[1], 'label');
-  if (tableLabel) {
-    fields.push({ table, element: '', label: tableLabel });
+  const parent = attr(collection[1], 'extends');
+  if (tableLabel || parent) {
+    fields.push({
+      table,
+      element: '',
+      ...(tableLabel ? { label: tableLabel } : {}),
+      ...(parent ? { extends: parent } : {})
+    });
   }
   const elementTags = /<element\b([^>]*?)\/?>/gi;
   let match: RegExpExecArray | null;
@@ -106,12 +114,29 @@ function extractDbObjectLabels(text: string): ProjectSchemaField[] {
     const row = match[0];
     const table = extractRowFieldText(row, 'name');
     const label = extractRowFieldText(row, 'label');
-    if (!table || !label) {
+    const parent = superClassName(row);
+    if (!table || (!label && !parent)) {
       continue;
     }
-    fields.push({ table, element: '', label });
+    fields.push({
+      table,
+      element: '',
+      ...(label ? { label } : {}),
+      ...(parent ? { extends: parent } : {})
+    });
   }
   return fields;
+}
+
+/**
+ * Table name on `super_class`, from the `name` attribute rather than the sys_id text.
+ */
+function superClassName(row: string): string | undefined {
+  const tag = /<\s*super_class\b([^>]*)>/i.exec(row);
+  if (!tag) {
+    return undefined;
+  }
+  return attr(tag[1], 'name');
 }
 
 function attr(tagAttrs: string, name: string): string | undefined {
