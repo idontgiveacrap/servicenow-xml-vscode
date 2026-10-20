@@ -1,0 +1,307 @@
+/**
+ * Workspace-folder Registry cache (JSON file, not vscode.Memento).
+ * Rich enough for agent discovery / future MCP tools.
+ */
+
+import type { RegistryFileSystem } from './host';
+import type {
+  RecordSymbol,
+  ScriptIncludeSymbol,
+  UiScriptSymbol
+} from './types';
+
+export const REGISTRY_CACHE_VERSION = 2;
+export const REGISTRY_CACHE_DIR = '.servicenow-xml';
+export const REGISTRY_CACHE_FILE = 'registry-cache.json';
+
+/** One workspace record row in the on-disk cache. */
+export interface CachedRecord {
+  table: string;
+  displayName: string;
+  sysId?: string;
+  action?: string;
+  apiName?: string;
+  sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
+  startOffset: number;
+  mtimeMs?: number;
+  uri: string;
+  relativePath: string;
+}
+
+/** Declaration script in the on-disk cache. */
+export interface CachedDeclaration {
+  table:
+    | 'sys_script_include'
+    | 'sys_ui_script'
+    | 'sys_ux_client_script_include'
+    | 'sys_script';
+  profile: 'server' | 'client';
+  scope: string;
+  name: string;
+  uri: string;
+  relativePath?: string;
+  sysId?: string;
+}
+
+/** Workspace app metadata for agent discovery (from sys_app / gate). */
+export interface CachedApp {
+  sysId?: string;
+  scope?: string;
+  /** Normalized lint target: ES5 or ES12. */
+  jsLevel?: string;
+  /** True when scoped app is on es_latest (ES12). */
+  supportsES12?: boolean;
+  /** `sys_app.restrict_table_access`. Absent when the export omits the field. */
+  restrictTableAccess?: boolean;
+  /** `sys_app.version`, when present. */
+  version?: string;
+  /** `sys_app.short_description`, when present. */
+  shortDescription?: string;
+}
+
+/** Project dictionary column (or table label when `element` is empty). */
+export interface CachedSchemaField {
+  table: string;
+  element: string;
+  label?: string;
+  internalType?: string;
+  reference?: string;
+  /**
+   * Parent table for an empty-element table row.
+   * From `sys_db_object.super_class` `name`, or a `<database>` collection `extends`.
+   */
+  extends?: string;
+  uri: string;
+  relativePath: string;
+}
+
+/**
+ * Call or table-parent edge. Kept off `references`, which is sys_id-only.
+ */
+export interface CachedDependency {
+  kind: 'calls' | 'extends';
+  /** Record sys_id for calls; child table name for extends. */
+  from: string;
+  /** Declaration name for calls; parent table name for extends. */
+  to: string;
+  fromTable?: string;
+  uri?: string;
+  relativePath?: string;
+}
+
+/** Outgoing sys_id reference stored on the workspace snapshot. */
+export interface CachedReference {
+  fromSysId?: string;
+  fromTable: string;
+  toSysId: string;
+  element: string;
+  uri: string;
+  relativePath: string;
+  startOffset: number;
+}
+
+/** Versioned workspace snapshot for extension + MCP. */
+export interface RegistryCacheFile {
+  version: number;
+  workspaceKey: string;
+  configKey: string;
+  updatedAt: number;
+  records: CachedRecord[];
+  declarations: CachedDeclaration[];
+  app?: CachedApp;
+  /** Workspace dictionary columns merged over the platform pack at query time. */
+  schemaFields?: CachedSchemaField[];
+  /** sys_id edges collected while scanning exports. */
+  references?: CachedReference[];
+  /** Script-include calls and table `extends` links. Not sys_id references. */
+  dependencies?: CachedDependency[];
+  /**
+   * sys_ids that appear in multiple active (non-DELETE) rows during the
+   * workspace scan. Each entry has the sys_id, table, and count of active
+   * occurrences. Used for lint warnings and MCP diagnostic exposure.
+   */
+  duplicateSysIds?: Array<{ sysId: string; table: string; count: number }>;
+}
+
+/**
+ * Absolute path to the cache file under a workspace root.
+ */
+export function registryCachePath(workspaceRoot: string): string {
+  const sep = workspaceRoot.includes('\\') ? '\\' : '/';
+  return `${workspaceRoot.replace(/[\\/]+$/, '')}${sep}${REGISTRY_CACHE_DIR}${sep}${REGISTRY_CACHE_FILE}`;
+}
+
+/**
+ * Build a cache document from live workspace symbols.
+ */
+export function createRegistryCache(options: {
+  workspaceKey: string;
+  configKey: string;
+  updatedAt: number;
+  records: CachedRecord[];
+  declarations: CachedDeclaration[];
+  app?: CachedApp;
+  schemaFields?: CachedSchemaField[];
+  references?: CachedReference[];
+  dependencies?: CachedDependency[];
+  duplicateSysIds?: Array<{ sysId: string; table: string; count: number }>;
+}): RegistryCacheFile {
+  return {
+    version: REGISTRY_CACHE_VERSION,
+    workspaceKey: options.workspaceKey,
+    configKey: options.configKey,
+    updatedAt: options.updatedAt,
+    records: options.records,
+    declarations: options.declarations,
+    ...(options.app ? { app: options.app } : {}),
+    ...(options.schemaFields ? { schemaFields: options.schemaFields } : {}),
+    ...(options.references ? { references: options.references } : {}),
+    ...(options.dependencies ? { dependencies: options.dependencies } : {}),
+    ...(options.duplicateSysIds
+      ? { duplicateSysIds: options.duplicateSysIds }
+      : {})
+  };
+}
+
+/**
+ * Validate and return a cache file, or undefined if incompatible.
+ */
+export function readRegistryCache(
+  value: unknown,
+  workspaceKey: string,
+  configKey: string
+): RegistryCacheFile | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const cache = value as Partial<RegistryCacheFile>;
+  if (
+    cache.version !== REGISTRY_CACHE_VERSION ||
+    cache.workspaceKey !== workspaceKey ||
+    cache.configKey !== configKey ||
+    !Array.isArray(cache.records) ||
+    !Array.isArray(cache.declarations)
+  ) {
+    return undefined;
+  }
+  return cache as RegistryCacheFile;
+}
+
+/**
+ * Load cache JSON from disk.
+ */
+export async function loadRegistryCacheFile(
+  fs: RegistryFileSystem,
+  path: string,
+  workspaceKey: string,
+  configKey: string
+): Promise<RegistryCacheFile | undefined> {
+  if (!(await fs.exists(path))) {
+    return undefined;
+  }
+  try {
+    const text = await fs.readFile(path, 'utf8');
+    return readRegistryCache(JSON.parse(text), workspaceKey, configKey);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Persist cache JSON to disk (creates `.servicenow-xml` as needed).
+ */
+export async function saveRegistryCacheFile(
+  fs: RegistryFileSystem,
+  path: string,
+  cache: RegistryCacheFile
+): Promise<void> {
+  const dir = path.replace(/[\\/][^\\/]+$/, '');
+  await fs.mkdir(dir, { recursive: true });
+  await fs.writeFile(path, JSON.stringify(cache), 'utf8');
+}
+
+/**
+ * Find sys_ids that appear in multiple active (non-DELETE) records.
+ */
+export function computeDuplicateSysIds(
+  records: Array<Pick<CachedRecord, 'sysId' | 'table' | 'action'>>
+): Array<{ sysId: string; table: string; count: number }> {
+  const byId = new Map<string, { table: string; count: number }>();
+  for (const record of records) {
+    if (!record.sysId || record.action === 'DELETE') {
+      continue;
+    }
+    const key = record.sysId.toLowerCase();
+    const existing = byId.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      byId.set(key, { table: record.table, count: 1 });
+    }
+  }
+  return Array.from(byId.entries())
+    .filter(([, info]) => info.count > 1)
+    .map(([sysId, info]) => ({ sysId, table: info.table, count: info.count }))
+    .sort((a, b) => b.count - a.count || a.sysId.localeCompare(b.sysId));
+}
+
+/**
+ * Project cache rows into Registry record symbols.
+ */
+export function cachedRecordsToSymbols(records: CachedRecord[]): RecordSymbol[] {
+  return records.map((record) => ({
+    kind: 'Record' as const,
+    name: record.displayName,
+    table: record.table,
+    displayName: record.displayName,
+    sysId: record.sysId,
+    action: record.action,
+    apiName: record.apiName,
+    sysModCount: record.sysModCount,
+    sysUpdatedOn: record.sysUpdatedOn,
+    startOffset: record.startOffset,
+    mtimeMs: record.mtimeMs,
+    uri: record.uri,
+    relativePath: record.relativePath,
+    scope: undefined
+  }));
+}
+
+/**
+ * Project cache declarations into Registry script symbols.
+ */
+export function cachedDeclarationsToSymbols(
+  declarations: CachedDeclaration[]
+): Array<ScriptIncludeSymbol | UiScriptSymbol> {
+  return declarations.map((declaration) => {
+    if (
+      declaration.table === 'sys_script_include' ||
+      declaration.table === 'sys_script'
+    ) {
+      return {
+        kind: 'ScriptInclude' as const,
+        name: declaration.name,
+        table: declaration.table,
+        profile: declaration.table === 'sys_script' ? 'server' : declaration.profile,
+        scope: declaration.scope,
+        uri: declaration.uri,
+        relativePath: declaration.relativePath,
+        sysId: declaration.sysId,
+        fromWorkspace: true
+      };
+    }
+    return {
+      kind: 'UiScript' as const,
+      name: declaration.name,
+      table: declaration.table,
+      profile: 'client' as const,
+      scope: declaration.scope,
+      uri: declaration.uri,
+      relativePath: declaration.relativePath,
+      sysId: declaration.sysId,
+      fromWorkspace: true
+    };
+  });
+}

@@ -164,6 +164,18 @@ section('entity-encoded &#13; line endings collapse to single LF');
     decoded.includes('inputs.task;\n\n    if (!inputTask'),
     'intentional blank line between statements is preserved'
   );
+  const hubHits = listScriptFields(doc, { workspaceAppScope: 'x_example' });
+  assert.equal(hubHits.length, 1);
+  assert.equal(
+    hubHits[0].callerScope,
+    'x_example',
+    'scopeless sys_variable_value scripts fall back to the workspace app scope'
+  );
+  assert.equal(
+    listScriptFields(doc)[0].callerScope,
+    undefined,
+    'without a workspace app scope there is nothing to fall back to'
+  );
 }
 
 section('indent strip/restore + encode of a given formatted string');

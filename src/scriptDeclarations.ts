@@ -19,10 +19,13 @@ export const SCRIPT_DECLARATION_TABLE_PROFILE = {
   sys_ux_client_script_include: 'client'
 } as const;
 
-export type ScriptDeclarationTable = keyof typeof SCRIPT_DECLARATION_TABLE_PROFILE;
+/** Declaration tables plus global business-rule functions (`sys_script`). */
+export type ScriptDeclarationTable =
+  | keyof typeof SCRIPT_DECLARATION_TABLE_PROFILE
+  | 'sys_script';
 
 export type ScriptDeclarationProfile =
-  (typeof SCRIPT_DECLARATION_TABLE_PROFILE)[ScriptDeclarationTable];
+  (typeof SCRIPT_DECLARATION_TABLE_PROFILE)[keyof typeof SCRIPT_DECLARATION_TABLE_PROFILE];
 
 /** One Script Include, UI Script, or UX client script include usable as a global. */
 export interface ScriptDeclaration {
@@ -73,7 +76,7 @@ export interface ResolveScopeInput {
  */
 export function isScriptDeclarationTable(
   table: string
-): table is ScriptDeclarationTable {
+): table is keyof typeof SCRIPT_DECLARATION_TABLE_PROFILE {
   return DECLARATION_TABLES.has(table);
 }
 
@@ -278,10 +281,19 @@ function collectFromRows(
       continue;
     }
     const table = row.tableName.toLowerCase();
+    const rowXml = doc.text.slice(row.startOffset, row.endOffset);
+    if (table === 'sys_script') {
+      out.push(
+        ...businessRuleFunctionDeclarations(rowXml, {
+          ...scopeInput,
+          sysScopeValue: row.sysScopeValue
+        })
+      );
+      continue;
+    }
     if (!isScriptDeclarationTable(table)) {
       continue;
     }
-    const rowXml = doc.text.slice(row.startOffset, row.endOffset);
     const declaration = declarationFromRow(table, rowXml, {
       ...scopeInput,
       sysScopeValue: row.sysScopeValue
@@ -292,8 +304,153 @@ function collectFromRows(
   }
 }
 
+/**
+ * Top-level functions in a global unconditional business rule.
+ * The record `name` is a label. Only brace-depth-0 `function name(` counts,
+ * and only when `collection` is `global` with blank condition fields.
+ */
+function businessRuleFunctionDeclarations(
+  rowXml: string,
+  scopeInput: ResolveScopeInput
+): ScriptDeclaration[] {
+  const active = extractRowFieldText(rowXml, 'active');
+  if (active && active.toLowerCase() !== 'true') {
+    return [];
+  }
+  const collection = extractRowFieldText(rowXml, 'collection');
+  if (!collection || collection.toLowerCase() !== 'global') {
+    return [];
+  }
+  if (
+    extractRowFieldText(rowXml, 'condition') ||
+    extractRowFieldText(rowXml, 'filter_condition')
+  ) {
+    return [];
+  }
+  const script = extractRowFieldText(rowXml, 'script');
+  if (!script) {
+    return [];
+  }
+  const scope = resolveTechnicalScope({
+    ...scopeInput,
+    apiName: extractRowFieldText(rowXml, 'api_name'),
+    packageSource: packageSource(rowXml)
+  });
+  if (!scope) {
+    return [];
+  }
+  return topLevelFunctionNames(script).map((name) => ({
+    table: 'sys_script' as const,
+    profile: 'server' as const,
+    scope,
+    name
+  }));
+}
+
+/**
+ * `function name(` identifiers at brace depth 0.
+ * Strings and comments are skipped so quoted or nested functions are not globals.
+ */
+export function topLevelFunctionNames(script: string): string[] {
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let i = 0;
+  let depth = 0;
+  while (i < script.length) {
+    const c = script[i];
+    const next = script[i + 1];
+    if (c === '/' && next === '/') {
+      i += 2;
+      while (i < script.length && script[i] !== '\n') {
+        i++;
+      }
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (
+        i < script.length &&
+        !(script[i] === '*' && script[i + 1] === '/')
+      ) {
+        i++;
+      }
+      i = Math.min(script.length, i + 2);
+      continue;
+    }
+    if (c === "'" || c === '"' || c === '`') {
+      const quote = c;
+      i++;
+      while (i < script.length) {
+        if (script[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (script[i] === quote) {
+          i++;
+          break;
+        }
+        i++;
+      }
+      continue;
+    }
+    if (c === '{') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (c === '}') {
+      if (depth > 0) {
+        depth--;
+      }
+      i++;
+      continue;
+    }
+    if (
+      depth === 0 &&
+      script.startsWith('function', i) &&
+      !isIdentChar(script[i - 1])
+    ) {
+      let j = i + 'function'.length;
+      if (isIdentChar(script[j])) {
+        i++;
+        continue;
+      }
+      while (j < script.length && /\s/.test(script[j])) {
+        j++;
+      }
+      const start = j;
+      if (script[j] && /[A-Za-z_$]/.test(script[j])) {
+        j++;
+        while (j < script.length && isIdentChar(script[j])) {
+          j++;
+        }
+        const name = script.slice(start, j);
+        while (j < script.length && /\s/.test(script[j])) {
+          j++;
+        }
+        if (
+          script[j] === '(' &&
+          JS_IDENTIFIER_RE.test(name) &&
+          !seen.has(name)
+        ) {
+          seen.add(name);
+          names.push(name);
+        }
+        i = j;
+        continue;
+      }
+    }
+    i++;
+  }
+  return names;
+}
+
+function isIdentChar(c: string | undefined): boolean {
+  return !!c && /[A-Za-z0-9_$]/.test(c);
+}
+
 function declarationFromRow(
-  table: ScriptDeclarationTable,
+  table: keyof typeof SCRIPT_DECLARATION_TABLE_PROFILE,
   rowXml: string,
   scopeInput: ResolveScopeInput
 ): ScriptDeclaration | undefined {

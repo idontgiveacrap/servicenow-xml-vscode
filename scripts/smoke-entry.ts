@@ -160,6 +160,60 @@ for (const [label, xml, expected] of supportSamples) {
   }
 }
 
+{
+  const sysId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const result = classifyAndValidate(
+    parseSnXml(
+      `<record_update><sys_script_include action="INSERT_OR_UPDATE"><sys_id>${sysId}</sys_id><sys_scope>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_scope><sys_update_name>sys_script_include_cccccccccccccccccccccccccccccccc</sys_update_name></sys_script_include></record_update>`,
+      `sys_script_include_${sysId}.xml`
+    )
+  );
+  const codes = result.diagnostics.map((d) => d.code);
+  if (!codes.includes('scoped-sys-update-name-mismatch')) {
+    console.log(
+      `FAIL mismatched sys_update_name: kind=${result.kind} [${codes.join(', ')}]`
+    );
+    failed++;
+  }
+}
+
+{
+  // sys_update_version payload CDATA embeds the source record's sys_update_name;
+  // that must not be compared to sys_update_version_{version_sys_id}.
+  const versionId = '5a4eced987a30350498aa9b70cbb356d';
+  const sourceName = 'sys_security_acl_a8f82b311dbb5bd1acb4fd1e162f354b';
+  const result = classifyAndValidate(
+    parseSnXml(
+      `<record_update table="sys_security_acl"><sys_update_version action="INSERT_OR_UPDATE"><name>${sourceName}</name><payload><![CDATA[<record_update><sys_security_acl action="INSERT_OR_UPDATE"><sys_id>a8f82b311dbb5bd1acb4fd1e162f354b</sys_id><sys_update_name>${sourceName}</sys_update_name></sys_security_acl></record_update>]]></payload><sys_id>${versionId}</sys_id></sys_update_version><sys_metadata_delete action="INSERT_OR_UPDATE"><sys_id>100ece5f4955403481db6ba52602f144</sys_id><sys_metadata>a8f82b311dbb5bd1acb4fd1e162f354b</sys_metadata><sys_db_object name="sys_security_acl">sys_security_acl</sys_db_object><sys_scope>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_scope><sys_update_name>${sourceName}</sys_update_name></sys_metadata_delete></record_update>`,
+      `sys_security_acl_a8f82b311dbb5bd1acb4fd1e162f354b.xml`
+    )
+  );
+  const codes = result.diagnostics.map((d) => d.code);
+  if (codes.includes('scoped-sys-update-name-mismatch')) {
+    console.log(
+      `FAIL version/delete-metadata sys_update_name false positive: kind=${result.kind} [${codes.join(', ')}]`
+    );
+    failed++;
+  }
+}
+
+{
+  const sysId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const payload = `<record_update><sys_script_include action="INSERT_OR_UPDATE"><sys_id>${sysId}</sys_id><sys_update_name>sys_script_include_cccccccccccccccccccccccccccccccc</sys_update_name></sys_script_include></record_update>`;
+  const result = classifyAndValidate(
+    parseSnXml(
+      `<unload><sys_update_xml action="INSERT_OR_UPDATE"><name>sys_script_include_${sysId}</name><payload><![CDATA[${payload}]]></payload><sys_id>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_id><type>Script Include</type></sys_update_xml></unload>`
+    )
+  );
+  const codes = result.diagnostics.map((d) => d.code);
+  if (!codes.includes('cu-payload-sys-update-name-mismatch')) {
+    console.log(
+      `FAIL mismatched payload sys_update_name: kind=${result.kind} [${codes.join(', ')}]`
+    );
+    failed++;
+  }
+}
+
 for (const s of samples) {
   if (!fs.existsSync(s.file)) {
     if (s.required) {

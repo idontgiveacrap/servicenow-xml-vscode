@@ -13,7 +13,9 @@ import {
   RecordsTreeProvider,
   TreeNode
 } from './navigator/tree';
-import { changeActionToDelete } from './navigator/changeActionToDelete';
+import { authorRecordDeletion } from './navigator/authorDelete';
+import { deleteRecordFromDisk } from './navigator/deleteExportFile';
+import { findReferencesForRecord } from './navigator/findReferences';
 import { registerGoToRecord } from './navigator/goToRecord';
 import { ActiveRecordSync } from './navigator/activeRecord';
 import {
@@ -22,18 +24,21 @@ import {
 } from './navigator/gitStatus';
 import { SnWorkspaceGate } from './snWorkspaceGate';
 import {
-  cursorHelpersNeedReload,
-  installCursorHelpers,
+  agentHelpersNeedReload,
+  installAgentHelpers,
   isCursorHost,
-  registerCursorHelpersDisposal,
-  runRepoIndexer,
-  suggestReloadAfterCursorHelpers
-} from './cursorHelpers';
+  registerAgentHelpersDisposal,
+  suggestReloadAfterAgentHelpers
+} from './agentHelpers';
+import { registerVsCodeMcp } from './vscodeMcp';
 import { registerJsonStringEditor } from './jsonStringEditor';
 import { registerEmbeddedFormatter } from './formatEmbedded';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { extractRecordIdentities } from './navigator/recordName';
 import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
+import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import { registerRegistryLanguageProviders } from './languageProviders';
+import { registerCodeLens } from './codelens/servicenowCodelens';
 import {
   refreshSncContext,
   registerPruneRedundantDeletes
@@ -87,9 +92,24 @@ export function activate(context: vscode.ExtensionContext): void {
   registerJsonStringEditor(context);
   registerEmbeddedFormatter(context, (document) => gate.isValidationAllowed(document));
 
+  // Shared Registry (static packs + workspace symbols) for lint / navigator / MCP.
+  // Deferred: getWorkspaceRegistryService() is created lazily on first use.
+  // Static packs load on first registry access (lint, hover, completion), not here,
+  // so the formatter and workspace gate are not blocked by synchronous file I/O.
+  registerRegistryLanguageProviders(context);
+  registerCodeLens(context);
+
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
   const catalog = new RecordCatalog(context.workspaceState);
+  catalog.configure({
+    getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
+    getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
+    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
+    getRestrictTableAccess: () => gate.getRestrictTableAccess(),
+    getWorkspaceAppVersion: () => gate.getWorkspaceAppVersion(),
+    getWorkspaceAppShortDescription: () => gate.getWorkspaceAppShortDescription()
+  });
   const declarationIndex = new ScriptDeclarationIndex(context.workspaceState);
   declarationIndex.configure({
     isActive: () =>
@@ -101,7 +121,11 @@ export function activate(context: vscode.ExtensionContext): void {
         .getConfiguration('servicenowXml')
         .get<boolean>('lintJavaScript', true),
     getWorkspaceAppSysId: () => gate.getWorkspaceAppSysId(),
-    getWorkspaceAppScope: () => gate.getWorkspaceAppScope()
+    getWorkspaceAppScope: () => gate.getWorkspaceAppScope(),
+    getWorkspaceJavaScriptSupport: () => gate.getWorkspaceJavaScriptSupport(),
+    getRestrictTableAccess: () => gate.getRestrictTableAccess(),
+    getWorkspaceAppVersion: () => gate.getWorkspaceAppVersion(),
+    getWorkspaceAppShortDescription: () => gate.getWorkspaceAppShortDescription()
   });
   const treeProvider = new RecordsTreeProvider(catalog);
   const treeView = vscode.window.createTreeView<TreeNode>('servicenowXml.records', {
@@ -117,6 +141,12 @@ export function activate(context: vscode.ExtensionContext): void {
     treeView,
     treeView.onDidChangeVisibility((e) => {
       treeProvider.setViewVisible(e.visible);
+    }),
+    treeView.onDidExpandElement((e) => {
+      treeProvider.noteTableExpanded(e.element, true);
+    }),
+    treeView.onDidCollapseElement((e) => {
+      treeProvider.noteTableExpanded(e.element, false);
     })
   );
   if (treeView.visible) {
@@ -217,27 +247,28 @@ export function activate(context: vscode.ExtensionContext): void {
 
   maybeStartDeclarationIndex(declarationIndex);
 
-  // Cursor-only helpers: fire-and-forget after core features. Missing Python must
-  // not delay or break lint/navigator (installCursorHelpers never throws).
-  if (isCursorHost()) {
-    void installCursorHelpers(context)
-      .then((result) => {
-        registerCursorHelpersDisposal(context, result.pluginPath);
-        if (result.messages.length > 0) {
-          console.log(
-            '[servicenow-xml] cursor helpers:',
-            result.messages.join(' | ')
-          );
-        }
-        if (cursorHelpersNeedReload(result)) {
-          void suggestReloadAfterCursorHelpers('Cursor helpers installed.');
-        }
-      })
-      .catch((error: unknown) => {
-        const message = error instanceof Error ? error.message : String(error);
-        console.error('[servicenow-xml] cursor helpers failed (non-fatal):', message);
-      });
-  }
+  // MCP registration is host-specific. Cursor uses cursor.mcp.registerServer.
+  // VS Code publishes through the Copilot MCP provider API. Agent helpers
+  // (scripts, rules, Cursor plugin adapter) install on both hosts and must not
+  // delay or break lint/navigator (installAgentHelpers never throws).
+  registerVsCodeMcp(context);
+  void installAgentHelpers(context)
+    .then((result) => {
+      registerAgentHelpersDisposal(context, result.pluginPath);
+      if (result.messages.length > 0) {
+        console.log(
+          '[servicenow-xml] agent helpers:',
+          result.messages.join(' | ')
+        );
+      }
+      if (agentHelpersNeedReload(result)) {
+        void suggestReloadAfterAgentHelpers('Agent helpers installed.');
+      }
+    })
+    .catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[servicenow-xml] agent helpers failed (non-fatal):', message);
+    });
 }
 
 /**
@@ -252,15 +283,24 @@ function maybeStartCatalogIndex(
   if (!catalog.isEnabled() || !gate.isLintActive()) {
     return;
   }
-  void catalog
-    .ensure({ showProgress: true })
-    .catch((error: unknown) => {
+  const wasLoaded = catalog.isLoaded();
+  void catalog.ensure({ showProgress: true }).then(
+    () => {
+      // A cold load already refreshes the tree from catalog.onDidChange.
+      // Refreshing again here unregistered expanded folders while that
+      // refresh was still resolving their children.
+      if (wasLoaded) {
+        treeProvider.refreshTree();
+      }
+    },
+    (error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
       void vscode.window.showErrorMessage(
         `ServiceNow Records indexing failed: ${message}`
       );
-    })
-    .finally(() => treeProvider.refreshTree());
+      treeProvider.refreshTree();
+    }
+  );
 }
 
 function maybeStartDeclarationIndex(index: ScriptDeclarationIndex): void {
@@ -441,76 +481,44 @@ function activateDiagnosticsAndCommands(
       }
     ),
     vscode.commands.registerCommand(
-      'servicenowXml.changeActionToDelete',
+      'servicenowXml.findReferences',
       async (element?: unknown) => {
         const record = getCatalogRecordFromTreeElement(element);
-        if (!record || record.action !== 'INSERT_OR_UPDATE') {
-          return;
-        }
-        const confirm = await vscode.window.showWarningMessage(
-          `Change action of "${record.displayName}" (${record.table}) from INSERT_OR_UPDATE to DELETE?`,
-          { modal: true },
-          'Change to DELETE'
-        );
-        if (confirm !== 'Change to DELETE') {
-          return;
-        }
-        try {
-          const document = await vscode.workspace.openTextDocument(record.uri);
-          const result = changeActionToDelete(
-            document.getText(),
-            record.uri.fsPath,
-            record
-          );
-          if (!result.ok) {
-            void vscode.window.showErrorMessage(
-              `Could not change action to DELETE: ${result.reason}.`
-            );
-            return;
-          }
-          const edit = new vscode.WorkspaceEdit();
-          const fullRange = new vscode.Range(
-            document.positionAt(0),
-            document.positionAt(document.getText().length)
-          );
-          edit.replace(record.uri, fullRange, result.text);
-          const applied = await vscode.workspace.applyEdit(edit);
-          if (!applied) {
-            void vscode.window.showErrorMessage(
-              'Could not apply action=DELETE change to the file.'
-            );
-            return;
-          }
-          await document.save();
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          void vscode.window.showErrorMessage(
-            `Could not change action to DELETE: ${detail}`
-          );
+        if (record) {
+          await findReferencesForRecord(record);
         }
       }
     ),
-    vscode.commands.registerCommand('servicenowXml.cursor.installHelpers', async () => {
-      const result = await installCursorHelpers(context, { force: true });
-      registerCursorHelpersDisposal(context, result.pluginPath);
-      if (result.skippedReason === 'not-cursor') {
-        void vscode.window.showInformationMessage(
-          'Cursor helpers only apply in Cursor (VS Code is unchanged).'
-        );
-        return;
+    vscode.commands.registerCommand(
+      'servicenowXml.changeActionToDelete',
+      async (element?: unknown) => {
+        const record = getCatalogRecordFromTreeElement(element);
+        if (record) {
+          await authorRecordDeletion(record);
+        }
       }
+    ),
+    vscode.commands.registerCommand(
+      'servicenowXml.deleteRecordFromDisk',
+      async (element?: unknown) => {
+        const record = getCatalogRecordFromTreeElement(element);
+        if (record) {
+          await deleteRecordFromDisk(record);
+        }
+      }
+    ),
+    vscode.commands.registerCommand('servicenowXml.installHelpers', async () => {
+      const result = await installAgentHelpers(context, { force: true });
+      registerAgentHelpersDisposal(context, result.pluginPath);
       if (!result.installed) {
         void vscode.window.showInformationMessage(
-          result.messages.join(' ') || 'Cursor helpers did not install.'
+          result.messages.join(' ') || 'Agent helpers did not install.'
         );
         return;
       }
-      await suggestReloadAfterCursorHelpers(
-        `Cursor helpers installed. MCP: ${result.mcpRegistered.join(', ') || 'none'}.`
+      await suggestReloadAfterAgentHelpers(
+        `Agent helpers installed. MCP: ${result.mcpRegistered.join(', ') || 'none'}.`
       );
-    }),
-    vscode.commands.registerCommand('servicenowXml.cursor.runIndexer', async () => {
-      await runRepoIndexer(context);
     })
   );
 
@@ -571,23 +579,27 @@ function activateDiagnosticsAndCommands(
       if (e.affectsConfiguration('servicenowXml.snc.path')) {
         void refreshSncContext();
       }
-      const cursorHelpersCfg =
-        e.affectsConfiguration('servicenowXml.cursorHelpers.enable') ||
-        e.affectsConfiguration('servicenowXml.cursorHelpers.installIndexHook') ||
-        e.affectsConfiguration('servicenowXml.cursorHelpers.pythonPath') ||
+      const mcpCfg =
+        e.affectsConfiguration('servicenowXml.mcp.enable') ||
+        e.affectsConfiguration('servicenowXml.mcp.registry') ||
+        e.affectsConfiguration('servicenowXml.mcp.instance') ||
+        e.affectsConfiguration('servicenowXml.mcp.remote') ||
         e.affectsConfiguration('servicenowXml.snc.path') ||
         e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
-      if (isCursorHost() && cursorHelpersCfg) {
-        void installCursorHelpers(context).then((result) => {
-          registerCursorHelpersDisposal(context, result.pluginPath);
+      if (mcpCfg) {
+        void installAgentHelpers(context, { force: true }).then((result) => {
+          registerAgentHelpersDisposal(context, result.pluginPath);
           const sncMcpCfg =
             e.affectsConfiguration('servicenowXml.snc.path') ||
-            e.affectsConfiguration('servicenowXml.snc.mcpProfiles');
+            e.affectsConfiguration('servicenowXml.snc.mcpProfiles') ||
+            e.affectsConfiguration('servicenowXml.mcp.registry') ||
+            e.affectsConfiguration('servicenowXml.mcp.instance') ||
+            e.affectsConfiguration('servicenowXml.mcp.remote');
           if (
-            cursorHelpersNeedReload(result) ||
-            (result.installed && sncMcpCfg)
+            agentHelpersNeedReload(result) ||
+            (result.installed && sncMcpCfg && isCursorHost())
           ) {
-            void suggestReloadAfterCursorHelpers('Cursor helpers updated.');
+            void suggestReloadAfterAgentHelpers('Agent helpers updated.');
           }
         });
       }

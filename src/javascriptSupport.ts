@@ -54,10 +54,16 @@ export interface SysAppMetadata {
    * Absent when the field is missing or unrecognized.
    */
   jsLevel?: JavaScriptSupport;
+  /** `sys_app.restrict_table_access` when the element is present. */
+  restrictTableAccess?: boolean;
+  /** `sys_app.version`, when present. */
+  version?: string;
+  /** `sys_app.short_description`, when present. */
+  shortDescription?: string;
 }
 
 /**
- * Read `sys_id`, technical `<scope>`, and `js_level` from a `sys_app` row.
+ * Read `sys_id`, technical `<scope>`, `js_level`, and `restrict_table_access` from a `sys_app` row.
  */
 export function detectSysAppMetadata(xml: string): SysAppMetadata | undefined {
   const appRow = xml.match(/<\s*sys_app\b[^>]*>[\s\S]*?<\/\s*sys_app\s*>/i)?.[0];
@@ -67,13 +73,21 @@ export function detectSysAppMetadata(xml: string): SysAppMetadata | undefined {
   const sysId = extractRowFieldText(appRow, 'sys_id');
   const scope = extractRowFieldText(appRow, 'scope');
   const jsLevel = normalizeJavaScriptSupport(extractRowFieldText(appRow, 'js_level'));
-  if (!sysId && !scope && !jsLevel) {
+  const restrictRaw = extractRowFieldText(appRow, 'restrict_table_access');
+  const restrictTableAccess =
+    restrictRaw === undefined ? undefined : /^(true|1)$/i.test(restrictRaw.trim());
+  const version = extractRowFieldText(appRow, 'version');
+  const shortDescription = extractRowFieldText(appRow, 'short_description');
+  if (!sysId && !scope && !jsLevel && restrictTableAccess === undefined && !version && !shortDescription) {
     return {};
   }
   return {
     sysId,
     scope,
-    jsLevel
+    jsLevel,
+    restrictTableAccess,
+    version,
+    shortDescription
   };
 }
 

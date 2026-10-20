@@ -1,0 +1,296 @@
+/**
+ * VS Code host adapter for the vscode-free Registry.
+ * Owns workspace sync and disk cache persistence. Static packs load lazily
+ * on first `registry` access (lint, completion, MCP) so activation-blocking
+ * features like the formatter are not delayed by synchronous file I/O.
+ */
+
+import * as path from 'path';
+import * as vscode from 'vscode';
+import { getIgnoreGlobs } from '../ignorePaths';
+import { ScriptDeclaration } from '../scriptDeclarations';
+import { ensureGitignoreEntry } from '../jsonStringEditor/drafts';
+import {
+  CachedApp,
+  CachedDeclaration,
+  CachedDependency,
+  CachedRecord,
+  CachedReference,
+  CachedSchemaField,
+  cachedDeclarationsToSymbols,
+  cachedRecordsToSymbols,
+  computeDuplicateSysIds,
+  createRegistryCache,
+  loadRegistryCacheFile,
+  registryCachePath,
+  saveRegistryCacheFile
+} from './cache';
+import { MAX_REFERENCE_EDGES } from './xmlReferences';
+import { createNodeFileSystem } from './nodeFs';
+import { Registry } from './Registry';
+import { ensureStaticLoaded, getRuntimeFieldIndex, getRuntimeRegistry } from './runtime';
+import { workspaceDeclarationsFromRegistry } from './lintGlobals';
+
+type RegistryListener = () => void;
+
+/**
+ * Extension-host owner of the shared Registry instance.
+ * Static packs are loaded lazily on first `registry` access, not at construction,
+ * so features that don't use the Registry (formatter) are not blocked.
+ */
+export class WorkspaceRegistryService implements vscode.Disposable {
+  private _registry: Registry | undefined;
+  private readonly listeners = new Set<RegistryListener>();
+  private readonly fs = createNodeFileSystem();
+  private workspaceRecords: CachedRecord[] = [];
+  private workspaceDeclarations: CachedDeclaration[] = [];
+  private workspaceSchema: CachedSchemaField[] = [];
+  private workspaceReferences: CachedReference[] = [];
+  private workspaceDependencies: CachedDependency[] = [];
+  private workspaceApp: CachedApp | undefined;
+  private workspaceDuplicateSysIds: Array<{ sysId: string; table: string; count: number }> = [];
+
+  /**
+   * Registry backing the LSP features (completion, hover, lint globals).
+   * Lazy: static packs are not loaded until first access, so callers that only
+   * need the navigator or formatter never pay the synchronous file-I/O cost.
+   */
+  get registry(): Registry {
+    if (!this._registry) {
+      this._registry = getRuntimeRegistry();
+    }
+    ensureStaticLoaded();
+    return this._registry;
+  }
+
+  /**
+   * Lazy dictionary field index (gunzips on first use).
+   */
+  getFieldIndex() {
+    return getRuntimeFieldIndex();
+  }
+
+  dispose(): void {
+    this.listeners.clear();
+  }
+
+  onDidChange(listener: RegistryListener): vscode.Disposable {
+    this.listeners.add(listener);
+    return {
+      dispose: () => {
+        this.listeners.delete(listener);
+      }
+    };
+  }
+
+  /**
+   * Replace workspace Record + declaration symbols and refresh indexes.
+   */
+  setWorkspaceData(options: {
+    records: CachedRecord[];
+    declarations: CachedDeclaration[];
+    app?: CachedApp;
+    schemaFields?: CachedSchemaField[];
+    references?: CachedReference[];
+    dependencies?: CachedDependency[];
+  }): void {
+    this.workspaceRecords = options.records;
+    this.workspaceDeclarations = options.declarations;
+    if (options.app !== undefined) {
+      this.workspaceApp = options.app;
+    }
+    if (options.schemaFields !== undefined) {
+      this.workspaceSchema = options.schemaFields;
+    }
+    if (options.references !== undefined) {
+      this.workspaceReferences = options.references.slice(0, MAX_REFERENCE_EDGES);
+    }
+    if (options.dependencies !== undefined) {
+      this.workspaceDependencies = options.dependencies;
+    }
+    this.workspaceDuplicateSysIds = computeDuplicateSysIds(options.records);
+    this.applyWorkspaceSymbols();
+  }
+
+  /**
+   * Merge declaration rows (e.g. from declaration-only scan) without clearing records.
+   */
+  setWorkspaceDeclarations(declarations: CachedDeclaration[]): void {
+    this.workspaceDeclarations = declarations;
+    this.applyWorkspaceSymbols();
+  }
+
+  /**
+   * Replace workspace symbols, then overlay project dictionary and reference edges.
+   */
+  private applyWorkspaceSymbols(): void {
+    this.registry.clearWorkspaceSymbols();
+    this.registry.upsertMany(cachedRecordsToSymbols(this.workspaceRecords));
+    this.registry.upsertMany(
+      cachedDeclarationsToSymbols(this.workspaceDeclarations)
+    );
+    this.registry.setProjectOverlay(this.workspaceSchema, this.workspaceReferences);
+    this.registry.setDependencyEdges(this.workspaceDependencies);
+    this.notify();
+  }
+
+  getCachedRecords(): CachedRecord[] {
+    return this.workspaceRecords;
+  }
+
+  getCachedDeclarations(): CachedDeclaration[] {
+    return this.workspaceDeclarations;
+  }
+
+  getCachedSchemaFields(): CachedSchemaField[] {
+    return this.workspaceSchema;
+  }
+
+  getCachedReferences(): CachedReference[] {
+    return this.workspaceReferences;
+  }
+
+  getCachedDependencies(): CachedDependency[] {
+    return this.workspaceDependencies;
+  }
+
+  getCachedApp(): CachedApp | undefined {
+    return this.workspaceApp;
+  }
+
+  getDuplicateSysIds(): Array<{ sysId: string; table: string; count: number }> {
+    return this.workspaceDuplicateSysIds;
+  }
+
+  /**
+   * Script declarations for ESLint (undefined when none indexed yet).
+   */
+  getDeclarationsForLint(): ScriptDeclaration[] | undefined {
+    if (this.workspaceDeclarations.length === 0 && this.workspaceRecords.length === 0) {
+      return undefined;
+    }
+    return workspaceDeclarationsFromRegistry(this.registry);
+  }
+
+  /**
+   * Persist workspace snapshot under the first workspace folder.
+   */
+  async persistToDisk(workspaceKey: string, configKey: string): Promise<void> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') {
+      return;
+    }
+    // Ensure .servicenow-xml/ is gitignored whenever the extension creates it in
+    // a workspace folder — the drafts path does this in ensureDraftsDir, but the
+    // registry cache is the first workspace-side writer when the navigator is off.
+    ensureGitignoreEntry(folder.uri.fsPath);
+    const cachePath = registryCachePath(folder.uri.fsPath);
+    const cache = createRegistryCache({
+      workspaceKey,
+      configKey,
+      updatedAt: Date.now(),
+      records: this.workspaceRecords,
+      declarations: this.workspaceDeclarations,
+      app: this.workspaceApp,
+      schemaFields: this.workspaceSchema,
+      references: this.workspaceReferences,
+      dependencies: this.workspaceDependencies,
+      duplicateSysIds: this.workspaceDuplicateSysIds
+    });
+    try {
+      await saveRegistryCacheFile(this.fs, cachePath, cache);
+    } catch (error) {
+      console.warn('[servicenow-xml] registry cache write failed:', error);
+    }
+  }
+
+  /**
+   * Restore workspace symbols from disk cache when keys match.
+   */
+  async restoreFromDisk(
+    workspaceKey: string,
+    configKey: string
+  ): Promise<boolean> {
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    if (!folder || folder.uri.scheme !== 'file') {
+      return false;
+    }
+    const cachePath = registryCachePath(folder.uri.fsPath);
+    const cache = await loadRegistryCacheFile(
+      this.fs,
+      cachePath,
+      workspaceKey,
+      configKey
+    );
+    if (!cache) {
+      return false;
+    }
+    this.setWorkspaceData({
+      records: cache.records,
+      declarations: cache.declarations,
+      app: cache.app,
+      schemaFields: cache.schemaFields ?? [],
+      references: cache.references ?? [],
+      dependencies: cache.dependencies ?? []
+    });
+    return true;
+  }
+
+  private notify(): void {
+    for (const listener of this.listeners) {
+      listener();
+    }
+  }
+}
+
+/** Singleton used by extension, lint, and navigator facades. */
+let sharedService: WorkspaceRegistryService | undefined;
+
+/**
+ * Get or create the extension-wide Registry service.
+ */
+export function getWorkspaceRegistryService(): WorkspaceRegistryService {
+  if (!sharedService) {
+    sharedService = new WorkspaceRegistryService();
+  }
+  return sharedService;
+}
+
+/**
+ * Reset the singleton (tests).
+ */
+export function resetWorkspaceRegistryService(): void {
+  sharedService?.dispose();
+  sharedService = undefined;
+}
+
+/**
+ * Workspace and config keys for `.servicenow-xml/registry-cache.json`.
+ * Navigator and the declaration index must share these so one snapshot restores both.
+ */
+export function registrySnapshotKeys(): { workspaceKey: string; configKey: string } {
+  const workspaceKey = JSON.stringify(
+    (vscode.workspace.workspaceFolders ?? [])
+      .map((folder) => folder.uri.toString())
+      .sort()
+  );
+  const excludeDelete = vscode.workspace
+    .getConfiguration('servicenowXml')
+    .get<boolean>('navigator.excludeDelete', false);
+  const configKey = JSON.stringify({
+    excludeDelete,
+    ignoreGlobs: [...getIgnoreGlobs()].sort()
+  });
+  return { workspaceKey, configKey };
+}
+
+/**
+ * Relative path helper for cache rows.
+ */
+export function relativePathForUri(uri: vscode.Uri): string {
+  const folder = vscode.workspace.getWorkspaceFolder(uri);
+  if (!folder) {
+    return path.basename(uri.fsPath);
+  }
+  return path.relative(folder.uri.fsPath, uri.fsPath).replace(/\\/g, '/');
+}

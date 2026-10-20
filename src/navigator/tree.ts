@@ -2,8 +2,19 @@ import * as vscode from 'vscode';
 import { CatalogRecord, RecordCatalog, uriKey } from './catalog';
 import { matchesQuery } from './goToRecord';
 import { tableDecorationUri } from './gitStatus';
+import { getWorkspaceRegistryService } from '../registry/vscodeAdapter';
 
 export type TreeNode = TableNode | RecordNode | MessageNode;
+
+/**
+ * Collapse root refreshes that land close together into one event.
+ *
+ * VS Code applies the first `onDidChangeTreeData` immediately and a second one
+ * about 200ms later. Each root refresh unregisters every folder. The later one
+ * drops handles the first refresh is still resolving, and the view then logs
+ * "No tree item with id '1/table:…' found" when it asks for that folder's children.
+ */
+const ROOT_REFRESH_DELAY_MS = 200;
 
 /**
  * Table folder. `id` doubles as the cache key and the `TreeItem.id`; the record
@@ -128,6 +139,12 @@ export class RecordsTreeProvider
   /** URI key of the file in the active editor; empty means no record is marked. */
   private activeUriKey = '';
   /**
+   * Table folders the user (or a filter) has expanded. Element refresh sends
+   * collapsibleState again, so a folder that should stay open must still report
+   * Expanded; otherwise the view collapses it.
+   */
+  private readonly expandedTableIds = new Set<string>();
+  /**
    * Node instances already handed to VS Code, keyed by tree item id, plus a
    * URI-keyed index of the record nodes. Element-level refresh and `reveal`
    * resolve elements by object identity (microsoft/vscode#137251), so every
@@ -136,18 +153,39 @@ export class RecordsTreeProvider
   private readonly nodes = new Map<string, TreeNode>();
   private readonly recordNodesByUri = new Map<string, RecordNode[]>();
   private readonly disposables: vscode.Disposable[] = [];
+  /** Pending root refresh; a newer request replaces it so a burst emits once. */
+  private rootRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly catalog: RecordCatalog) {
     this.disposables.push(
-      this.catalog.onDidChange(() => this.fireRootRefresh()),
+      this.catalog.onDidChange(() => this.refreshRows()),
       this._onDidChangeTreeData,
       this._onDidChangeRecords
     );
   }
 
   dispose(): void {
+    if (this.rootRefreshTimer) {
+      clearTimeout(this.rootRefreshTimer);
+      this.rootRefreshTimer = undefined;
+    }
     for (const d of this.disposables) {
       d.dispose();
+    }
+  }
+
+  /**
+   * Remember whether a table folder is expanded. `getTreeItem` reports that
+   * state on later refreshes so an element update does not collapse it.
+   */
+  noteTableExpanded(element: TreeNode, expanded: boolean): void {
+    if (element.kind !== 'table') {
+      return;
+    }
+    if (expanded) {
+      this.expandedTableIds.add(element.id);
+    } else {
+      this.expandedTableIds.delete(element.id);
     }
   }
 
@@ -163,7 +201,7 @@ export class RecordsTreeProvider
    */
   setFilterQuery(query: string): void {
     this.filterQuery = query.trim().toLowerCase();
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   /**
@@ -174,7 +212,7 @@ export class RecordsTreeProvider
       return;
     }
     this.filterQuery = '';
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   /**
@@ -206,15 +244,79 @@ export class RecordsTreeProvider
   }
 
   /**
+   * Rebuild visible rows. Table folders stay registered when the folder set and
+   * order are unchanged.
+   *
+   * A root refresh unregisters every item, including expanded folders. The view
+   * then asks for children of a folder it still has open, using the handle
+   * `1/` plus that folder's id (`table:<name>`). The lookup misses, the
+   * extension host logs "No tree item with id … found", and the folder renders
+   * empty. That races active-file reveal, which expands the file's table while
+   * a catalog update (open-count rebuild, file watcher) refreshes the tree.
+   */
+  private refreshRows(): void {
+    if (!this.catalog.isLoaded() || this.loadError) {
+      this.fireRootRefresh();
+      return;
+    }
+    const nextIds: string[] = [];
+    for (const table of this.catalog.getTables()) {
+      if (this.filteredRecordsForTable(table).length === 0) {
+        continue;
+      }
+      nextIds.push(`table:${table}`);
+    }
+    const currentIds: string[] = [];
+    for (const [id, node] of this.nodes) {
+      if (node.kind === 'table') {
+        currentIds.push(id);
+      }
+    }
+    if (
+      currentIds.length === 0 ||
+      currentIds.length !== nextIds.length ||
+      currentIds.some((id, index) => id !== nextIds[index])
+    ) {
+      this.fireRootRefresh();
+      return;
+    }
+    const tables: TableNode[] = [];
+    for (const id of nextIds) {
+      const node = this.nodes.get(id);
+      if (node?.kind !== 'table') {
+        this.fireRootRefresh();
+        return;
+      }
+      tables.push(node);
+    }
+    for (const [id, node] of this.nodes) {
+      if (node.kind === 'record') {
+        this.nodes.delete(id);
+      }
+    }
+    this.recordNodesByUri.clear();
+    this._onDidChangeTreeData.fire(tables);
+    this._onDidChangeRecords.fire();
+  }
+
+  /**
    * Rebuild every row from scratch. Cached nodes are dropped because the catalog
    * hands out new record objects on each rebuild, and stale instances would keep
    * rendering stale names and paths.
    */
   private fireRootRefresh(): void {
-    this.nodes.clear();
-    this.recordNodesByUri.clear();
-    this._onDidChangeTreeData.fire();
-    this._onDidChangeRecords.fire();
+    if (this.rootRefreshTimer) {
+      clearTimeout(this.rootRefreshTimer);
+    }
+    // One event for a burst. Emitting the second root refresh while VS Code
+    // is still resolving the first unregisters folders it is fetching.
+    this.rootRefreshTimer = setTimeout(() => {
+      this.rootRefreshTimer = undefined;
+      this.nodes.clear();
+      this.recordNodesByUri.clear();
+      this._onDidChangeTreeData.fire();
+      this._onDidChangeRecords.fire();
+    }, ROOT_REFRESH_DELAY_MS);
   }
 
   /**
@@ -312,25 +414,41 @@ export class RecordsTreeProvider
    */
   setViewVisible(visible: boolean): void {
     this.viewVisible = visible;
-    if (visible && this.catalog.isEnabled()) {
-      this.loadError = '';
-      void this.catalog
-        .ensure({ showProgress: true })
-        .catch((error: unknown) => {
-          this.loadError =
-            error instanceof Error ? error.message : String(error);
-          void vscode.window.showErrorMessage(
-            `ServiceNow Records indexing failed: ${this.loadError}`
-          );
-        })
-        .finally(() => this.fireRootRefresh());
+    if (!visible) {
+      return;
     }
-    this.fireRootRefresh();
+    if (!this.catalog.isEnabled()) {
+      this.fireRootRefresh();
+      return;
+    }
+    this.loadError = '';
+    // One refresh when the view opens. An immediate refresh plus another in
+    // ensure()'s finally both cleared folder handles, and the second one landed
+    // while the view was still resolving children of the expanded table.
+    const wasLoaded = this.catalog.isLoaded();
+    void this.catalog.ensure({ showProgress: true }).then(
+      () => {
+        // A cold load notifies through catalog.onDidChange, which paints the
+        // rows. A warm catalog does not notify, so the tree still needs a refresh
+        // to leave the placeholder.
+        if (wasLoaded) {
+          this.refreshRows();
+        }
+      },
+      (error: unknown) => {
+        this.loadError =
+          error instanceof Error ? error.message : String(error);
+        void vscode.window.showErrorMessage(
+          `ServiceNow Records indexing failed: ${this.loadError}`
+        );
+        this.fireRootRefresh();
+      }
+    );
   }
 
   refreshTree(): void {
     this.loadError = '';
-    this.fireRootRefresh();
+    this.refreshRows();
   }
 
   getTreeItem(element: TreeNode): vscode.TreeItem {
@@ -349,10 +467,11 @@ export class RecordsTreeProvider
     }
 
     if (element.kind === 'table') {
-      const count = this.filteredRecordsForTable(element.table).length;
+      const tableRecords = this.filteredRecordsForTable(element.table);
+      const count = tableRecords.length;
       const item = new vscode.TreeItem(
         element.table,
-        this.filterQuery
+        this.filterQuery || this.expandedTableIds.has(element.id)
           ? vscode.TreeItemCollapsibleState.Expanded
           : vscode.TreeItemCollapsibleState.Collapsed
       );
@@ -360,12 +479,19 @@ export class RecordsTreeProvider
       // Stable ids keep expansion state across refreshes and let reveal resolve
       // the table → record chain. Filter count stays out of the id on purpose.
       item.id = element.id;
-      item.contextValue = 'servicenowXml.table';
+      // Suffix lets prune show only on tables that actually hold a DELETE row.
+      item.contextValue = tableRecords.some((r) => r.action === 'DELETE')
+        ? 'servicenowXml.table.hasDelete'
+        : 'servicenowXml.table';
       // `symbol-folder` is the same glyph as `folder`, but VS Code treats the
       // `folder` id as "let the file icon theme draw this" once resourceUri is
       // set — which leaves no icon at all under themes without folder icons.
       item.iconPath = new vscode.ThemeIcon('symbol-folder');
-      item.tooltip = `${element.table}\n${count} record${count === 1 ? '' : 's'}`;
+      const tableSymbol = getWorkspaceRegistryService().registry.getTable(element.table);
+      const labelLine = tableSymbol?.label
+        ? `${tableSymbol.label} (${element.table})`
+        : element.table;
+      item.tooltip = `${labelLine}\n${count} record${count === 1 ? '' : 's'}`;
       // Synthetic URI so the folder picks up the Git state rolled up from its
       // record files; record leaves get that from their own file URI.
       item.resourceUri = tableDecorationUri(element.table);
@@ -390,13 +516,15 @@ export class RecordsTreeProvider
       title: 'Open',
       arguments: [r]
     };
-    // Suffix lets context menus show Delete only for INSERT_OR_UPDATE rows.
-    item.contextValue =
-      r.action === 'INSERT_OR_UPDATE'
+    // Suffixes let context menus split by action: converting to DELETE only
+    // makes sense for a live row, pruning only for one that is already DELETE.
+    item.contextValue = isDelete
+      ? 'servicenowXml.record.delete'
+      : r.action === 'INSERT_OR_UPDATE'
         ? 'servicenowXml.record.insertOrUpdate'
         : 'servicenowXml.record';
-    // The accent is the whole active-file marker: selection stays the user's,
-    // and one file can export several records anyway.
+    // Accent marks every row of the active file. Selection can sit on only one
+    // of them, or on a multi-selection the tab sync is not allowed to collapse.
     item.iconPath = new vscode.ThemeIcon(
       isDelete ? 'trash' : 'file-code',
       isActive

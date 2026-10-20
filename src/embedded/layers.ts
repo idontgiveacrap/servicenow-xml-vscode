@@ -18,11 +18,11 @@ import { visit } from 'jsonc-parser/lib/esm/main.js';
 import { decodeXmlEntities, encodeXmlEntities } from '../parseSnXml';
 import {
   buildNormalizedDecodedToRawMap,
+  formatJsonPath,
   rawOffsetToNormalized
 } from '../jsonStringEditor/escape';
-import { stripJavascriptWrapper } from '../jsonStringEditor/escape';
 import { resolveScriptProfile } from '../scriptProfile';
-import { looksLikeJavaScript } from './jsLikeness';
+import { looksLikeEmbeddedScript } from './jsLikeness';
 
 /** How many nested documents to follow before giving up. */
 const MAX_DEPTH = 6;
@@ -278,8 +278,8 @@ function finish(
   tableName: string,
   keyPath?: string
 ): EmbeddedScriptHit | null {
-  const { code, hadWrapper } = stripJavascriptWrapper(value);
-  if (!looksLikeJavaScript(code).ok) {
+  const { ok, code, hadWrapper } = looksLikeEmbeddedScript(value);
+  if (!ok) {
     return null;
   }
   return {
@@ -320,14 +320,11 @@ function innermostElementAt(text: string, offset: number): ElementSpan | null {
             bodyEnd
           };
         }
-        stack.length = i;
+        stack.splice(i, 1);
         break;
       }
       continue;
     }
-    // The attribute run can swallow a trailing slash, so test the whole match
-    // rather than the optional group: an unpopped <messages/> would make every
-    // later element look like its child.
     if (m[2] == null || m[0].endsWith('/>')) {
       continue;
     }
@@ -357,64 +354,31 @@ interface StringToken {
 }
 
 function findStringTokenAt(json: string, offset: number): StringToken | null {
-  let currentProperty: string | null = null;
-  const pathStack: string[] = [];
-  let objectDepth = 0;
-  let arrayDepth = 0;
   let result: StringToken | null = null;
 
   const visitor: JSONVisitor = {
-    onObjectBegin: () => {
-      objectDepth++;
-    },
-    onObjectProperty: (property: string) => {
-      const target = objectDepth - 1 + arrayDepth;
-      while (pathStack.length > target) {
-        pathStack.pop();
-      }
-      currentProperty = property;
-      pathStack.push(property);
-    },
-    onObjectEnd: () => {
-      pathStack.pop();
-      objectDepth--;
-      currentProperty = null;
-    },
-    onArrayBegin: () => {
-      arrayDepth++;
-      pathStack.push('[0]');
-    },
-    onArrayEnd: () => {
-      while (
-        pathStack.length > 0 &&
-        pathStack[pathStack.length - 1].startsWith('[')
-      ) {
-        pathStack.pop();
-      }
-      arrayDepth--;
-    },
-    onLiteralValue: (value: unknown, valueOffset: number, valueLength: number) => {
-      if (result || typeof value !== 'string' || !currentProperty) {
+    onLiteralValue: (
+      value: unknown,
+      valueOffset: number,
+      valueLength: number,
+      _startLine: number,
+      _startCharacter: number,
+      pathSupplier: () => (string | number)[]
+    ) => {
+      if (result || typeof value !== 'string') {
         return;
       }
       if (offset >= valueOffset && offset <= valueOffset + valueLength) {
+        const path = pathSupplier();
+        if (typeof path[path.length - 1] !== 'string') {
+          return;
+        }
         result = {
           value,
-          keyPath: pathStack.join('.'),
+          keyPath: formatJsonPath(path),
           tokenStart: valueOffset,
           tokenEnd: valueOffset + valueLength
         };
-      }
-    },
-    onSeparator: (sep: string) => {
-      if (sep !== ',' || arrayDepth === 0 || pathStack.length === 0) {
-        return;
-      }
-      const last = pathStack[pathStack.length - 1];
-      if (last.startsWith('[')) {
-        pathStack[pathStack.length - 1] = `[${
-          Number.parseInt(last.slice(1, -1), 10) + 1
-        }]`;
       }
     }
   };

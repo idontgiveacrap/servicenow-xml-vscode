@@ -1,7 +1,13 @@
 import * as fs from 'fs/promises';
 import * as vscode from 'vscode';
 import { isPathIgnored } from '../ignorePaths';
-import { extractRecordIdentities } from './recordName';
+import type {
+  CachedDeclaration,
+  CachedReference,
+  CachedSchemaField
+} from '../registry/cache';
+import type { CallCandidate } from '../registry/dependencies';
+import { indexExportText } from '../registry/workspaceIndexer';
 
 /**
  * Directories never worth walking for exports. Spelled out because passing any
@@ -23,6 +29,8 @@ export interface ExportRecord {
   action?: string;
   apiName?: string;
   sysModCount?: number;
+  /** ServiceNow `sys_updated_on` from the row, used to resolve canonical sources. */
+  sysUpdatedOn?: string;
   /** Indexed row offset, used to disambiguate records when opening at their line. */
   startOffset: number;
   uri: vscode.Uri;
@@ -34,6 +42,19 @@ export interface ScanExportOptions {
   ignoreGlobs: string[];
   excludeDelete: boolean;
   token?: vscode.CancellationToken;
+  /** When set, also extract Script Include / UI Script declarations in the same pass. */
+  extractDeclarations?: boolean;
+  workspaceAppSysId?: string;
+  workspaceAppScope?: string;
+}
+
+/** Combined scan result for Registry + navigator. */
+export interface ScanExportResult {
+  records: ExportRecord[];
+  declarations: CachedDeclaration[];
+  schemaFields: CachedSchemaField[];
+  references: CachedReference[];
+  callCandidates: CallCandidate[];
 }
 
 /**
@@ -43,11 +64,25 @@ export interface ScanExportOptions {
 export async function scanExportRecords(
   options: ScanExportOptions
 ): Promise<ExportRecord[]> {
+  const result = await scanExportRecordsWithDeclarations(options);
+  return result.records;
+}
+
+/**
+ * Scan workspace XML once for navigator records and lint declarations.
+ */
+export async function scanExportRecordsWithDeclarations(
+  options: ScanExportOptions
+): Promise<ScanExportResult> {
   const uris = await vscode.workspace.findFiles(
     '**/*.xml',
     `{${[...SCAN_EXCLUDE_BASE, ...options.ignoreGlobs].join(',')}}`
   );
   const out: ExportRecord[] = [];
+  const declarations: CachedDeclaration[] = [];
+  const schemaFields: CachedSchemaField[] = [];
+  const references: CachedReference[] = [];
+  const callCandidates: CallCandidate[] = [];
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(SCAN_CONCURRENCY, uris.length) }, async () => {
@@ -56,14 +91,26 @@ export async function scanExportRecords(
           throw new vscode.CancellationError();
         }
         const uri = uris[next++];
-        const records = await readExportRecords(uri, options);
-        for (const record of records) {
+        const found = await readExportRecordsWithDeclarations(uri, options);
+        for (const record of found.records) {
           out.push(record);
+        }
+        for (const declaration of found.declarations) {
+          declarations.push(declaration);
+        }
+        for (const field of found.schemaFields) {
+          schemaFields.push(field);
+        }
+        for (const edge of found.references) {
+          references.push(edge);
+        }
+        for (const call of found.callCandidates) {
+          callCandidates.push(call);
         }
       }
     })
   );
-  return out;
+  return { records: out, declarations, schemaFields, references, callCandidates };
 }
 
 /**
@@ -73,8 +120,25 @@ export async function readExportRecords(
   uri: vscode.Uri,
   options: ScanExportOptions
 ): Promise<ExportRecord[]> {
+  const found = await readExportRecordsWithDeclarations(uri, options);
+  return found.records;
+}
+
+/**
+ * Read one XML export into records + optional declaration symbols.
+ */
+export async function readExportRecordsWithDeclarations(
+  uri: vscode.Uri,
+  options: ScanExportOptions
+): Promise<ScanExportResult> {
   if (isPathIgnored(uri.fsPath, options.ignoreGlobs)) {
-    return [];
+    return {
+      records: [],
+      declarations: [],
+      schemaFields: [],
+      references: [],
+      callCandidates: []
+    };
   }
   let text: string;
   try {
@@ -86,21 +150,39 @@ export async function readExportRecords(
         ? await fs.readFile(uri.fsPath, 'utf8')
         : Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
   } catch {
-    return [];
+    return {
+      records: [],
+      declarations: [],
+      schemaFields: [],
+      references: [],
+      callCandidates: []
+    };
   }
-  const identities = extractRecordIdentities(text, uri.fsPath);
   const relativePath = vscode.workspace.asRelativePath(uri, false);
-  return identities
-    .filter((identity) => !options.excludeDelete || identity.action !== 'DELETE')
-    .map((identity) => ({
-      table: identity.table,
-      displayName: identity.displayName,
-      sysId: identity.sysId,
-      action: identity.action,
-      apiName: identity.apiName,
-      sysModCount: identity.sysModCount,
-      startOffset: identity.startOffset,
+  const indexed = indexExportText(text, {
+    uri: uri.toString(),
+    relativePath,
+    excludeDelete: options.excludeDelete,
+    extractDeclarations: options.extractDeclarations !== false,
+    workspaceAppSysId: options.workspaceAppSysId,
+    workspaceAppScope: options.workspaceAppScope
+  });
+  return {
+    records: indexed.records.map((record) => ({
+      table: record.table,
+      displayName: record.displayName,
+      sysId: record.sysId,
+      action: record.action,
+      apiName: record.apiName,
+      sysModCount: record.sysModCount,
+      sysUpdatedOn: record.sysUpdatedOn,
+      startOffset: record.startOffset,
       uri,
-      relativePath
-    }));
+      relativePath: record.relativePath
+    })),
+    declarations: indexed.declarations,
+    schemaFields: indexed.schemaFields,
+    references: indexed.references,
+    callCandidates: indexed.callCandidates
+  };
 }

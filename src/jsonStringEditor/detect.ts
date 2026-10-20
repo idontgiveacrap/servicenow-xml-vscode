@@ -12,15 +12,23 @@ import {
 } from '../parseSnXml';
 import type { EmbeddedFieldHit, ParsedDocument, RecordRow } from '../kinds/types';
 import type { EncodingLayer } from '../embedded/layers';
+import type { ScriptHitRole } from '../scriptHits';
 import {
   buildNormalizedDecodedToRawMap,
+  formatJsonPath,
   rawOffsetToNormalized,
   stripJavascriptWrapper
 } from './escape';
+import { looksLikeEmbeddedScript } from '../embedded/jsLikeness';
 
 export interface JsonStringHit {
   hostPath: string;
   stableHostId: string;
+  /**
+   * What the temp editor is holding: a script, or a whole JSON-typed field.
+   * Drives the temp file's language and how write-back verifies the splice.
+   */
+  role: ScriptHitRole;
   fieldName: string;
   keyPath: string;
   draftKey: string;
@@ -108,7 +116,10 @@ export function detectJsonStringAtOffset(
   let decodedOffset = offsetInDecoded;
   let normalizedToRaw: number[] | null = null;
   if (field.content !== field.decodedContent) {
-    const norm = buildNormalizedDecodedToRawMap(field.content, decodeXmlEntities);
+    const norm = buildNormalizedDecodedToRawMap(
+      field.content,
+      field.isCdata ? (s) => s : decodeXmlEntities
+    );
     if (!norm) {
       return null;
     }
@@ -123,7 +134,7 @@ export function detectJsonStringAtOffset(
   if (!found) {
     return null;
   }
-  if (!isEligibleScriptString(found.propertyName, found.unescapedValue)) {
+  if (!isEligibleScriptString(found.unescapedValue)) {
     return null;
   }
 
@@ -150,6 +161,7 @@ export function detectJsonStringAtOffset(
   return {
     hostPath,
     stableHostId: id,
+    role: 'jsonString',
     fieldName: field.fieldName,
     keyPath: found.keyPath,
     draftKey,
@@ -201,16 +213,14 @@ export function makeDraftKey(
 }
 
 /**
- * Eligible when value is javascript(…) or property name ends with Script.
+ * Eligible when the value reads as code.
+ *
+ * The property name is deliberately ignored: matching names ending in `Script`
+ * missed every script ServiceNow stores under another key, and accepted any
+ * scalar that happened to sit under a matching one.
  */
-export function isEligibleScriptString(
-  propertyName: string,
-  unescapedValue: string
-): boolean {
-  if (/Script$/i.test(propertyName)) {
-    return true;
-  }
-  return /^\s*javascript\(/.test(unescapedValue);
+export function isEligibleScriptString(unescapedValue: string): boolean {
+  return looksLikeEmbeddedScript(unescapedValue).ok;
 }
 
 function collectPayloadJsonFields(
@@ -310,10 +320,6 @@ function findStringLiteralAtDecodedOffset(
   tokenEnd: number;
   unescapedValue: string;
 } | null {
-  let currentProperty: string | null = null;
-  const pathStack: string[] = [];
-  let currentDepth = 0;
-  let arrayDepth = 0;
   let result: {
     propertyName: string;
     keyPath: string;
@@ -323,58 +329,33 @@ function findStringLiteralAtDecodedOffset(
   } | null = null;
 
   const visitor: JSONVisitor = {
-    onObjectBegin: () => {
-      currentDepth++;
-    },
-    onObjectProperty: (property: string) => {
-      const targetStackLength = currentDepth - 1 + arrayDepth;
-      while (pathStack.length > targetStackLength) {
-        pathStack.pop();
-      }
-      currentProperty = property;
-      pathStack.push(property);
-    },
-    onObjectEnd: () => {
-      if (pathStack.length > 0) {
-        pathStack.pop();
-      }
-      currentDepth--;
-      currentProperty = null;
-    },
-    onArrayBegin: () => {
-      arrayDepth++;
-      pathStack.push('[0]');
-    },
-    onArrayEnd: () => {
-      while (pathStack.length > 0 && pathStack[pathStack.length - 1].startsWith('[')) {
-        pathStack.pop();
-      }
-      arrayDepth--;
-    },
-    onLiteralValue: (value: unknown, valueOffset: number, valueLength: number) => {
-      if (typeof value !== 'string' || !currentProperty || result) {
+    onLiteralValue: (
+      value: unknown,
+      valueOffset: number,
+      valueLength: number,
+      _startLine: number,
+      _startCharacter: number,
+      pathSupplier: () => (string | number)[]
+    ) => {
+      if (typeof value !== 'string' || result) {
         return;
       }
       if (
         decodedOffset >= valueOffset &&
         decodedOffset <= valueOffset + valueLength
       ) {
+        const path = pathSupplier();
+        const propertyName = path[path.length - 1];
+        if (typeof propertyName !== 'string') {
+          return;
+        }
         result = {
-          propertyName: currentProperty,
-          keyPath: pathStack.join('.'),
+          propertyName,
+          keyPath: formatJsonPath(path),
           tokenStart: valueOffset,
           tokenEnd: valueOffset + valueLength,
           unescapedValue: value
         };
-      }
-    },
-    onSeparator: (sep: string) => {
-      if (sep === ',' && arrayDepth > 0 && pathStack.length > 0) {
-        const lastItem = pathStack[pathStack.length - 1];
-        if (lastItem.startsWith('[')) {
-          const currentIndex = Number.parseInt(lastItem.slice(1, -1), 10);
-          pathStack[pathStack.length - 1] = `[${currentIndex + 1}]`;
-        }
       }
     }
   };
@@ -399,84 +380,57 @@ function findStringByKeyPath(
     tokenEnd: number;
     unescapedValue: string;
   };
-  const box: { found: Found | null } = { found: null };
-
-  let currentProperty: string | null = null;
-  const pathStack: string[] = [];
-  let currentDepth = 0;
-  let arrayDepth = 0;
+  let found: Found | null = null;
 
   const visitor: JSONVisitor = {
-    onObjectBegin: () => {
-      currentDepth++;
-    },
-    onObjectProperty: (property: string) => {
-      const targetStackLength = currentDepth - 1 + arrayDepth;
-      while (pathStack.length > targetStackLength) {
-        pathStack.pop();
-      }
-      currentProperty = property;
-      pathStack.push(property);
-    },
-    onObjectEnd: () => {
-      if (pathStack.length > 0) {
-        pathStack.pop();
-      }
-      currentDepth--;
-      currentProperty = null;
-    },
-    onArrayBegin: () => {
-      arrayDepth++;
-      pathStack.push('[0]');
-    },
-    onArrayEnd: () => {
-      while (pathStack.length > 0 && pathStack[pathStack.length - 1].startsWith('[')) {
-        pathStack.pop();
-      }
-      arrayDepth--;
-    },
-    onLiteralValue: (value: unknown, valueOffset: number, valueLength: number) => {
-      if (typeof value !== 'string' || !currentProperty || box.found) {
+    onLiteralValue: (
+      value: unknown,
+      valueOffset: number,
+      valueLength: number,
+      _startLine: number,
+      _startCharacter: number,
+      pathSupplier: () => (string | number)[]
+    ) => {
+      if (found || typeof value !== 'string') {
         return;
       }
-      if (pathStack.join('.') === keyPath) {
-        box.found = {
-          propertyName: currentProperty,
+      const path = pathSupplier();
+      const propertyName = path[path.length - 1];
+      if (
+        typeof propertyName === 'string' &&
+        formatJsonPath(path) === keyPath
+      ) {
+        found = {
+          propertyName,
           keyPath,
           tokenStart: valueOffset,
           tokenEnd: valueOffset + valueLength,
           unescapedValue: value
         };
       }
-    },
-    onSeparator: (sep: string) => {
-      if (sep === ',' && arrayDepth > 0 && pathStack.length > 0) {
-        const lastItem = pathStack[pathStack.length - 1];
-        if (lastItem.startsWith('[')) {
-          const currentIndex = Number.parseInt(lastItem.slice(1, -1), 10);
-          pathStack[pathStack.length - 1] = `[${currentIndex + 1}]`;
-        }
-      }
     }
   };
 
   visit(decoded, visitor);
-  const found = box.found;
-  if (!found || !isEligibleScriptString(found.propertyName, found.unescapedValue)) {
+  const foundValue = found as Found | null;
+  if (!foundValue || !isEligibleScriptString(foundValue.unescapedValue)) {
     return null;
   }
 
-  let rawStartInField = found.tokenStart;
-  let rawEndInField = found.tokenEnd;
+  let rawStartInField = foundValue.tokenStart;
+  let rawEndInField = foundValue.tokenEnd;
   if (field.content !== field.decodedContent) {
-    const norm = buildNormalizedDecodedToRawMap(field.content, decodeXmlEntities);
+    const norm = buildNormalizedDecodedToRawMap(
+      field.content,
+      field.isCdata ? (s) => s : decodeXmlEntities
+    );
     if (!norm) {
       return null;
     }
     const mapped = mapTokenViaNormalizedToRaw(
       norm.normalizedToRaw,
-      found.tokenStart,
-      found.tokenEnd,
+      foundValue.tokenStart,
+      foundValue.tokenEnd,
       field.content.length
     );
     if (!mapped) {
@@ -486,20 +440,21 @@ function findStringByKeyPath(
     rawEndInField = mapped.rawEnd;
   }
 
-  const { code, hadWrapper } = stripJavascriptWrapper(found.unescapedValue);
+  const { code, hadWrapper } = stripJavascriptWrapper(foundValue.unescapedValue);
   const id = stableHostId ?? hostPath;
   return {
     hostPath,
     stableHostId: id,
+    role: 'jsonString',
     fieldName: field.fieldName,
-    keyPath: found.keyPath,
-    draftKey: makeDraftKey(id, field.fieldName, found.keyPath),
+    keyPath: foundValue.keyPath,
+    draftKey: makeDraftKey(id, field.fieldName, foundValue.keyPath),
     absoluteStart: field.bodyStartOffset + rawStartInField,
     absoluteEnd: field.bodyStartOffset + rawEndInField,
     rawStartInField,
     rawEndInField,
     field,
-    unescapedValue: found.unescapedValue,
+    unescapedValue: foundValue.unescapedValue,
     editorCode: code,
     hadJavascriptWrapper: hadWrapper,
     hostVersion,

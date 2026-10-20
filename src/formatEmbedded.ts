@@ -1,19 +1,27 @@
 /**
- * XML document formatter: other XML providers via reentry, then JS format of
- * script-typed fields through encodeThroughLayers.
+ * XML document formatter: other XML providers via reentry, then JS and JSON
+ * format of script- and JSON-typed fields through encodeThroughLayers.
  */
 
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
+import { ensureGitignoreEntry } from './jsonStringEditor/drafts';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { parseSnXml } from './parseSnXml';
 import {
   encodeHit,
+  listJsonFields,
   listScriptFields,
   restoreIndent,
   scriptAt,
   stripIndent,
   type ScriptHit
 } from './scriptHits';
+
+/** Sub-directory under the workspace `.servicenow-xml/` for format scratch files. */
+const FORMAT_TEMP_SUBDIR = path.join('.servicenow-xml', 'format-tmp');
 
 /**
  * Documents currently inside the nested `executeFormatDocumentProvider` call, so
@@ -66,7 +74,7 @@ async function formatSnXmlRange(
   const hit = scriptAt(text, offset);
   if (hit?.role === 'scriptField') {
     const original = text.slice(hit.hostStart, hit.hostEnd);
-    const formatted = await formatOneScriptHit(hit, options, token);
+    const formatted = await formatOneHit(hit, 'javascript', options, token);
     if (formatted === undefined || formatted === original) {
       return [];
     }
@@ -110,6 +118,7 @@ async function formatSnXmlDocument(
 
   const config = vscode.workspace.getConfiguration('servicenowXml', document);
   const formatJs = config.get<boolean>('formatJavaScript', true);
+  const formatJson = config.get<boolean>('formatJson', true);
   const formatXmlFirst = config.get<boolean>('formatXmlFirst', true);
 
   // Every edit below is expressed against this snapshot, so a buffer that moves
@@ -137,7 +146,7 @@ async function formatSnXmlDocument(
     }
   }
 
-  if (!formatJs) {
+  if (!formatJs && !formatJson) {
     if (text === original) {
       return [];
     }
@@ -145,13 +154,24 @@ async function formatSnXmlDocument(
   }
 
   const parsed = parseSnXml(text, document.uri.fsPath);
-  const hits = listScriptFields(parsed);
+  const targets: Array<{ hit: ScriptHit; language: 'javascript' | 'json' }> = [];
+  if (formatJs) {
+    for (const hit of listScriptFields(parsed)) {
+      targets.push({ hit, language: 'javascript' });
+    }
+  }
+  if (formatJson) {
+    for (const hit of listJsonFields(parsed)) {
+      targets.push({ hit, language: 'json' });
+    }
+  }
+
   const offsetEdits: Array<{ start: number; end: number; text: string }> = [];
-  for (const hit of hits) {
+  for (const { hit, language } of targets) {
     if (token.isCancellationRequested) {
       return undefined;
     }
-    const encoded = await formatOneScriptHit(hit, options, token);
+    const encoded = await formatOneHit(hit, language, options, token);
     if (encoded === undefined) {
       continue;
     }
@@ -181,13 +201,20 @@ function isSnXmlFormatTarget(
   return isValidationAllowed(document) || looksLikeSnExportDocument(document);
 }
 
-async function formatOneScriptHit(
+async function formatOneHit(
   hit: ScriptHit,
+  language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
   token: vscode.CancellationToken
 ): Promise<string | undefined> {
+  // A JSON formatter given a malformed document can drop or reorder the text it
+  // cannot parse, which would silently destroy the field. Invalid JSON is
+  // already surfaced by the JSON lint pass, so leave it untouched here.
+  if (language === 'json' && !isParseableJson(hit.code)) {
+    return undefined;
+  }
   const stripped = stripIndent(hit.code, hit.indent);
-  const formatted = await formatJavaScript(stripped, options, token);
+  const formatted = await formatThroughProvider(stripped, language, options, token);
   if (formatted === undefined) {
     return undefined;
   }
@@ -199,32 +226,153 @@ async function formatOneScriptHit(
   return encoded.text;
 }
 
-async function formatJavaScript(
+function isParseableJson(code: string): boolean {
+  try {
+    JSON.parse(code);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Format `code` with whichever provider is registered for `language`.
+ *
+ * Writes `code` to a scratch file under `.servicenow-xml/format-tmp/` (or the
+ * OS temp dir when no workspace is open) and formats that file. `openTextDocument`
+ * on a real file URI does not open a tab, unlike the untitled-document form which
+ * in practice does — so the scratch file avoids leaking a tab per embedded
+ * field. The file is deleted in a `finally` block.
+ *
+ * Falls back to an in-memory untitled document if the scratch file cannot be
+ * created (read-only filesystem, etc.).
+ */
+async function formatThroughProvider(
   code: string,
+  language: 'javascript' | 'json',
   options: vscode.FormattingOptions,
   token: vscode.CancellationToken
 ): Promise<string | undefined> {
   if (token.isCancellationRequested) {
     return undefined;
   }
+
+  const temp = createFormatTempFile(code, language);
+  if (temp) {
+    try {
+      const doc = await vscode.workspace.openTextDocument(temp.uri);
+      const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+        'vscode.executeFormatDocumentProvider',
+        doc.uri,
+        options
+      );
+      if (!edits?.length) {
+        return code;
+      }
+      return applyTextEdits(code, edits, doc);
+    } finally {
+      try {
+        fs.rmSync(temp.path, { force: true });
+      } catch {
+        // ignore cleanup errors
+      }
+    }
+  }
+
+  // Fallback: untitled in-memory document when a scratch file could not be created.
   let doc: vscode.TextDocument;
   try {
     doc = await vscode.workspace.openTextDocument({
-      language: 'javascript',
+      language,
       content: code
     });
   } catch {
     return code;
   }
-  const edits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
+  const fallbackEdits = await vscode.commands.executeCommand<vscode.TextEdit[]>(
     'vscode.executeFormatDocumentProvider',
     doc.uri,
     options
   );
-  if (!edits?.length) {
+  if (!fallbackEdits?.length) {
     return code;
   }
-  return applyTextEdits(code, edits, doc);
+  return applyTextEdits(code, fallbackEdits, doc);
+}
+
+/** Temp-file info for the formatting scratch file. */
+interface FormatTempFile {
+  uri: vscode.Uri;
+  path: string;
+}
+
+/**
+ * Resolve the directory for formatting scratch files.
+ *
+ * Prefers `.servicenow-xml/format-tmp/` in the first workspace folder so the
+ * files are gitignored and co-located with other extension data. Falls back to
+ * a directory under the OS temp dir when no workspace folder is open.
+ */
+function resolveFormatTempDir(): string | undefined {
+  const folder = vscode.workspace.workspaceFolders?.[0];
+  if (folder && folder.uri.scheme === 'file') {
+    const dir = path.join(folder.uri.fsPath, FORMAT_TEMP_SUBDIR);
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      removeStaleFormatTempFiles(dir);
+      ensureGitignoreEntry(folder.uri.fsPath);
+      return dir;
+    } catch {
+      return undefined;
+    }
+  }
+  // No workspace folder (or non-file scheme): use OS temp dir as a last resort.
+  return undefined;
+}
+
+const FORMAT_TEMP_FILE_RE = /^format-\d+-[a-z0-9]+\.(?:js|json)$/i;
+const FORMAT_TEMP_STALE_MS = 60 * 60 * 1000;
+
+function removeStaleFormatTempFiles(dir: string): void {
+  const cutoff = Date.now() - FORMAT_TEMP_STALE_MS;
+  for (const name of fs.readdirSync(dir)) {
+    if (!FORMAT_TEMP_FILE_RE.test(name)) {
+      continue;
+    }
+    const filePath = path.join(dir, name);
+    try {
+      if (fs.statSync(filePath).mtimeMs < cutoff) {
+        fs.rmSync(filePath, { force: true });
+      }
+    } catch {
+      // Ignore files removed or locked while scanning the scratch directory.
+    }
+  }
+}
+
+/**
+ * Write `code` to a uniquely-named scratch file and return its path/URI.
+ * Returns undefined if the file cannot be created.
+ */
+function createFormatTempFile(
+  code: string,
+  language: 'javascript' | 'json'
+): FormatTempFile | undefined {
+  const ext = language === 'javascript' ? '.js' : '.json';
+  const baseDir =
+    resolveFormatTempDir() ??
+    path.join(os.tmpdir(), 'servicenow-xml-format-tmp');
+  try {
+    fs.mkdirSync(baseDir, { recursive: true });
+    const tmpPath = path.join(
+      baseDir,
+      `format-${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`
+    );
+    fs.writeFileSync(tmpPath, code, 'utf8');
+    return { uri: vscode.Uri.file(tmpPath), path: tmpPath };
+  } catch {
+    return undefined;
+  }
 }
 
 function applyTextEdits(

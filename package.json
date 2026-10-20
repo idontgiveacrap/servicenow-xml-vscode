@@ -2,11 +2,11 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "2.13.0",
+  "version": "3.7.0",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
-    "vscode": "^1.85.0"
+    "vscode": "^1.101.0"
   },
   "categories": [
     "Linters",
@@ -14,8 +14,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onStartupFinished",
-    "onLanguage:xml"
+    "onStartupFinished"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -65,20 +64,24 @@
         "title": "Reveal in File Explorer"
       },
       {
+        "command": "servicenowXml.findReferences",
+        "title": "Find References"
+      },
+      {
         "command": "servicenowXml.changeActionToDelete",
-        "title": "Delete"
+        "title": "Convert record to DELETE…"
       },
       {
-        "command": "servicenowXml.cursor.installHelpers",
-        "title": "ServiceNow XML: Install Cursor Helpers"
+        "command": "servicenowXml.deleteRecordFromDisk",
+        "title": "Delete from disk…"
       },
       {
-        "command": "servicenowXml.cursor.runIndexer",
-        "title": "ServiceNow XML: Run Repo Indexer"
+        "command": "servicenowXml.installHelpers",
+        "title": "ServiceNow XML: Install Agent Helpers"
       },
       {
         "command": "servicenowXml.editJsonStringCode",
-        "title": "ServiceNow XML: Edit Embedded Script…"
+        "title": "ServiceNow XML: Edit Embedded Script or JSON…"
       },
       {
         "command": "servicenowXml.loadJsonStringDraft",
@@ -91,6 +94,10 @@
       {
         "command": "servicenowXml.pruneRedundantDeletes",
         "title": "ServiceNow XML: Prune redundant DELETE files…"
+      },
+      {
+        "command": "servicenowXml.codelens.openUrl",
+        "title": "ServiceNow XML: Open/Copy Record URL"
       }
     ],
     "viewsContainers": {
@@ -133,6 +140,10 @@
         {
           "command": "servicenowXml.changeActionToDelete",
           "when": "false"
+        },
+        {
+          "command": "servicenowXml.deleteRecordFromDisk",
+          "when": "false"
         }
       ],
       "view/title": [
@@ -160,23 +171,33 @@
       "view/item/context": [
         {
           "command": "servicenowXml.revealInExplorer",
-          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
           "group": "navigation@1"
         },
         {
           "command": "servicenowXml.revealInFileExplorer",
-          "when": "view == servicenowXml.records && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate)",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
           "group": "navigation@2"
         },
         {
+          "command": "servicenowXml.findReferences",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
+          "group": "navigation@3"
+        },
+        {
           "command": "servicenowXml.pruneRedundantDeletes",
-          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record || viewItem == servicenowXml.record.insertOrUpdate || viewItem == servicenowXml.table)",
+          "when": "view == servicenowXml.records && servicenowXml.hasSnc && (viewItem == servicenowXml.record.delete || viewItem == servicenowXml.table.hasDelete)",
           "group": "1_modification@1"
         },
         {
           "command": "servicenowXml.changeActionToDelete",
           "when": "view == servicenowXml.records && viewItem == servicenowXml.record.insertOrUpdate",
           "group": "7_modification@1"
+        },
+        {
+          "command": "servicenowXml.deleteRecordFromDisk",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
+          "group": "7_modification@2"
         }
       ],
       "editor/context": [
@@ -204,6 +225,11 @@
           "type": "boolean",
           "default": true,
           "description": "After XML format, format JavaScript in script-typed XML fields (including scripts nested in update-set payloads). Uses the editor's JavaScript formatter."
+        },
+        "servicenowXml.formatJson": {
+          "type": "boolean",
+          "default": true,
+          "description": "After XML format, format JSON in JSON-typed XML fields such as output_schema, props and composition (including those nested in update-set payloads). Uses the editor's JSON formatter. Fields that do not parse as JSON are left alone."
         },
         "servicenowXml.formatXmlFirst": {
           "type": "boolean",
@@ -264,25 +290,30 @@
           ],
           "description": "Sort order for Records navigator tables and records."
         },
-        "servicenowXml.cursorHelpers.enable": {
+        "servicenowXml.mcp.enable": {
           "type": "boolean",
           "default": true,
-          "description": "In Cursor only: install ServiceNow MCP servers, user rules, and the repo indexer on activation. No-op in VS Code."
+          "description": "Register ServiceNow MCP servers and install agent helpers (rules + scripts). In Cursor this also registers the Cursor plugin adapter."
         },
-        "servicenowXml.cursorHelpers.installIndexHook": {
+        "servicenowXml.mcp.registry": {
           "type": "boolean",
           "default": true,
-          "description": "In Cursor only: idempotently add a user sessionStart hook that refreshes index.json when stale for ServiceNow export workspaces."
+          "description": "Register the servicenow-xml-registry MCP server (schema, scripting, JS performance, workspace discovery)."
         },
-        "servicenowXml.cursorHelpers.pythonPath": {
-          "type": "string",
-          "default": "python",
-          "description": "Python executable used for the repo indexer, local MCP servers (DB schema, scripting reference, instance), and sessionStart hook."
+        "servicenowXml.mcp.instance": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register the servicenow-xml-instance MCP server (read-only snc queries). Also requires snc on PATH or servicenowXml.snc.path."
+        },
+        "servicenowXml.mcp.remote": {
+          "type": "boolean",
+          "default": true,
+          "description": "Register git-based remote MCP servers (servicenow-xml-docs and servicenow-xml-ui-examples via gitmcp.io)."
         },
         "servicenowXml.snc.path": {
           "type": "string",
           "default": "snc",
-          "description": "ServiceNow CLI executable for pruning redundant DELETE exports and the Cursor instance MCP. Leave as snc when the CLI is on PATH."
+          "description": "ServiceNow CLI executable for pruning redundant DELETE exports and the instance MCP. Leave as snc when the CLI is on PATH."
         },
         "servicenowXml.snc.mcpProfiles": {
           "type": "array",
@@ -290,10 +321,26 @@
             "type": "string"
           },
           "default": [],
-          "description": "Cursor instance MCP allowlist of snc profile names. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
+          "description": "Instance MCP allowlist of snc profile names for Cursor and VS Code. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
+        },
+        "servicenowXml.codelens.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show ServiceNow record URL code lens at the top of export files. Provides Studio, form, JSON, and XML instance links."
+        },
+        "servicenowXml.instanceBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of your ServiceNow instance (e.g. https://my-instance.service-now.com). When set, code lens links open directly in a browser. When empty, relative link paths are copied to the clipboard."
         }
       }
     },
+    "mcpServerDefinitionProviders": [
+      {
+        "id": "servicenow-xml",
+        "label": "ServiceNow XML"
+      }
+    ],
     "configurationDefaults": {
       "[xml]": {
         "editor.defaultFormatter": "local.servicenow-xml"
@@ -308,7 +355,9 @@
         ],
         "embeddedLanguages": {
           "meta.embedded.block.javascript": "javascript",
-          "source.js": "javascript"
+          "source.js": "javascript",
+          "meta.embedded.block.json": "json",
+          "meta.embedded.block.css": "css"
         }
       }
     ]
@@ -319,21 +368,21 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-catalog-cache.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-codelens.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-document-symbols.js && node scripts/smoke-agent-mcp-config.js && node scripts/smoke-instance-mcp.js && node scripts/smoke-records-tree.js && node scripts/smoke-diagnostic-range.js && tsc --noEmit"
   },
   "devDependencies": {
-    "@types/eslint": "^9.6.1",
+    "@types/eslint": "^8.56.12",
     "@types/node": "^20.11.0",
-    "@types/vscode": "^1.85.0",
+    "@types/vscode": "~1.101.0",
     "@vscode/vsce": "^3.2.0",
     "esbuild": "^0.28.1",
-    "typescript": "^5.6.0"
-  },
-  "dependencies": {
     "eslint": "^8.57.1",
     "eslint-plugin-servicenow": "^2.0.0",
     "fast-xml-parser": "^5.10.1",
     "jsonc-parser": "^3.3.1",
-    "minimatch": "^9.0.5"
+    "minimatch": "^9.0.5",
+    "typescript": "^5.6.0",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.3.2"
   }
 }

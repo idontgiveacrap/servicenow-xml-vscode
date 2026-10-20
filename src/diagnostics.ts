@@ -1,10 +1,17 @@
 import * as vscode from 'vscode';
 import { classifyAndValidate } from './kinds';
 import { SnDiagnostic } from './kinds/types';
-import { parseSnXml } from './parseSnXml';
+import { getOrParseXml } from './registry/lazyParse';
+import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import {
+  extractXmlReferences,
+  referenceTargetIndex
+} from './registry/xmlReferences';
+import { extractRecordIdentities } from './navigator/recordName';
 import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
+import { inferXmlDiagnosticEnd } from './diagnosticRange';
 import { KindStatusBar } from './statusBar';
 import { isPathIgnored } from './ignorePaths';
 import { isEditableDocument } from './snDocumentShape';
@@ -102,6 +109,7 @@ export class DiagnosticsController implements vscode.Disposable {
       this.timers.delete(key);
     }
     this.collection.delete(document.uri);
+    getWorkspaceRegistryService().registry.invalidateParse(document.uri.toString());
   }
 
   /**
@@ -131,13 +139,23 @@ export class DiagnosticsController implements vscode.Disposable {
     const filePath = document.uri.fsPath;
     const workspaceAppSysId = this.getWorkspaceAppSysId();
     const workspaceAppScope = this.getWorkspaceAppScope();
-    const parsed = parseSnXml(text, filePath);
+    const parsed = getOrParseXml(
+      getWorkspaceRegistryService().registry,
+      document.uri.toString(),
+      version,
+      text,
+      filePath
+    );
     const classification = classifyAndValidate(parsed, {
       workspaceAppSysId,
       requireRecordSysIds: this.requiresRecordSysId(document)
     });
 
-    const snDiags: SnDiagnostic[] = [...classification.diagnostics];
+    const snDiags: SnDiagnostic[] = [
+      ...classification.diagnostics,
+      ...deletedReferenceDiagnostics(document, text),
+      ...duplicateSysIdDiagnostics(parsed.rows)
+    ];
 
     if (
       config.get<boolean>('lintJavaScript', true) &&
@@ -210,11 +228,13 @@ function toVsDiagnostic(
   document: vscode.TextDocument
 ): vscode.Diagnostic {
   const start = clampPosition(document, d.line, d.character);
-  const end = clampPosition(
-    document,
-    d.endLine ?? d.line,
-    d.endCharacter ?? d.character + 1
-  );
+  const endLine = d.endLine ?? d.line;
+  const endCharacter =
+    d.endCharacter ??
+    (endLine === d.line
+      ? inferXmlDiagnosticEnd(document.lineAt(start.line).text, start.character)
+      : d.character + 1);
+  const end = clampPosition(document, endLine, endCharacter);
   const range = new vscode.Range(start, end);
   const severity = toSeverity(d.severity);
   const diagnostic = new vscode.Diagnostic(range, d.message, severity);
@@ -238,6 +258,82 @@ function toSeverity(level: SnDiagnostic['severity']): vscode.DiagnosticSeverity 
     default:
       return vscode.DiagnosticSeverity.Warning;
   }
+}
+
+/**
+ * Error when an export element points at a sys_id whose only project row is DELETE.
+ * Ids that are simply absent (platform rows) are not diagnostics; agents query them.
+ */
+function deletedReferenceDiagnostics(
+  document: vscode.TextDocument,
+  text: string
+): SnDiagnostic[] {
+  const uri = document.uri.toString();
+  const edges = extractXmlReferences(text, {
+    uri,
+    relativePath: document.uri.fsPath
+  });
+  if (edges.length === 0) {
+    return [];
+  }
+  const registry = getWorkspaceRegistryService().registry;
+  const others = registry.listRecords().filter((record) => record.uri !== uri);
+  const here = extractRecordIdentities(text, document.uri.fsPath);
+  const targetState = referenceTargetIndex([...others, ...here]);
+  const diagnostics: SnDiagnostic[] = [];
+  for (const edge of edges) {
+    if (targetState(edge.toSysId) !== 'deleted') {
+      continue;
+    }
+    const start = document.positionAt(edge.startOffset);
+    const end = document.positionAt(edge.startOffset + edge.toSysId.length);
+    diagnostics.push({
+      message: `Referenced sys_id ${edge.toSysId} (${edge.element}) is deleted in this project.`,
+      severity: 'error',
+      line: start.line,
+      character: start.character,
+      endLine: end.line,
+      endCharacter: end.character,
+      code: 'xml-reference-deleted'
+    });
+  }
+  return diagnostics;
+}
+
+/**
+ * Warning when a record's sys_id appears in multiple active rows across the
+ * workspace — agents cannot tell which file is canonical without sys_updated_on.
+ */
+function duplicateSysIdDiagnostics(
+  rows: Array<{ sysId?: string; sysIdLine?: number; sysIdCharacter?: number }>
+): SnDiagnostic[] {
+  const duplicates = getWorkspaceRegistryService().getDuplicateSysIds();
+  if (duplicates.length === 0) {
+    return [];
+  }
+  const duplicateMap = new Map(
+    duplicates.map((d) => [d.sysId.toLowerCase(), d])
+  );
+  const diagnostics: SnDiagnostic[] = [];
+  for (const row of rows) {
+    if (!row.sysId || row.sysIdLine == null || row.sysIdCharacter == null) {
+      continue;
+    }
+    const dup = duplicateMap.get(row.sysId.toLowerCase());
+    if (!dup) {
+      continue;
+    }
+    diagnostics.push({
+      message: `sys_id ${row.sysId} appears in ${dup.count} active rows; use sys_updated_on to pick the canonical file.`,
+      severity: 'warning',
+      line: row.sysIdLine,
+      character: row.sysIdCharacter,
+      endLine: row.sysIdLine,
+      endCharacter: row.sysIdCharacter + row.sysId.length,
+      code: 'xml-duplicate-sys-id'
+    });
+  }
+  return diagnostics;
 }
 
 function clampPosition(

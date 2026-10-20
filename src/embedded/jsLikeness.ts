@@ -8,6 +8,8 @@
  * contain a construct that only appears in code, never in a scalar field value.
  */
 
+import { stripJavascriptWrapper } from '../jsonStringEditor/escape';
+
 /** Statement types that only appear in real script bodies. */
 const SCRIPT_STATEMENTS = new Set([
   'FunctionDeclaration',
@@ -45,6 +47,12 @@ export interface JsLikenessResult {
   ok: boolean;
   /** Why the candidate was rejected, for the "no script here" message. */
   reason?: string;
+}
+
+export interface EmbeddedScriptCandidate extends JsLikenessResult {
+  /** Source with any javascript(…) wrapper removed. */
+  code: string;
+  hadWrapper: boolean;
 }
 
 interface EspreeNode {
@@ -122,4 +130,22 @@ export function looksLikeJavaScript(code: string): JsLikenessResult {
   }
 
   return { ok: false, reason: 'parses as a plain value, not code' };
+}
+
+/**
+ * Decide whether a raw embedded value should open as a script.
+ *
+ * A `javascript(…)` wrapper is accepted on its own: ServiceNow writes it to mark
+ * the value as an expression, so `javascript(current.number)` is code even
+ * though its inner source is only a member lookup.
+ */
+export function looksLikeEmbeddedScript(
+  value: string
+): EmbeddedScriptCandidate {
+  const { code, hadWrapper } = stripJavascriptWrapper(value);
+  if (hadWrapper) {
+    return { ok: true, code, hadWrapper };
+  }
+  const likeness = looksLikeJavaScript(code);
+  return { ...likeness, code, hadWrapper };
 }

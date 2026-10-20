@@ -1,6 +1,7 @@
 import * as assert from 'node:assert/strict';
 import {
   buildDecodedToRawMap,
+  buildNormalizedDecodedToRawMap,
   hasJavascriptWrapper,
   mapDecodedRangeToRaw,
   restoreJavascriptWrapper,
@@ -16,8 +17,10 @@ import {
 } from '../src/jsonStringEditor/detect';
 import {
   decodeXmlEntities,
-  encodeXmlEntities
+  encodeXmlEntities,
+  parseSnXml
 } from '../src/parseSnXml';
+import { encodeHit, jsonFieldAt, scriptAt } from '../src/scriptHits';
 import {
   ensureGitignoreEntry,
   gitignoreHasEntry,
@@ -80,16 +83,146 @@ section('CDATA / XML entities');
   assert.equal(map!.length, decoded.length);
   const range = mapDecodedRangeToRaw(map!, 0, decoded.length, raw.length);
   assert.deepEqual(range, { rawStart: 0, rawEnd: raw.length });
+
+  // CRLF collapse must not drop the first character of the next line.
+  const crlf = 'ab\r\ncd';
+  const crlfNorm = buildNormalizedDecodedToRawMap(crlf, (s) => s);
+  assert.ok(crlfNorm);
+  assert.equal(crlfNorm!.normalized, 'ab\ncd');
+  assert.equal(crlfNorm!.normalizedToRaw[crlfNorm!.normalized.indexOf('c')], crlf.indexOf('c'));
+
+  // A literal `&` in CDATA is not an entity, even when a `;` follows later.
+  const script = 'if (a && b) {\r\n  return;\r\n}';
+  const scriptNorm = buildNormalizedDecodedToRawMap(script, (s) => s);
+  assert.ok(scriptNorm);
+  assert.equal(scriptNorm!.normalized, 'if (a && b) {\n  return;\n}');
+  const amp = scriptNorm!.normalized.indexOf('&');
+  assert.equal(scriptNorm!.normalizedToRaw[amp], script.indexOf('&'));
+
+  // `&#13;` plus a file newline is one logical line break, and the next
+  // character keeps its raw index.
+  const encoded = 'var x;&#13;\nvar y;';
+  const encodedNorm = buildNormalizedDecodedToRawMap(encoded, decodeXmlEntities);
+  assert.ok(encodedNorm);
+  assert.equal(encodedNorm!.normalized, 'var x;\nvar y;');
+  const yAt = encodedNorm!.normalized.indexOf('y');
+  assert.equal(encodedNorm!.normalizedToRaw[yAt], encoded.indexOf('y'));
 }
 
 section('eligibility + draft keys');
 {
-  assert.equal(isEligibleScriptString('clientTransformScript', 'x'), true);
-  assert.equal(isEligibleScriptString('label', 'javascript(foo)'), true);
-  assert.equal(isEligibleScriptString('label', 'nope'), false);
+  // Content, not the property name: a value under a *Script key that is only a
+  // scalar is not a script, and a script under any other key still is.
+  assert.equal(isEligibleScriptString('x'), false);
+  assert.equal(isEligibleScriptString('function f(){ return 1; }'), true);
+  assert.equal(isEligibleScriptString('nope'), false);
+  assert.equal(isEligibleScriptString('evidence_submission_field sys_id'), false);
+  // An explicit javascript(…) wrapper is its own evidence, even when the inner
+  // source is just a member lookup.
+  assert.equal(isEligibleScriptString('javascript(current.number)'), true);
   const k1 = makeDraftKey('a.xml', 'composition', 'events.[0].clientTransformScript');
   const k2 = makeDraftKey('a.xml', 'composition', 'events.[1].clientTransformScript');
   assert.notEqual(k1, k2);
+}
+
+section('whole JSON field at the caret');
+{
+  const propsJson = [
+    '[',
+    '  {',
+    '    "name": "sys_id",',
+    '    "label": "Entity sys_id",',
+    '    "description": "evidence_submission_field sys_id",',
+    '    "mandatory": true',
+    '  }',
+    ']'
+  ].join('\n');
+  // ServiceNow writes a CR entity before each newline in a text-node field.
+  const rawProps = propsJson.split('\n').join('&#13;\n');
+  const xml = `<?xml version="1.0"?>
+<record_update table="sys_ux_data_broker_transform">
+  <sys_ux_data_broker_transform action="INSERT_OR_UPDATE">
+    <sys_id>cccccccccccccccccccccccccccccccc</sys_id>
+    <props>${rawProps}</props>
+    <data>{"onLoad":"function go(){ return 1; }"}</data>
+    <script><![CDATA[function transform(input){ return input; }]]></script>
+  </sys_ux_data_broker_transform>
+</record_update>
+`;
+  const opts = { hostPath: 'broker.xml', hostVersion: 1, includeJsonFields: true };
+
+  const inProps = xml.indexOf('"label"');
+  const fieldHit = scriptAt(xml, inProps, opts);
+  assert.ok(fieldHit, 'expected the enclosing JSON field');
+  assert.equal(fieldHit!.role, 'jsonField');
+  assert.equal(fieldHit!.fieldName, 'props');
+  assert.equal(fieldHit!.code, propsJson);
+  assert.equal(xml.slice(fieldHit!.hostStart, fieldHit!.hostEnd), rawProps);
+
+  // Opt-in only: lint and range formatting must not see data as a script.
+  assert.equal(scriptAt(xml, inProps, { hostPath: 'broker.xml' }), null);
+
+  // A plain string inside the field is data, so the field still wins.
+  const onDescription = xml.indexOf('evidence_submission_field sys_id');
+  assert.equal(scriptAt(xml, onDescription, opts)!.role, 'jsonField');
+
+  // A string that reads as code wins over the field that contains it.
+  const onEmbeddedScript = xml.indexOf('function go');
+  const stringHit = scriptAt(xml, onEmbeddedScript, opts);
+  assert.equal(stringHit!.role, 'jsonString');
+  assert.equal(stringHit!.keyPath, 'onLoad');
+  assert.equal(stringHit!.code, 'function go(){ return 1; }');
+
+  // A script-typed field still resolves as a script.
+  assert.equal(
+    scriptAt(xml, xml.indexOf('function transform'), opts)!.role,
+    'scriptField'
+  );
+
+  // Write-back re-encodes the whole body, which drops the &#13; noise.
+  const edited = propsJson.replace('"mandatory": true', '"mandatory": false');
+  const encoded = encodeHit(fieldHit!, edited);
+  assert.ok(encoded.ok, 'expected the field to encode');
+  const next =
+    xml.slice(0, fieldHit!.hostStart) +
+    (encoded as { text: string }).text +
+    xml.slice(fieldHit!.hostEnd);
+  assert.ok(!next.includes('&#13;'), 'CR entities should be gone after write-back');
+  const roundTrip = jsonFieldAt(parseSnXml(next), fieldHit!.hostStart);
+  assert.ok(roundTrip, 'expected to re-find the field after the splice');
+  assert.equal(roundTrip!.code, edited);
+  assert.equal(
+    (JSON.parse(roundTrip!.code) as Array<{ mandatory: boolean }>)[0].mandatory,
+    false
+  );
+}
+
+section('CDATA JSON offsets with entity-like text and empty array values');
+{
+  const composition =
+    '{\r\n' +
+    '  "handlers": [{}, [], {"clientTransformScript": "function later(){ return 1; }"}],\r\n' +
+    '  "literal": "function literal(){ return \\"&amp;\\"; }"\r\n' +
+    '}';
+  const xml = `<?xml version="1.0"?>
+<record_update table="sys_ux_macroponent">
+  <sys_ux_macroponent action="INSERT_OR_UPDATE">
+    <sys_id>dddddddddddddddddddddddddddddddd</sys_id>
+    <composition><![CDATA[${composition}]]></composition>
+  </sys_ux_macroponent>
+</record_update>
+`;
+  const laterAt = xml.indexOf('function later');
+  const later = detectJsonStringAtOffset(xml, laterAt, 'edge.xml', 1, 'edge.xml');
+  assert.ok(later, 'expected a hit after empty array values');
+  assert.equal(later!.keyPath, 'handlers.[2].clientTransformScript');
+  assert.equal(later!.absoluteStart, xml.indexOf('"function later'));
+
+  const literalAt = xml.indexOf('function literal');
+  const literal = detectJsonStringAtOffset(xml, literalAt, 'edge.xml', 1, 'edge.xml');
+  assert.ok(literal, 'CDATA literal entity-like text must remain detectable');
+  assert.equal(literal!.keyPath, 'literal');
+  assert.equal(literal!.absoluteStart, xml.indexOf('"function literal'));
 }
 
 section('detect in composition XML');

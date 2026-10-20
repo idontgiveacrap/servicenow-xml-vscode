@@ -1,0 +1,965 @@
+{
+  "version": 1,
+  "globals": [
+    {
+      "name": "gs",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "Class",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "SNC",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideRecord",
+      "profile": "both",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideRecordSecure",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideAggregate",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideQuery",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideQueryCondition",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideFilter",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideElement",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideTableHierarchy",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDBFunctionBuilder",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDateTime",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDate",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideTime",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDuration",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSchedule",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideScheduleDateTime",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSystem",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSession",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideUser",
+      "profile": "both",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideImpersonate",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSecurityManager",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideEncrypter",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDigest",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSysAttachment",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideStringUtil",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideXMLUtil",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideProperties",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideTemplate",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideURI",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideEmailOutbound",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideTransaction",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideScriptedExtensionPoint",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideSPScriptable",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_ws",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_fd",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_auth",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_sc",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_cmdb",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_impex",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "sn_notification",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "Packages",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "java",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "current",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "previous",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_scratchpad",
+      "profile": "both",
+      "writable": true,
+      "fromSupplement": true
+    },
+    {
+      "name": "workflow",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "activity",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "action",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "event",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "producer",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "template",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "email",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "email_action",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "request",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "response",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "RP",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "AbstractAjaxProcessor",
+      "profile": "server",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_form",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_user",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_list",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_navigation",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_document",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_i18n",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_modal",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_menu",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_service_catalog",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideAjax",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideModal",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideModalForm",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideDialogWindow",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideList2",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideMenu",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideURL",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GlideForm",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "NOW",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "spModal",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "spUtil",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "gel",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "getMessage",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "alert",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "confirm",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "prompt",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "console",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "document",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "window",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "location",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "navigator",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "history",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "top",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "parent",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "fetch",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "CustomEvent",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "setTimeout",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "clearTimeout",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "setInterval",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "clearInterval",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "jQuery",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "$",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "$j",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "angular",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "imports",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "api",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "CustomEventManager",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "DevStudio",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "GJSV",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "NOW_UCM_INFO",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "Prism",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "alertDeprecated",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "amb",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "appliedPageFragmentsPromise",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "breakpointHitAlert",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "caml_fs_tmp",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "coreui_total_ui_time",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "ephox",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "frameBusterRouteChangeWithoutRedirect",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_ambClient",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_application_picker",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_ck",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_first_day_of_week",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_tiny_url",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_tz",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_tz_offset",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_tz_user_offset",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_user_date_format",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "g_user_date_time_format",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "gsft_main",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "initDevStudioLauncher",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "interopPatch",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "jsoo_create_file",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "launchScriptDebugger",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "launchScriptDebuggerOK",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "loadScriptWhenIdle",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "now",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "nowAnalytics",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "nowUiFramework",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "nowUiFrameworkLogs",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "nowUiFrameworkMetrics",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "nowWindowManager",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "pageMeta",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "popupOpenFocus",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "regeneratorRuntime",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "resolveApfPromise",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "resolveSubscreenPromise",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "serviceWorkerManager",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "snmCabrillo",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "subscreenPromise",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "tectonicVarWrapperState",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "tinyMCE",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "tinymce",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "transaction_source",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "triggerSoftwareUpdateFlow",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "uxPageSessionDebug",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "ux_globals",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "uxf",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "uxfIntentLibrary",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "uxfTriggerLibrary",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "uxf_timing",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    },
+    {
+      "name": "wrapTectonicVarIfNeeded",
+      "profile": "client",
+      "writable": false,
+      "fromSupplement": true
+    }
+  ]
+}

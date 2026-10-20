@@ -1,6 +1,11 @@
 import { extractRecordIdentities } from './recordName';
 import { scanActionRowBounds } from '../parseSnXml';
 
+/** Directory holding live application source. */
+const UPDATE_DIR = 'update';
+/** Sibling directory where authored deletions and residual config belong. */
+const ELECTIVE_UPDATE_DIR = 'author_elective_update';
+
 /** Target row identity from the Records navigator catalog. */
 export interface ChangeActionTarget {
   table: string;
@@ -67,6 +72,35 @@ export function changeActionToDelete(
   }
 
   return replaceOpenTagAction(text, bounds.startOffset, 'INSERT_OR_UPDATE', 'DELETE');
+}
+
+/**
+ * Where an export under `update/` belongs once it becomes a DELETE: the sibling
+ * `author_elective_update/`, same file name. Returns undefined when the path has
+ * no `update` ancestor to swap, which covers standalone exports and files that
+ * are already filed as elective.
+ *
+ * The nearest `update` ancestor wins, so a checkout that happens to sit under a
+ * directory of that name higher up does not retarget the move. Separators are
+ * preserved from the input rather than normalized, because the result is handed
+ * straight back to the filesystem.
+ */
+export function electiveUpdatePathFor(fsPath: string): string | undefined {
+  const separator = fsPath.includes('\\') ? '\\' : '/';
+  const segments = fsPath.split(/[\\/]/);
+  // Stop before the last segment: that is the file name, not a directory.
+  for (let i = segments.length - 2; i >= 0; i--) {
+    const segment = segments[i].toLowerCase();
+    if (segment === ELECTIVE_UPDATE_DIR) {
+      return undefined;
+    }
+    if (segment === UPDATE_DIR) {
+      const moved = [...segments];
+      moved[i] = ELECTIVE_UPDATE_DIR;
+      return moved.join(separator);
+    }
+  }
+  return undefined;
 }
 
 /**

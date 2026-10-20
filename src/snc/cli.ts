@@ -141,10 +141,14 @@ async function runSnc(
   timeout: number
 ): Promise<{ ok: true; stdout: string } | { ok: false; reason: string }> {
   try {
-    args.push('--no-interactive')
-    args.push('--no-verbose')
-    args.push('--output', 'json')
-    const { stdout } = await execFileAsync(sncPath, args, {
+    const cliArgs = [
+      ...args,
+      '--no-interactive',
+      '--no-verbose',
+      '--output',
+      'json'
+    ];
+    const { stdout } = await execFileAsync(sncPath, cliArgs, {
       timeout,
       windowsHide: true,
       maxBuffer: 16 * 1024 * 1024

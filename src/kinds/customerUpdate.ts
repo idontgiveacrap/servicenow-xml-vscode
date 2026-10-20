@@ -2,9 +2,12 @@ import { XMLValidator } from 'fast-xml-parser';
 import { KindProfile, SnDiagnostic, STRICT_RECORD_ACTIONS } from './types';
 import {
   decodeXmlEntities,
+  extractRowFieldText,
   extractRowElement,
+  isPrimaryAction,
   isValidSysId,
-  offsetToPosition
+  offsetToPosition,
+  scanActionRowBounds
 } from '../parseSnXml';
 
 /**
@@ -422,6 +425,9 @@ function validateUpdateXml(
           diagnostics
         );
       }
+      if (validation === true) {
+        checkPayloadSysUpdateNames(payload, row, diagnostics);
+      }
     }
   }
 
@@ -492,6 +498,47 @@ function checkPayloadAppFields(
       line: row.line,
       character: row.character,
       code: 'cu-payload-sys-package-mismatch'
+    });
+  }
+}
+
+/**
+ * Warn when a payload row's update name does not identify its source record.
+ *
+ * `sys_update_version` has no `sys_update_name`. `sys_metadata_delete` reuses
+ * the deleted file's update name rather than `sys_metadata_delete_{sys_id}`.
+ */
+function checkPayloadSysUpdateNames(
+  payload: string,
+  wrapperRow: RowSlice,
+  diagnostics: SnDiagnostic[]
+): void {
+  for (const bounds of scanActionRowBounds(payload)) {
+    if (!isPrimaryAction(bounds.rawAction.toUpperCase())) {
+      continue;
+    }
+    if (
+      bounds.tableName === 'sys_update_version' ||
+      bounds.tableName === 'sys_metadata_delete'
+    ) {
+      continue;
+    }
+    const rowXml = payload.slice(bounds.startOffset, bounds.endOffset);
+    const sysId = extractRowFieldText(rowXml, 'sys_id');
+    const sysUpdateName = extractRowFieldText(rowXml, 'sys_update_name');
+    if (!sysId || !isValidSysId(sysId) || !sysUpdateName) {
+      continue;
+    }
+    const expected = `${bounds.tableName}_${sysId}`;
+    if (sysUpdateName.toLowerCase() === expected.toLowerCase()) {
+      continue;
+    }
+    diagnostics.push({
+      message: `Payload sys_update_name "${sysUpdateName}" does not match ${expected}.`,
+      severity: 'warning',
+      line: wrapperRow.line,
+      character: wrapperRow.character,
+      code: 'cu-payload-sys-update-name-mismatch'
     });
   }
 }

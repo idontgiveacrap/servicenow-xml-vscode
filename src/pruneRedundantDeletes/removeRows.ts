@@ -1,4 +1,5 @@
 import { extractRecordIdentities } from '../navigator/recordName';
+import { removeRecordRow } from '../navigator/removeRecordRow';
 import { scanActionRowBounds } from '../parseSnXml';
 
 /**
@@ -15,8 +16,10 @@ export type RemoveDeleteRowsResult =
 /**
  * Drop the DELETE rows named by `sysIds` from an export's XML text.
  *
- * Reports `delete-file` when nothing else remains, so the caller removes the
- * file instead of leaving an export with no rows in it.
+ * Row removal, companion versions and delete metadata, and the whole-file
+ * decision all go through `removeRecordRow` — the same path as Delete from disk.
+ * This function only checks that each requested sys_id is still a DELETE row.
+ * Reports `delete-file` when that removal leaves no other records.
  */
 export function removeDeleteRows(
   text: string,
@@ -46,31 +49,17 @@ export function removeDeleteRows(
       expected: wanted.size
     };
   }
-  if (removing.length === primaryRows.length) {
+
+  const result = removeRecordRow(text, filePath, removing);
+  if (result.outcome === 'not-found') {
+    return {
+      outcome: 'mismatch',
+      removed: 0,
+      expected: wanted.size
+    };
+  }
+  if (result.outcome === 'delete-file') {
     return { outcome: 'delete-file', removed: removing.length };
   }
-
-  // Cut from the end so earlier offsets stay valid as the text shrinks.
-  const ranges = removing
-    .map((identity) => boundsByStart.get(identity.startOffset)!)
-    .sort((a, b) => b.startOffset - a.startOffset);
-  let next = text;
-  for (const range of ranges) {
-    let start = range.startOffset;
-    while (start > 0 && (next[start - 1] === ' ' || next[start - 1] === '\t')) {
-      start -= 1;
-    }
-    let end = range.endOffset;
-    while (next[end] === ' ' || next[end] === '\t') {
-      end += 1;
-    }
-    if (next[end] === '\r') {
-      end += 1;
-    }
-    if (next[end] === '\n') {
-      end += 1;
-    }
-    next = next.slice(0, start) + next.slice(end);
-  }
-  return { outcome: 'rewrite', removed: removing.length, text: next };
+  return { outcome: 'rewrite', removed: removing.length, text: result.text };
 }

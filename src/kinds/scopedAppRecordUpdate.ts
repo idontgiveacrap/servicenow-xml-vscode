@@ -1,8 +1,10 @@
 import { KindProfile, SnDiagnostic, STRICT_RECORD_ACTIONS } from './types';
 import {
+  extractRowFieldText,
   isCleanupAction,
   isPrimaryAction,
-  isValidSysId
+  isValidSysId,
+  scanDirectChildElements
 } from '../parseSnXml';
 import { parseExportFileName } from '../fileName';
 
@@ -104,6 +106,25 @@ export const scopedAppRecordUpdate: KindProfile = {
         });
       }
 
+      if (row.hasSysUpdateName) {
+        const rowXml = doc.text.slice(row.startOffset, row.endOffset);
+        const sysUpdateName = extractRowFieldText(rowXml, 'sys_update_name');
+        const expected = expectedSysUpdateName(row.tableName, row.sysId, rowXml);
+        if (
+          sysUpdateName &&
+          expected &&
+          sysUpdateName.toLowerCase() !== expected.toLowerCase()
+        ) {
+          diagnostics.push({
+            message: `sys_update_name "${sysUpdateName}" does not match ${expected}.`,
+            severity: 'warning',
+            line: row.line,
+            character: row.character,
+            code: 'scoped-sys-update-name-mismatch'
+          });
+        }
+      }
+
       if (row.action !== 'DELETE') {
         if (!row.hasSysScope) {
           diagnostics.push({
@@ -174,6 +195,65 @@ export const scopedAppRecordUpdate: KindProfile = {
     return diagnostics;
   }
 };
+
+/**
+ * Expected `<sys_update_name>` for a primary row.
+ *
+ * Ordinary application files use `{table}_{sys_id}`. `sys_metadata_delete`
+ * reuses the deleted file's update name (`{source_table}_{sys_metadata}`).
+ * `sys_update_version` has no `sys_update_name` of its own (its `<name>` holds
+ * the source update name); callers skip when this returns undefined.
+ */
+function expectedSysUpdateName(
+  tableName: string,
+  sysId: string | undefined,
+  rowXml: string
+): string | undefined {
+  if (tableName === 'sys_update_version') {
+    return undefined;
+  }
+  if (tableName === 'sys_metadata_delete') {
+    const metadataId = extractRowFieldText(rowXml, 'sys_metadata');
+    if (!metadataId || !isValidSysId(metadataId)) {
+      return undefined;
+    }
+    const sourceTable =
+      extractRowFieldAttribute(rowXml, 'sys_db_object', 'name') ||
+      extractRowFieldText(rowXml, 'sys_db_object');
+    if (!sourceTable) {
+      return undefined;
+    }
+    return `${sourceTable}_${metadataId}`;
+  }
+  if (sysId && isValidSysId(sysId)) {
+    return `${tableName}_${sysId}`;
+  }
+  return undefined;
+}
+
+/** Attribute on a named direct child, e.g. `<sys_db_object name="…">`. */
+function extractRowFieldAttribute(
+  rowXml: string,
+  fieldName: string,
+  attrName: string
+): string | undefined {
+  const want = fieldName.toLowerCase();
+  const child = scanDirectChildElements(rowXml).find(
+    (c) => c.name.toLowerCase() === want
+  );
+  if (!child) {
+    return undefined;
+  }
+  const openTag = rowXml.slice(child.start, child.bodyStart);
+  const attr = openTag.match(
+    new RegExp(
+      `\\b${attrName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`,
+      'i'
+    )
+  );
+  const value = (attr?.[1] ?? attr?.[2] ?? '').trim();
+  return value || undefined;
+}
 
 function normalizeAppId(value: string | undefined): string | undefined {
   const trimmed = value?.trim();

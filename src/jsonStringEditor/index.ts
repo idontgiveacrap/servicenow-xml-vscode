@@ -72,7 +72,7 @@ async function openFromActiveEditor(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'xml') {
     void vscode.window.showInformationMessage(
-      'Open a ServiceNow XML file and place the caret in an embedded script.'
+      'Open a ServiceNow XML file and place the caret in an embedded script or JSON field.'
     );
     return;
   }
@@ -80,7 +80,7 @@ async function openFromActiveEditor(
   const hit = detectAtCaret(editor);
   if (!hit) {
     void vscode.window.showInformationMessage(
-      'No script found at the caret. The value there does not read as JavaScript.'
+      'Nothing to edit at the caret: the value there does not read as JavaScript, and it is not inside a JSON field.'
     );
     return;
   }
@@ -194,14 +194,14 @@ async function loadDraftIntoSession(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'xml') {
     void vscode.window.showInformationMessage(
-      'Place the caret on an embedded JSON script string in an XML file.'
+      'Place the caret on an embedded script or JSON field in an XML file.'
     );
     return;
   }
   const hit = detectAtCaret(editor);
   if (!hit) {
     void vscode.window.showInformationMessage(
-      'No eligible JSON script string at the caret.'
+      'No embedded script or JSON field at the caret.'
     );
     return;
   }
@@ -230,7 +230,8 @@ function detectAtCaret(editor: vscode.TextEditor): JsonStringHit | null {
   const hit = scriptAt(text, offset, {
     hostPath: doc.uri.fsPath,
     hostVersion: doc.version,
-    stableHostId: stableId
+    stableHostId: stableId,
+    includeJsonFields: true
   });
   if (hit) {
     return scriptHitToJsonStringHit(hit, doc.uri.fsPath, doc.version, stableId);
@@ -258,6 +259,7 @@ function scriptHitToJsonStringHit(
   return {
     hostPath,
     stableHostId,
+    role: hit.role,
     fieldName: hit.fieldName,
     keyPath,
     draftKey: makeDraftKey(stableHostId, hit.fieldName, keyPath),

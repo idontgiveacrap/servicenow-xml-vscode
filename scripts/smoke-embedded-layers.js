@@ -272,6 +272,34 @@ try {
     'the spliced JSON must decode back to exactly what was edited'
   );
 
+  // Empty objects and arrays must not corrupt indexed JSON paths.
+  const laterScript = 'javascript(function later(){ return 1; })';
+  const emptyComposition = JSON.stringify(
+    {
+      handlers: [{}, [], { clientTransformScript: laterScript }]
+    },
+    null,
+    2
+  );
+  const emptyXml =
+    '<?xml version="1.0"?>\n' +
+    '<record_update table="sys_ux_macroponent">\n' +
+    '<sys_ux_macroponent action="INSERT_OR_UPDATE">\n' +
+    `<composition><![CDATA[${emptyComposition}]]></composition>\n` +
+    '</sys_ux_macroponent>\n</record_update>\n';
+  const laterAt = emptyXml.indexOf('function later');
+  const laterHit = detectEmbeddedScriptAtOffset(emptyXml, laterAt);
+  assert.ok(laterHit, 'must detect a script after empty array values');
+  assert.strictEqual(laterHit.keyPath, 'handlers.[2].clientTransformScript');
+  assert.strictEqual(laterHit.code, 'function later(){ return 1; }');
+  const laterEncoded = encodeThroughLayers(laterHit.code, laterHit.layers);
+  assert.ok(laterEncoded.ok, 'indexed JSON script must re-encode');
+  assert.strictEqual(
+    laterEncoded.text,
+    emptyXml.slice(laterHit.absoluteStart, laterHit.absoluteEnd),
+    'indexed JSON round-trip must preserve the replaced bytes'
+  );
+
   console.log('embedded layers smoke test passed');
 } finally {
   fs.rmSync(tempDir, { recursive: true, force: true });
