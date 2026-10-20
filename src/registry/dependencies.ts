@@ -4,6 +4,7 @@
  */
 
 import type { CachedDependency, CachedReference, CachedSchemaField } from './cache';
+import { parseSnXml, scanActionRowBounds } from '../parseSnXml';
 
 /** Hard cap so one workspace cannot write an unbounded dependency list. */
 export const MAX_DEPENDENCY_EDGES = 8000;
@@ -56,6 +57,24 @@ const SCRIPT_BODY =
 
 const CALLEE = /\b(?:new\s+)?([A-Za-z_$][\w$]*)\s*(?:\(|\.)/g;
 
+function scriptBodies(rowXml: string, table: string): string[] {
+  const parsed = parseSnXml(`<record_update>${rowXml}</record_update>`);
+  const row = parsed.rows.find((candidate) => candidate.tableName === table);
+  if (row) {
+    const bodies = row.scriptFields.map((field) => field.decodedContent);
+    if (bodies.length > 0) {
+      return bodies;
+    }
+  }
+  const bodies: string[] = [];
+  SCRIPT_BODY.lastIndex = 0;
+  let body: RegExpExecArray | null;
+  while ((body = SCRIPT_BODY.exec(rowXml))) {
+    bodies.push(body[1] ?? body[2] ?? '');
+  }
+  return bodies;
+}
+
 /**
  * Identifiers used as calls or member targets in script bodies of `text`.
  * One candidate per row and name. Filtering to known declarations happens later.
@@ -66,6 +85,7 @@ export function extractCallCandidates(
     table: string;
     sysId?: string;
     startOffset: number;
+    endOffset?: number;
     action?: string;
   }>,
   location: { uri: string; relativePath: string }
@@ -73,15 +93,18 @@ export function extractCallCandidates(
   const ordered = [...records]
     .filter((record) => record.action !== 'DELETE')
     .sort((a, b) => a.startOffset - b.startOffset);
+  const boundsByStart = new Map(
+    scanActionRowBounds(text).map((bounds) => [bounds.startOffset, bounds])
+  );
   const out: CallCandidate[] = [];
   const seen = new Set<string>();
-  for (let index = 0; index < ordered.length; index++) {
-    const record = ordered[index];
-    const slice = text.slice(
-      record.startOffset,
-      ordered[index + 1]?.startOffset ?? text.length
-    );
-    for (const name of calleeNames(slice)) {
+  for (const record of ordered) {
+    const endOffset = record.endOffset ?? boundsByStart.get(record.startOffset)?.endOffset;
+    if (endOffset == null) {
+      continue;
+    }
+    const slice = text.slice(record.startOffset, endOffset);
+    for (const name of calleeNames(slice, record.table)) {
       const key = `${record.sysId ?? record.startOffset}|${name}`;
       if (seen.has(key)) {
         continue;
@@ -253,16 +276,26 @@ export function replaceDependenciesForUris(
     }
     return !changedUris.has(key);
   });
-  return [...kept, ...next].slice(0, MAX_DEPENDENCY_EDGES);
+  const merged: CachedDependency[] = [];
+  const seen = new Set<string>();
+  for (const edge of [...kept, ...next]) {
+    const key = `${edge.kind}|${edge.from}|${edge.to}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    merged.push(edge);
+    if (merged.length >= MAX_DEPENDENCY_EDGES) {
+      break;
+    }
+  }
+  return merged;
 }
 
-function calleeNames(rowXml: string): string[] {
+function calleeNames(rowXml: string, table: string): string[] {
   const names: string[] = [];
   const seen = new Set<string>();
-  SCRIPT_BODY.lastIndex = 0;
-  let body: RegExpExecArray | null;
-  while ((body = SCRIPT_BODY.exec(rowXml))) {
-    const script = body[1] ?? body[2] ?? '';
+  for (const script of scriptBodies(rowXml, table)) {
     CALLEE.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = CALLEE.exec(script))) {

@@ -523,8 +523,8 @@ export class RecordsTreeProvider
       : r.action === 'INSERT_OR_UPDATE'
         ? 'servicenowXml.record.insertOrUpdate'
         : 'servicenowXml.record';
-    // The accent is the whole active-file marker: selection stays the user's,
-    // and one file can export several records anyway.
+    // Accent marks every row of the active file. Selection can sit on only one
+    // of them, or on a multi-selection the tab sync is not allowed to collapse.
     item.iconPath = new vscode.ThemeIcon(
       isDelete ? 'trash' : 'file-code',
       isActive

@@ -197,6 +197,34 @@ section('whole JSON field at the caret');
   );
 }
 
+section('CDATA JSON offsets with entity-like text and empty array values');
+{
+  const composition =
+    '{\r\n' +
+    '  "handlers": [{}, [], {"clientTransformScript": "function later(){ return 1; }"}],\r\n' +
+    '  "literal": "function literal(){ return \\"&amp;\\"; }"\r\n' +
+    '}';
+  const xml = `<?xml version="1.0"?>
+<record_update table="sys_ux_macroponent">
+  <sys_ux_macroponent action="INSERT_OR_UPDATE">
+    <sys_id>dddddddddddddddddddddddddddddddd</sys_id>
+    <composition><![CDATA[${composition}]]></composition>
+  </sys_ux_macroponent>
+</record_update>
+`;
+  const laterAt = xml.indexOf('function later');
+  const later = detectJsonStringAtOffset(xml, laterAt, 'edge.xml', 1, 'edge.xml');
+  assert.ok(later, 'expected a hit after empty array values');
+  assert.equal(later!.keyPath, 'handlers.[2].clientTransformScript');
+  assert.equal(later!.absoluteStart, xml.indexOf('"function later'));
+
+  const literalAt = xml.indexOf('function literal');
+  const literal = detectJsonStringAtOffset(xml, literalAt, 'edge.xml', 1, 'edge.xml');
+  assert.ok(literal, 'CDATA literal entity-like text must remain detectable');
+  assert.equal(literal!.keyPath, 'literal');
+  assert.equal(literal!.absoluteStart, xml.indexOf('"function literal'));
+}
+
 section('detect in composition XML');
 {
   const script =

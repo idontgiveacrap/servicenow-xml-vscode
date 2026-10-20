@@ -34,9 +34,12 @@ try {
     mergeSchemaFields,
     extractProjectSchema,
     extractXmlReferences,
+    findSysIdReferences,
+    findSymbolReferences,
     referenceTargetState,
     extractCallCandidates,
     buildCachedDependencies,
+    replaceDependenciesForUris,
     queryDependencies,
     pickCanonicalRecord,
     parseExportRecordRow,
@@ -359,6 +362,22 @@ runMcpStdio({
     )
   );
   assert.ok(!edges.some((edge) => edge.toSysId.startsWith('dddd')));
+  const targetId = 'dddddddddddddddddddddddddddddddd';
+  const refHits = findSysIdReferences({
+    sysId: targetId,
+    referenceEdges: edges,
+    exportUris: ['file:///t.xml'],
+    readText: () => refXml
+  });
+  assert.ok(
+    refHits.some(
+      (hit) =>
+        hit.uri === 'file:///t.xml' &&
+        refXml.slice(hit.startOffset, hit.endOffset).toLowerCase() === targetId
+    ),
+    'sys_id inside script body should be a reference hit'
+  );
+  assert.strictEqual(findSymbolReferences('MyScriptInclude').length, 0);
   assert.strictEqual(
     referenceTargetState(
       [{ sysId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', action: 'DELETE' }],
@@ -463,6 +482,55 @@ runMcpStdio({
     ],
     { uri: 'file:///t.xml', relativePath: 't.xml' }
   );
+  const dictionaryScriptXml =
+    '<sys_ui_page action="INSERT_OR_UPDATE"><sys_id>bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb</sys_id>' +
+    '<processing_script><![CDATA[var row = new DictionaryHelper();]]></processing_script></sys_ui_page>';
+  const dictionaryCalls = extractCallCandidates(
+    dictionaryScriptXml,
+    [
+      {
+        table: 'sys_ui_page',
+        sysId: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        startOffset: 0,
+        action: 'INSERT_OR_UPDATE'
+      }
+    ],
+    { uri: 'file:///dictionary.xml', relativePath: 'dictionary.xml' }
+  );
+  assert.ok(
+    dictionaryCalls.some((call) => call.toName === 'DictionaryHelper'),
+    'dictionary-defined script fields must produce call candidates'
+  );
+
+  const deletedLeakXml =
+    '<unload>' +
+    '<sys_dictionary action="INSERT_OR_UPDATE"><sys_id>cccccccccccccccccccccccccccccccc</sys_id><name>live_field</name></sys_dictionary>' +
+    '<sys_script action="DELETE"><sys_id>dddddddddddddddddddddddddddddddd</sys_id>' +
+    '<script><![CDATA[var deleted = new DeletedHelper();]]></script></sys_script>' +
+    '</unload>';
+  const deletedLeakCalls = extractCallCandidates(
+    deletedLeakXml,
+    [
+      {
+        table: 'sys_dictionary',
+        sysId: 'cccccccccccccccccccccccccccccccc',
+        startOffset: 8,
+        action: 'INSERT_OR_UPDATE'
+      },
+      {
+        table: 'sys_script',
+        sysId: 'dddddddddddddddddddddddddddddddd',
+        startOffset: deletedLeakXml.indexOf('<sys_script'),
+        action: 'DELETE'
+      }
+    ],
+    { uri: 'file:///deleted-leak.xml', relativePath: 'deleted-leak.xml' }
+  );
+  assert.ok(
+    !deletedLeakCalls.some((call) => call.toName === 'DeletedHelper'),
+    'DELETE-row scripts must not be attributed to a preceding live row'
+  );
+
   const dependencyEdges = buildCachedDependencies({
     schemaFields: [
       {
@@ -476,6 +544,19 @@ runMcpStdio({
     calls,
     declarationNames: new Set(['Helper'])
   });
+  const deduped = replaceDependenciesForUris(
+    dependencyEdges,
+    new Set(),
+    dependencyEdges
+  );
+  assert.equal(
+    deduped.filter((edge) => edge.kind === 'calls' && edge.to === 'Helper').length,
+    1
+  );
+  assert.equal(
+    deduped.filter((edge) => edge.kind === 'extends' && edge.from === 'x_child').length,
+    1
+  );
   assert.ok(dependencyEdges.some((edge) => edge.kind === 'calls' && edge.to === 'Helper'));
   assert.ok(dependencyEdges.some((edge) => edge.kind === 'extends' && edge.from === 'x_child'));
   assert.strictEqual(

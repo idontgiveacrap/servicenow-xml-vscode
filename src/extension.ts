@@ -15,6 +15,7 @@ import {
 } from './navigator/tree';
 import { authorRecordDeletion } from './navigator/authorDelete';
 import { deleteRecordFromDisk } from './navigator/deleteExportFile';
+import { findReferencesForRecord } from './navigator/findReferences';
 import { registerGoToRecord } from './navigator/goToRecord';
 import { ActiveRecordSync } from './navigator/activeRecord';
 import {
@@ -37,6 +38,7 @@ import { extractRecordIdentities } from './navigator/recordName';
 import { ScriptDeclarationIndex } from './scriptDeclarationIndex';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
 import { registerRegistryLanguageProviders } from './languageProviders';
+import { registerCodeLens } from './codelens/servicenowCodelens';
 import {
   refreshSncContext,
   registerPruneRedundantDeletes
@@ -95,6 +97,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Static packs load on first registry access (lint, hover, completion), not here,
   // so the formatter and workspace gate are not blocked by synchronous file I/O.
   registerRegistryLanguageProviders(context);
+  registerCodeLens(context);
 
   // Register the Records tree before any heavier work so the activity-bar view
   // never shows "no data provider" if a later step fails or activation is delayed.
@@ -475,6 +478,15 @@ function activateDiagnosticsAndCommands(
           return;
         }
         await vscode.commands.executeCommand('revealFileInOS', uri);
+      }
+    ),
+    vscode.commands.registerCommand(
+      'servicenowXml.findReferences',
+      async (element?: unknown) => {
+        const record = getCatalogRecordFromTreeElement(element);
+        if (record) {
+          await findReferencesForRecord(record);
+        }
       }
     ),
     vscode.commands.registerCommand(

@@ -94,18 +94,20 @@ export function loadWorkspaceSnapshot(
     typeof parsed.workspaceKey === 'string' ? parsed.workspaceKey : '',
     typeof parsed.configKey === 'string' ? parsed.configKey : ''
   );
-  const records = asRecords(cache?.records ?? parsed.records);
+  if (!cache) {
+    console.error('[registry-mcp] cache is incompatible');
+    return undefined;
+  }
+  const records = asRecords(cache.records);
   if (!records) {
     console.error('[registry-mcp] cache has no records array');
     return undefined;
   }
-  const declarations = asArray<CachedDeclaration>(
-    cache?.declarations ?? parsed.declarations
-  );
-  const schemaFields = asArray<CachedSchemaField>(cache?.schemaFields ?? parsed.schemaFields) ?? [];
-  const references = asArray<CachedReference>(cache?.references ?? parsed.references) ?? [];
-  const dependencies = asArray<CachedDependency>(cache?.dependencies ?? parsed.dependencies);
-  const app = (cache?.app ?? parsed.app) as CachedApp | undefined;
+  const declarations = asArray<CachedDeclaration>(cache.declarations);
+  const schemaFields = asArray<CachedSchemaField>(cache.schemaFields) ?? [];
+  const references = asArray<CachedReference>(cache.references) ?? [];
+  const dependencies = asArray<CachedDependency>(cache.dependencies);
+  const app = cache.app;
 
   registry.clearWorkspaceSymbols();
   registry.upsertMany(cachedRecordsToSymbols(records));

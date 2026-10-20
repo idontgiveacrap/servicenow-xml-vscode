@@ -114,12 +114,17 @@ function appFromSysAppRecords(registry: Registry): CachedApp | undefined {
     return undefined;
   }
   const row = apps[0];
-  return {
-    sysId: row.sysId,
-    scope: row.apiName?.includes('.')
-      ? row.apiName.slice(0, row.apiName.indexOf('.'))
-      : undefined
-  };
+  let scope: string | undefined;
+  try {
+    const fields = readExportRecord(row, false);
+    const value = fields.scope;
+    if (typeof value === 'string' && value.trim()) {
+      scope = value.trim();
+    }
+  } catch {
+    // The cache may outlive the source file; leave scope unknown in that case.
+  }
+  return { sysId: row.sysId, scope };
 }
 
 function dispatch(

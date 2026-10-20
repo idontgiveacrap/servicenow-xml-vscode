@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "3.5.2",
+  "version": "3.7.0",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -64,6 +64,10 @@
         "title": "Reveal in File Explorer"
       },
       {
+        "command": "servicenowXml.findReferences",
+        "title": "Find References"
+      },
+      {
         "command": "servicenowXml.changeActionToDelete",
         "title": "Convert record to DELETE…"
       },
@@ -90,6 +94,10 @@
       {
         "command": "servicenowXml.pruneRedundantDeletes",
         "title": "ServiceNow XML: Prune redundant DELETE files…"
+      },
+      {
+        "command": "servicenowXml.codelens.openUrl",
+        "title": "ServiceNow XML: Open/Copy Record URL"
       }
     ],
     "viewsContainers": {
@@ -170,6 +178,11 @@
           "command": "servicenowXml.revealInFileExplorer",
           "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
           "group": "navigation@2"
+        },
+        {
+          "command": "servicenowXml.findReferences",
+          "when": "view == servicenowXml.records && viewItem =~ /^servicenowXml\\.record/",
+          "group": "navigation@3"
         },
         {
           "command": "servicenowXml.pruneRedundantDeletes",
@@ -309,6 +322,16 @@
           },
           "default": [],
           "description": "Instance MCP allowlist of snc profile names for Cursor and VS Code. Empty means every snc profile is available. Non-empty restricts list_profiles, record_query, and record_get to those names. Does not affect the prune-redundant-DELETE UI."
+        },
+        "servicenowXml.codelens.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show ServiceNow record URL code lens at the top of export files. Provides Studio, form, JSON, and XML instance links."
+        },
+        "servicenowXml.instanceBaseUrl": {
+          "type": "string",
+          "default": "",
+          "description": "Base URL of your ServiceNow instance (e.g. https://my-instance.service-now.com). When set, code lens links open directly in a browser. When empty, relative link paths are copied to the clipboard."
         }
       }
     },
@@ -345,7 +368,7 @@
     "watch": "node esbuild.js --watch",
     "package": "npm run build && vsce package --no-dependencies --allow-missing-repository",
     "compile": "npm run build",
-    "test": "node scripts/smoke-record-name.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-instance-mcp.js && node scripts/smoke-records-tree.js && node scripts/smoke-diagnostic-range.js && tsc --noEmit"
+    "test": "node scripts/smoke-record-name.js && node scripts/smoke-codelens.js && node scripts/smoke-script-declarations.js && node scripts/smoke-classify.js && node scripts/smoke-json-string-editor.js && node scripts/smoke-embedded-layers.js && node scripts/smoke-scripts.js && node scripts/smoke-lint-bundle.js && node scripts/smoke-prune-deletes.js && node scripts/smoke-grammar.js && node scripts/smoke-registry.js && node scripts/smoke-document-symbols.js && node scripts/smoke-agent-mcp-config.js && node scripts/smoke-instance-mcp.js && node scripts/smoke-records-tree.js && node scripts/smoke-diagnostic-range.js && tsc --noEmit"
   },
   "devDependencies": {
     "@types/eslint": "^8.56.12",

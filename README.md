@@ -166,15 +166,24 @@ The action flip always applies; only the move can be skipped:
 
 ### Active editor tracking
 
-Switching tabs selects the active file's first record, scrolls it into view with its table folder expanded, and accents the icon of every row that file exports, each with an `In the active editor` hover line.
+The Records view tracks the active editor with two indicators. They answer different questions, so they do not always sit on the same row.
 
-Selection is the primary indicator, following `explorer.autoReveal` and the Outline view. It is VS Code's own list selection, so it reads `list.activeSelectionBackground` (blue in the default dark themes) while the Records view has focus and `list.inactiveSelectionBackground` (grey) once focus is in the editor. Reveal never takes focus, so a tab switch leaves the grey highlight on the active file's record.
+**Row highlight** is VS Code's own tree selection (`list.activeSelectionBackground` while the Records view has focus, `list.inactiveSelectionBackground` — grey in the default dark themes — once focus is in the editor). Reveal never takes focus, so a tab switch leaves the grey highlight. This selection is also the scope a context-menu command such as prune uses when it is started from the Records view.
 
-The accented icon is secondary: `reveal` can only select one node, so the accent is what shows the remaining rows of a file that exports several. On a single-record file the two land on the same row.
+**Icon accent** colors the file or trash icon with `list.highlightForeground` on every row the active file exports. Those rows' hovers include `In the active editor`. A file that exports several records can have only one selected row, so the accent is what marks the others. On a single-record file the highlight and the accent land on the same row.
 
-Selection moves only when the active file changes, not on catalog rebuilds or filter changes. Re-selecting on every refresh is what previously put three writers on one piece of state — this extension, your clicks, and the selection VS Code re-applies after a refresh, which lands up to 200 ms late through the extension-host debounce ([microsoft/vscode#192055](https://github.com/microsoft/vscode/issues/192055)). A tab switch also leaves an existing multi-selection alone, since prune reads that selection as its scope when it is started from the context menu.
+Switching tabs expands the active file's table folder. What happens to the highlight depends on what is already selected:
 
-Moving the accent repaints only the rows that gained or lost it, rather than refreshing the whole tree. Element-level refresh resolves elements by object identity ([microsoft/vscode#137251](https://github.com/microsoft/vscode/issues/137251)), so the provider hands back memoized node instances and drops them whenever the rows are rebuilt.
+| Current selection | On a tab switch |
+|-------------------|-----------------|
+| Nothing selected | Moves to the active file's first visible record, and that row is scrolled into view |
+| One record from another file | Moves to the active file's first visible record, and that row is scrolled into view |
+| One record from the active file | Stays, including a later row of a multi-record file. That row is scrolled into view |
+| A table folder, or more than one row | Stays. That selection is a command scope, and a tab switch does not collapse it |
+
+A refresh can put the previous record's highlight back for a moment. VS Code reapplies the pre-refresh selection up to about 200ms later ([microsoft/vscode#192055](https://github.com/microsoft/vscode/issues/192055)). The view checks again after that window and, when the highlight is still a single record from another file, moves it to the active file. Remembering "already selected" and then skipping that check is what left the previous row highlighted while the accent showed the new one.
+
+The accent is repainted on its own, and only on the rows that gained or lost it, rather than refreshing the whole tree. Element-level refresh resolves elements by object identity ([microsoft/vscode#137251](https://github.com/microsoft/vscode/issues/137251)), so the provider hands back memoized node instances and drops them whenever the rows are rebuilt.
 
 Clicking a record opens the XML at that record row. The row is resolved again from the current editor text, so unsaved edits above it do not shift the destination.
 
@@ -424,6 +433,19 @@ The same `standards.md` is installed for each agent that supports dedicated rule
 | Copilot CLI | `~/.copilot/copilot-instructions.md` (marker block) |
 | Copilot in VS Code | `~/.copilot/instructions/servicenow-xml-standards.instructions.md` |
 
+The same helper install merges MCP server entries (`servicenow-xml-docs`, `servicenow-xml-ui-examples`, `servicenow-xml-registry`, `servicenow-xml-instance`) into each tool's user config when `servicenowXml.mcp.*` toggles allow them. Cursor and VS Code still register MCP in-process; these files are for other agents. Only our server ids are added or removed; other entries in the same file are left alone.
+
+| Tool | MCP config (user scope) |
+|------|-------------------------|
+| Claude Code | `~/.claude.json` — top-level `mcpServers` (or `$CLAUDE_CONFIG_DIR/.claude.json`) |
+| Cline | `~/.cline/data/settings/cline_mcp_settings.json`, plus `cline_mcp_settings.json` under VS Code/Cursor `globalStorage` when that folder exists |
+| Windsurf | `~/.codeium/windsurf/mcp_config.json` (and Devin Desktop `mcp_config.json` when present) |
+| Copilot CLI | `~/.copilot/mcp-config.json` |
+| Codex | `~/.codex/config.toml` (or `$CODEX_HOME/config.toml`) — managed block `# begin managed-by: servicenow-xml-mcp` |
+| Gemini CLI | `~/.gemini/settings.json` — `mcpServers` |
+
+Aider and PearAI receive rules only (no stable user MCP config path). Cursor is not given a duplicate `~/.cursor/mcp.json` entry when `cursor.mcp.registerServer` already runs in Cursor.
+
 An existing dedicated file that does not contain `<!-- managed-by: servicenow-xml -->` is left in place. GitHub account and organization custom instructions on github.com are not updated. On Windows, copies stay as they were until the next helper install; activation runs that install.
 
 ### Dictionary pack refresh
@@ -499,7 +521,7 @@ Every candidate row is listed either way, with an **On instance** column:
 
 Nothing is removed until you apply the table, so unchecking a row exempts it and checking a `Still exists` / `Not checked` row is an explicit election. The row count of anything selected without confirmation is called out above the buttons. Selecting a record name opens its XML row, including the right row in a multi-record file.
 
-Files whose rows are all checked are deleted; a file that mixes DELETE with other actions, or that keeps an unchecked DELETE row, is rewritten and loses only the checked rows. The command is hidden unless `snc` is on PATH (or `servicenowXml.snc.path`). It scans `author_elective_update` even when that folder is ignored for lint/navigator.
+A file is deleted when every remaining record is a checked DELETE row or a companion of one (`sys_update_version`, `sys_metadata_delete`, or `delete_multiple` for that same update). A file that still has another record, or an unchecked DELETE row, is rewritten and loses the checked rows and their companions. The command is hidden unless `snc` is on PATH (or `servicenowXml.snc.path`). It scans `author_elective_update` even when that folder is ignored for lint/navigator.
 
 Testing note: testing has not shown `snc` applying table ACL-style restrictions; results suggest the CLI may bypass ACLs. The command still warns that existence is only checked for the selected profile, and a query that errors or returns an unexpected shape never marks a row as missing.
 

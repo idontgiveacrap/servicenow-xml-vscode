@@ -3,6 +3,10 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import {
+  buildAgentMcpServerSpecs,
+  syncAgentMcpConfigs
+} from './agentMcpConfig';
 import { sncCliExists } from './snc/cli';
 
 interface CursorMcpApi {
@@ -309,9 +313,24 @@ async function installAgentHelpersCore(
       fs.existsSync(pluginManifest)
     ) {
       const session = await registerSessionHelpers(cfg, messages);
+      const mcpConfigsSynced = syncExternalAgentMcpConfigs(
+        cfg,
+        {
+          includeRegistry: fs.existsSync(
+            path.join(HELPERS_HOME, 'data', 'dictionaryTables.json')
+          ),
+          includeInstance: fs.existsSync(
+            path.join(HELPERS_HOME, 'scripts', 'instanceMcp.js')
+          )
+        },
+        messages
+      );
       messages.push(
         'Agent helpers up to date; re-registered host adapters for this window.',
         `MCP: ${session.registered.join(', ') || '(none)'}`,
+        mcpConfigsSynced.length
+          ? `External MCP configs: ${mcpConfigsSynced.join(', ')}`
+          : 'External MCP configs unchanged',
         session.pluginPath
           ? `Cursor plugin path: ${session.pluginPath}`
           : isCursorHost()
@@ -323,7 +342,7 @@ async function installAgentHelpersCore(
         syncedFiles: 0,
         mcpRegistered: session.registered,
         mcpUnregistered: session.unregistered,
-        rulesSynced: [],
+        rulesSynced: mcpConfigsSynced,
         pluginPath: session.pluginPath,
         messages
       };
@@ -405,6 +424,13 @@ async function installAgentHelpersCore(
   const session = await registerSessionHelpers(cfg, messages);
   const { registered, unregistered } = session;
   const pluginPath = session.pluginPath;
+  const sncPath = cfg.get<string>('snc.path', 'snc') || 'snc';
+  const sncOk = await sncCliExists(sncPath);
+  const mcpConfigsSynced = syncExternalAgentMcpConfigs(
+    cfg,
+    { includeRegistry, includeInstance: sncOk && cfg.get<boolean>('mcp.instance', true) },
+    messages
+  );
 
   writeManifest(context, {
     dataDest,
@@ -418,6 +444,9 @@ async function installAgentHelpersCore(
     rulesSynced.length
       ? `Agent rules: ${rulesSynced.join(', ')}`
       : 'Agent rules unchanged',
+    mcpConfigsSynced.length
+      ? `External MCP configs: ${mcpConfigsSynced.join(', ')}`
+      : 'External MCP configs unchanged',
     pluginPath
       ? `Cursor plugin path: ${pluginPath}`
       : isCursorHost()
@@ -430,7 +459,7 @@ async function installAgentHelpersCore(
     syncedFiles,
     mcpRegistered: registered,
     mcpUnregistered: unregistered,
-    rulesSynced,
+    rulesSynced: [...rulesSynced, ...mcpConfigsSynced],
     pluginPath,
     messages
   };
@@ -552,7 +581,7 @@ async function registerSessionHelpers(
  * Without Node, uses the editor executable and ELECTRON_RUN_AS_NODE so the
  * script still runs (same mechanism as the VS Code MCP provider).
  */
-function bundledMcpLaunch(): { command: string; env: Record<string, string> } {
+export function bundledMcpLaunch(): { command: string; env: Record<string, string> } {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path');
   const entries = (pathKey ? process.env[pathKey] : '')?.split(path.delimiter) ?? [];
   const fileName = process.platform === 'win32' ? 'node.exe' : 'node';
@@ -704,6 +733,41 @@ function registerMcpServers(args: {
   }
 
   return { registered, unregistered };
+}
+
+/**
+ * Write MCP server entries to Claude, Cline, Windsurf, Copilot CLI, Codex, and Gemini user configs.
+ */
+function syncExternalAgentMcpConfigs(
+  cfg: vscode.WorkspaceConfiguration,
+  options: {
+    includeRegistry: boolean;
+    includeInstance: boolean;
+  },
+  messages: string[]
+): string[] {
+  const scriptsDest = path.join(HELPERS_HOME, 'scripts');
+  const dataDest = path.join(HELPERS_HOME, 'data');
+  const servers = buildAgentMcpServerSpecs({
+    mcpEnable: cfg.get<boolean>('mcp.enable', true),
+    includeRemote: cfg.get<boolean>('mcp.remote', true),
+    includeRegistry:
+      options.includeRegistry && cfg.get<boolean>('mcp.registry', true),
+    includeInstance:
+      options.includeInstance && cfg.get<boolean>('mcp.instance', true),
+    registryScript: path.join(scriptsDest, 'registryMcp.js'),
+    registryDataDir: dataDest,
+    instanceScript: path.join(scriptsDest, 'instanceMcp.js'),
+    sncPath: cfg.get<string>('snc.path', 'snc') || 'snc',
+    sncProfileAllowlist: JSON.stringify(
+      (cfg.get<string[]>('snc.mcpProfiles', []) || [])
+        .map((name) => name.trim())
+        .filter(Boolean)
+    ),
+    usageLogPath: path.join(HELPERS_HOME, 'mcp-usage.log'),
+    launch: bundledMcpLaunch()
+  });
+  return syncAgentMcpConfigs(servers, messages);
 }
 
 function registerPluginPath(pluginDest: string): string | undefined {

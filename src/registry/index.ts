@@ -33,6 +33,12 @@ export {
   referenceTargetState,
   referenceTargetIndex
 } from './xmlReferences';
+export {
+  findSysIdReferences,
+  findSymbolReferences,
+  normalizeSysId
+} from './sysIdReferences';
+export type { SysIdReferenceHit } from './sysIdReferences';
 export { lintSchemaTableArgs, schemaMessagesToEslint } from './schemaLint';
 export {
   getOrParseXml,
@@ -45,6 +51,7 @@ export {
   extractCallCandidates,
   buildCachedDependencies,
   mergeDependencyEdges,
+  replaceDependenciesForUris,
   queryDependencies
 } from './dependencies';
 export {
