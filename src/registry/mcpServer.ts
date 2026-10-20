@@ -104,11 +104,12 @@ function scriptBodyForSymbol(symbol: {
     return '';
   }
   const text = fs.readFileSync(filePath, 'utf8');
+  /// Someday I may parse the active documetns into memory and do it that way instead. Regex was the LLM's answer.
   const match =
-    /<(?:script|client_script)[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/(?:script|client_script)>/i.exec(
+    /<(script|client_script)[^>]*>(?:<!\[CDATA\[([\s\S]*?)\]\]>|([\s\S]*?))<\/\1>/i.exec(
       text
     );
-  return match?.[1] ?? match?.[2] ?? '';
+  return match?.[2] ?? match?.[3] ?? '';
 }
 
 function appFromSysAppRecords(registry: Registry): CachedApp | undefined {
