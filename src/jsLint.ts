@@ -382,14 +382,15 @@ function configFor(
  */
 function normalizedDecodedOffsetToRawOffset(
   encoded: string,
-  normalizedOffset: number
+  normalizedOffset: number,
+  decode: (value: string) => string = decodeXmlEntities
 ): number {
   if (normalizedOffset <= 0) {
     return 0;
   }
-  const norm = buildNormalizedDecodedToRawMap(encoded, decodeXmlEntities);
+  const norm = buildNormalizedDecodedToRawMap(encoded, decode);
   if (!norm) {
-    return legacyDecodedOffsetToRawOffset(encoded, normalizedOffset);
+    return legacyDecodedOffsetToRawOffset(encoded, normalizedOffset, decode);
   }
   if (normalizedOffset >= norm.normalized.length) {
     return encoded.length;
@@ -400,7 +401,11 @@ function normalizedDecodedOffsetToRawOffset(
 /**
  * Map a 0-based offset in entity-decoded script text back into the raw XML body.
  */
-function legacyDecodedOffsetToRawOffset(encoded: string, decodedOffset: number): number {
+function legacyDecodedOffsetToRawOffset(
+  encoded: string,
+  decodedOffset: number,
+  decode: (value: string) => string = decodeXmlEntities
+): number {
   if (decodedOffset <= 0) {
     return 0;
   }
@@ -412,7 +417,7 @@ function legacyDecodedOffsetToRawOffset(encoded: string, decodedOffset: number):
         encoded.slice(encodedIndex)
       );
       if (entityMatch) {
-        const piece = decodeXmlEntities(entityMatch[0]);
+        const piece = decode(entityMatch[0]);
         if (piece !== entityMatch[0]) {
           decodedIndex += piece.length;
           encodedIndex += entityMatch[0].length;
@@ -457,7 +462,8 @@ export function mapDecodedLintPosToXml(
 
   const rawOffset = normalizedDecodedOffsetToRawOffset(
     region.content,
-    offsetInDecoded
+    offsetInDecoded,
+    region.isCdata ? (value) => value : decodeXmlEntities
   );
   let xmlLine = region.bodyStartLine;
   let xmlChar = region.bodyStartCharacter;

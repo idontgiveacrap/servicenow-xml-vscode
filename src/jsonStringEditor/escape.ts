@@ -71,6 +71,17 @@ export function wouldBreakCdata(replacement: string): boolean {
 }
 
 /**
+ * Format a JSON path using the dotted/bracket form used by draft identities.
+ */
+export function formatJsonPath(
+  path: readonly (string | number)[]
+): string {
+  return path
+    .map((segment) => (typeof segment === 'number' ? `[${segment}]` : segment))
+    .join('.');
+}
+
+/**
  * Build a normalized→raw offset map after entity decode and CRLF collapse.
  * normalizedToRaw[i] is the start index in raw of normalized character i.
  * Returns null if the decode round-trip does not match decode(raw).

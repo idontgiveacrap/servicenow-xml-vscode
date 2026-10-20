@@ -319,6 +319,7 @@ function resolveFormatTempDir(): string | undefined {
     const dir = path.join(folder.uri.fsPath, FORMAT_TEMP_SUBDIR);
     try {
       fs.mkdirSync(dir, { recursive: true });
+      removeStaleFormatTempFiles(dir);
       ensureGitignoreEntry(folder.uri.fsPath);
       return dir;
     } catch {
@@ -327,6 +328,26 @@ function resolveFormatTempDir(): string | undefined {
   }
   // No workspace folder (or non-file scheme): use OS temp dir as a last resort.
   return undefined;
+}
+
+const FORMAT_TEMP_FILE_RE = /^format-\d+-[a-z0-9]+\.(?:js|json)$/i;
+const FORMAT_TEMP_STALE_MS = 60 * 60 * 1000;
+
+function removeStaleFormatTempFiles(dir: string): void {
+  const cutoff = Date.now() - FORMAT_TEMP_STALE_MS;
+  for (const name of fs.readdirSync(dir)) {
+    if (!FORMAT_TEMP_FILE_RE.test(name)) {
+      continue;
+    }
+    const filePath = path.join(dir, name);
+    try {
+      if (fs.statSync(filePath).mtimeMs < cutoff) {
+        fs.rmSync(filePath, { force: true });
+      }
+    } catch {
+      // Ignore files removed or locked while scanning the scratch directory.
+    }
+  }
 }
 
 /**

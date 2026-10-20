@@ -14,6 +14,11 @@ import {
   scriptCompletions
 } from './registry/scriptCompletion';
 import { symbolId } from './registry/types';
+import {
+  buildDocumentOutline,
+  DocumentOutlineSymbol,
+  OutlineSymbolKind
+} from './documentSymbols';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
 
 const XML_SELECTOR: vscode.DocumentSelector = { language: 'xml' };
@@ -162,25 +167,59 @@ export function registerRegistryLanguageProviders(
 
     vscode.languages.registerDocumentSymbolProvider(XML_SELECTOR, {
       provideDocumentSymbols(document) {
-        const records = service.registry
-          .byUriString(document.uri.toString())
-          .filter((s) => s.kind === 'Record');
-        return records.map((record) => {
-          if (record.kind !== 'Record') {
-            return undefined;
-          }
-          const pos = document.positionAt(record.startOffset);
-          return new vscode.DocumentSymbol(
-            record.displayName,
-            record.table,
-            vscode.SymbolKind.Object,
-            new vscode.Range(pos, pos),
-            new vscode.Range(pos, pos)
-          );
-        }).filter((s): s is vscode.DocumentSymbol => !!s);
+        const outline = buildDocumentOutline(
+          document.getText(),
+          document.uri.fsPath
+        );
+        if (!outline) {
+          return undefined;
+        }
+        return outline.map((node) => toDocumentSymbol(document, node));
       }
     })
   );
+}
+
+function toDocumentSymbol(
+  document: vscode.TextDocument,
+  node: DocumentOutlineSymbol
+): vscode.DocumentSymbol {
+  const symbol = new vscode.DocumentSymbol(
+    node.name,
+    node.detail ?? '',
+    outlineKindToVsCode(node.kind),
+    rangeAt(document, node.rangeStart, node.rangeEnd),
+    rangeAt(document, node.selectionStart, node.selectionEnd)
+  );
+  symbol.children = node.children.map((child) => toDocumentSymbol(document, child));
+  return symbol;
+}
+
+function rangeAt(
+  document: vscode.TextDocument,
+  start: number,
+  end: number
+): vscode.Range {
+  return new vscode.Range(document.positionAt(start), document.positionAt(end));
+}
+
+function outlineKindToVsCode(kind: OutlineSymbolKind): vscode.SymbolKind {
+  switch (kind) {
+    case 'record':
+      return vscode.SymbolKind.Object;
+    case 'field':
+      return vscode.SymbolKind.Field;
+    case 'function':
+      return vscode.SymbolKind.Function;
+    case 'class':
+      return vscode.SymbolKind.Class;
+    case 'method':
+      return vscode.SymbolKind.Method;
+    case 'jsonProperty':
+      return vscode.SymbolKind.Property;
+    default:
+      return vscode.SymbolKind.Variable;
+  }
 }
 
 function escapeRegExp(value: string): string {
@@ -195,10 +234,9 @@ function cursorInScript(text: string, offset: number, hit: ScriptHit): number {
   if (text.slice(hit.hostStart, hit.hostEnd) === hit.code) {
     return clamped - hit.hostStart;
   }
-  const decoded = decodeXmlEntities(text.slice(hit.hostStart, clamped)).replace(
-    /\r\n/g,
-    '\n'
-  );
+  const decoded = decodeXmlEntities(
+    text.slice(hit.hostStart, clamped)
+  ).replace(/\r+\n/g, '\n').replace(/\r/g, '\n');
   return Math.min(decoded.length, hit.code.length);
 }
 
