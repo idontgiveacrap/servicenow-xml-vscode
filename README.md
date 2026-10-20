@@ -5,8 +5,8 @@ Cursor / VS Code extension that:
 1. **Colorizes** JavaScript inside ServiceNow script CDATA fields (`script`, `client_script_v2`, `script_true`, `script_false`)
 2. **Lints** that embedded JS with ESLint (ServiceNow globals, ES2022), across every script-typed field in the bundled dictionary table, including scripts nested in update-set payloads
 3. **Validates XML by document kind** — classifies the file, then applies kind-specific structural rules
-4. **Edits embedded scripts** — right-click any script, however it is encoded (CDATA, entity-escaped, nested inside an update-set `<payload>`, or inside a JSON string), edit it in a temp JS tab, and save to write it back through the same encodings
-5. **Formats** ServiceNow XML (default XML formatter) by running another XML formatter, then the editor’s JavaScript formatter on script-typed fields. Formatter requires languageId support.
+4. **Edits embedded content** — right-click a detected field (script, JSON, CSS, HTML, or XML, including Jelly treated as XML), however it is encoded (CDATA, entity-escaped, nested inside an update-set `<payload>`, or inside a JSON string), edit it in a temp tab for that language, and save to write it back through the same encodings
+5. **Formats** ServiceNow XML (default XML formatter) by running another XML formatter, then the editor’s formatter on script, JSON, CSS, HTML, and XML fields. Formatter requires languageId support.
 6. **Optional Records navigator** — browse and search by record name (e.g. `CompareRowForm`) instead of `{table}_{sys_id}.xml`
 7. **MCP servers and agent helpers** — Registry, instance, docs, and UI-example MCP in Cursor and VS Code; shared helpers under `~/.servicenow-xml/` with rules for multiple agents (Cursor plugin adapter when running in Cursor).
 
@@ -97,7 +97,7 @@ XML formatters can rewrite CDATA and entity-encoded payloads. The embedded passe
 
 The JSON pass covers the same JSON-typed fields the JSON lint uses: `composition`, `layout`, `props`, `style_config`, `output_schema`, `bundles`, `data`, `state_properties`, `required_translations`, `component_dependencies`, and `associated_types`. A field that does not parse as JSON is left untouched, since a formatter handed malformed input can drop the part it cannot read; `servicenowXml.lintJson` reports those instead. Because an entity-encoded field is decoded and re-encoded, reformatting rewrites its `&#13;` line-ending markers as plain newlines — the same round-trip the JS pass already performs on entity-encoded scripts. Set `servicenowXml.formatJson` to `false` to skip the JSON pass.
 
-CSS pretty-print and formatting JS inside JSON strings are not included.
+CSS, HTML, and XML fields format through the editor’s formatter for that language. Nested XML, including Jelly, is not recolored inside the host XML document — Jelly is treated as XML because this extension does not provide a Jelly language. Open **Edit Embedded Content** to edit that body in a separate XML tab. Formatting JavaScript that lives inside a JSON string is not included.
 
 ## Records navigator (optional, lazy)
 

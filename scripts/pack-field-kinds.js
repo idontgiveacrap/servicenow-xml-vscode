@@ -38,6 +38,9 @@ function main() {
   const clientScriptPairs = new Set();
   const cssFieldNames = new Set(CSS_FIELD_SUPPLEMENTS);
   const jsonFieldNames = new Set(JSON_FIELD_SUPPLEMENTS);
+  const htmlPairs = new Set();
+  const xmlPairs = new Set();
+  const HTML_TYPES = new Set(['html', 'translated html', 'html template', 'html script']);
 
   for (const [table, rows] of Object.entries(fields)) {
     for (const row of rows || []) {
@@ -59,6 +62,13 @@ function main() {
       if (emb === 'json' || type === 'json' || type === 'template_value') {
         jsonFieldNames.add(element);
       }
+      const typeLower = type.toLowerCase();
+      if (emb === 'html' || HTML_TYPES.has(typeLower)) {
+        htmlPairs.add(`${table}.${element}`);
+      }
+      if (emb === 'xml' || typeLower === 'xml') {
+        xmlPairs.add(`${table}.${element}`);
+      }
     }
   }
 
@@ -67,13 +77,16 @@ function main() {
     scriptPairs: [...scriptPairs].sort(),
     clientScriptPairs: [...clientScriptPairs].sort(),
     cssFieldNames: [...cssFieldNames].sort(),
-    jsonFieldNames: [...jsonFieldNames].sort()
+    jsonFieldNames: [...jsonFieldNames].sort(),
+    htmlPairs: [...htmlPairs].sort(),
+    xmlPairs: [...xmlPairs].sort()
   };
   fs.writeFileSync(OUT, JSON.stringify(out) + '\n');
   console.log(
     `Wrote ${OUT}: ${out.scriptPairs.length} script pairs, ` +
       `${out.clientScriptPairs.length} client pairs, ` +
-      `${out.cssFieldNames.length} css names, ${out.jsonFieldNames.length} json names`
+      `${out.cssFieldNames.length} css names, ${out.jsonFieldNames.length} json names, ` +
+      `${out.htmlPairs.length} html pairs, ${out.xmlPairs.length} xml pairs`
   );
 }
 

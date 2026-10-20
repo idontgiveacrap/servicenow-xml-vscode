@@ -4,6 +4,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import * as vscode from 'vscode';
 import type { JsonStringHit } from './detect';
+import type { EmbeddedLanguage } from '../kinds/types';
 import type { WriteBackBinding } from './writeBack';
 
 const TEMP_ROOT = path.join(os.tmpdir(), 'servicenow-xml-json-string-editor');
@@ -17,7 +18,8 @@ export interface EditorSession {
 }
 
 /**
- * Manages temp JS editors bound to host JSON string ranges.
+ * Manages temp editors bound to embedded field ranges.
+ * The temp document's language follows the detected field, not a JSON/JS split.
  */
 export class JsonStringSessionManager {
   private readonly byDraftKey = new Map<string, EditorSession>();
@@ -63,18 +65,15 @@ export class JsonStringSessionManager {
 
     fs.mkdirSync(TEMP_ROOT, { recursive: true });
     const safeFileName = this.makeSafeFileName(hit);
-    const isJsonField = hit.role === 'jsonField';
+    const languageId = editorLanguageId(hit);
     const tempPath = path.join(
       TEMP_ROOT,
-      `${safeFileName}.${isJsonField ? 'json' : 'js'}`
+      `${safeFileName}.${editorExtension(languageId)}`
     );
     fs.writeFileSync(tempPath, code, 'utf8');
     const tempUri = vscode.Uri.file(tempPath);
     const doc = await vscode.workspace.openTextDocument(tempUri);
-    await vscode.languages.setTextDocumentLanguage(
-      doc,
-      isJsonField ? 'json' : 'javascript'
-    );
+    await vscode.languages.setTextDocumentLanguage(doc, languageId);
     await vscode.window.showTextDocument(doc, {
       viewColumn: vscode.ViewColumn.Beside,
       preview: false
@@ -188,6 +187,41 @@ export class JsonStringSessionManager {
       .digest('hex')
       .slice(0, 16);
     return `${safe}_${hash}`;
+  }
+}
+
+/**
+ * VS Code language id for a detected embedded body.
+ * Jelly is classified as `xml` before it reaches this editor.
+ */
+function editorLanguageId(hit: JsonStringHit): string {
+  const language: EmbeddedLanguage | undefined = hit.language;
+  if (
+    language === 'json' ||
+    language === 'css' ||
+    language === 'html' ||
+    language === 'xml'
+  ) {
+    return language;
+  }
+  if (hit.role === 'jsonField') {
+    return 'json';
+  }
+  return 'javascript';
+}
+
+function editorExtension(languageId: string): string {
+  switch (languageId) {
+    case 'json':
+      return 'json';
+    case 'css':
+      return 'css';
+    case 'html':
+      return 'html';
+    case 'xml':
+      return 'xml';
+    default:
+      return 'js';
   }
 }
 

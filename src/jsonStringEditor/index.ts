@@ -72,7 +72,7 @@ async function openFromActiveEditor(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'xml') {
     void vscode.window.showInformationMessage(
-      'Open a ServiceNow XML file and place the caret in an embedded script or JSON field.'
+      'Open a ServiceNow XML file and place the caret in embedded content.'
     );
     return;
   }
@@ -80,7 +80,7 @@ async function openFromActiveEditor(
   const hit = detectAtCaret(editor);
   if (!hit) {
     void vscode.window.showInformationMessage(
-      'Nothing to edit at the caret: the value there does not read as JavaScript, and it is not inside a JSON field.'
+      'Nothing to edit at the caret. That spot is not a detected embedded field.'
     );
     return;
   }
@@ -156,14 +156,14 @@ async function manageDrafts(context: vscode.ExtensionContext): Promise<void> {
 
   if (picks.length === 0) {
     void vscode.window.showInformationMessage(
-      'No embedded-script drafts are stored for this window.'
+      'No embedded-content drafts are stored for this window.'
     );
     return;
   }
 
   const selected = await vscode.window.showQuickPick(picks, {
     canPickMany: true,
-    title: `Embedded script drafts (${picks.length})`,
+    title: `Embedded content drafts (${picks.length})`,
     placeHolder: 'Select drafts to delete, or press Escape to just look'
   });
   if (!selected || selected.length === 0) {
@@ -171,7 +171,7 @@ async function manageDrafts(context: vscode.ExtensionContext): Promise<void> {
   }
 
   const confirm = await vscode.window.showWarningMessage(
-    `Delete ${selected.length} draft${selected.length === 1 ? '' : 's'}? The edited script in each is discarded.`,
+    `Delete ${selected.length} draft${selected.length === 1 ? '' : 's'}? The edited content in each is discarded.`,
     { modal: true },
     'Delete'
   );
@@ -194,14 +194,14 @@ async function loadDraftIntoSession(
   const editor = vscode.window.activeTextEditor;
   if (!editor || editor.document.languageId !== 'xml') {
     void vscode.window.showInformationMessage(
-      'Place the caret on an embedded script or JSON field in an XML file.'
+      'Place the caret on embedded content in an XML file.'
     );
     return;
   }
   const hit = detectAtCaret(editor);
   if (!hit) {
     void vscode.window.showInformationMessage(
-      'No embedded script or JSON field at the caret.'
+      'No embedded content at the caret.'
     );
     return;
   }
@@ -212,7 +212,7 @@ async function loadDraftIntoSession(
   ensureDraftsDir(dir, workspaceRoot);
   const draft = loadDraft(dir, hit.draftKey);
   if (!draft) {
-    void vscode.window.showInformationMessage('No draft for this JSON string.');
+    void vscode.window.showInformationMessage('No draft for this embedded content.');
     return;
   }
   await sessions.openSession(hit, editor.document.uri, draft.code);
@@ -260,6 +260,7 @@ function scriptHitToJsonStringHit(
     hostPath,
     stableHostId,
     role: hit.role,
+    language: hit.language,
     fieldName: hit.fieldName,
     keyPath,
     draftKey: makeDraftKey(stableHostId, hit.fieldName, keyPath),
@@ -297,7 +298,7 @@ async function handleTempSave(
   );
   if (result.ok) {
     void vscode.window.setStatusBarMessage(
-      'Embedded JSON script written to XML (save the XML file to clear the draft).',
+      'Embedded content written to XML (save the XML file to clear the draft).',
       5000
     );
     return;

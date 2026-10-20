@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { classifyAndValidate } from './kinds';
-import { SnDiagnostic } from './kinds/types';
+import { ParsedDocument, SnDiagnostic } from './kinds/types';
 import { getOrParseXml } from './registry/lazyParse';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
 import {
@@ -9,6 +9,8 @@ import {
 } from './registry/xmlReferences';
 import { extractRecordIdentities } from './navigator/recordName';
 import { extractJsonRegions, extractScriptRegions } from './scriptRegions';
+import { listEmbeddedFields } from './scriptHits';
+import { offsetToPosition } from './parseSnXml';
 import { lintScriptRegions } from './jsLint';
 import { lintJsonRegions } from './jsonLint';
 import { inferXmlDiagnosticEnd } from './diagnosticRange';
@@ -193,6 +195,10 @@ export class DiagnosticsController implements vscode.Disposable {
       snDiags.push(...lintJsonRegions(jsonRegions));
     }
 
+    if (parsed.wellFormed) {
+      snDiags.push(...lintCssBraces(parsed));
+    }
+
     if (document.version !== version) {
       return;
     }
@@ -331,6 +337,44 @@ function duplicateSysIdDiagnostics(
       endLine: row.sysIdLine,
       endCharacter: row.sysIdCharacter + row.sysId.length,
       code: 'xml-duplicate-sys-id'
+    });
+  }
+  return diagnostics;
+}
+
+/**
+ * Unbalanced braces in a CSS field. Not a full CSS parse.
+ */
+function lintCssBraces(doc: ParsedDocument): SnDiagnostic[] {
+  const diagnostics: SnDiagnostic[] = [];
+  for (const hit of listEmbeddedFields(doc)) {
+    if (hit.language !== 'css') {
+      continue;
+    }
+    let depth = 0;
+    for (const ch of hit.code) {
+      if (ch === '{') {
+        depth++;
+      } else if (ch === '}') {
+        depth--;
+      }
+      if (depth < 0) {
+        break;
+      }
+    }
+    if (depth === 0) {
+      continue;
+    }
+    const pos = offsetToPosition(doc.text, hit.hostStart);
+    diagnostics.push({
+      message:
+        depth < 0
+          ? `<${hit.fieldName}> has an unmatched '}'.`
+          : `<${hit.fieldName}> has an unmatched '{'.`,
+      severity: 'warning',
+      line: pos.line,
+      character: pos.character,
+      code: 'css-unbalanced-braces'
     });
   }
   return diagnostics;

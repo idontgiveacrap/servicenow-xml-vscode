@@ -5,3 +5,6 @@ dist/
 *.log
 scripts/dbg-*.js
 scripts/dbg-*.ts
+.servicenow-xml/
+__pycache__/
+*.py[cod]

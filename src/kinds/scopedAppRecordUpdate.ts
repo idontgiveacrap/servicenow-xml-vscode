@@ -7,6 +7,7 @@ import {
   scanDirectChildElements
 } from '../parseSnXml';
 import { parseExportFileName } from '../fileName';
+import { recordKey } from '../tableExpectations';
 
 /**
  * Scoped application / Studio git-export record_update payloads, and
@@ -87,7 +88,7 @@ export const scopedAppRecordUpdate: KindProfile = {
       }
 
       if (!row.sysId) {
-        if (ctx?.requireRecordSysIds) {
+        if (ctx?.requireRecordSysIds && recordKey(row.tableName).kind === 'sys_id') {
           diagnostics.push({
             message: `<${row.tableName}> is missing <sys_id>.`,
             severity: 'error',
@@ -199,8 +200,10 @@ export const scopedAppRecordUpdate: KindProfile = {
 /**
  * Expected `<sys_update_name>` for a primary row.
  *
- * Ordinary application files use `{table}_{sys_id}`. `sys_metadata_delete`
- * reuses the deleted file's update name (`{source_table}_{sys_metadata}`).
+ * Ordinary application files use `{table}_{sys_id}`. Tables whose record key
+ * is not sys_id (dictionary, documentation, choice sets) have no synthesized
+ * name here. `sys_metadata_delete` reuses the deleted file's update name
+ * (`{source_table}_{sys_metadata}`).
  * `sys_update_version` has no `sys_update_name` of its own (its `<name>` holds
  * the source update name); callers skip when this returns undefined.
  */
@@ -224,6 +227,9 @@ function expectedSysUpdateName(
       return undefined;
     }
     return `${sourceTable}_${metadataId}`;
+  }
+  if (recordKey(tableName).kind !== 'sys_id') {
+    return undefined;
   }
   if (sysId && isValidSysId(sysId)) {
     return `${tableName}_${sysId}`;

@@ -37,7 +37,7 @@ import {
 } from './scriptDeclarations';
 import { resolveScriptProfile } from './scriptProfile';
 
-export type ScriptHitRole = 'scriptField' | 'jsonField' | 'jsonString';
+export type ScriptHitRole = 'scriptField' | 'jsonField' | 'jsonString' | 'embeddedField';
 
 export interface ScriptHit {
   code: string;
@@ -46,6 +46,8 @@ export interface ScriptHit {
   layers: EncodingLayer[];
   indent: string;
   role: ScriptHitRole;
+  /** Language the side editor and formatters should open this body as. */
+  language: EmbeddedLanguage;
   tableName: string;
   fieldName: string;
   action: string;
@@ -82,6 +84,17 @@ export function listScriptFields(
 }
 
 /**
+ * Every embedded field the parser classified, including payload-nested fields.
+ * Callers that want one language keep using listScriptFields or listJsonFields.
+ */
+export function listEmbeddedFields(
+  doc: ParsedDocument,
+  options?: ScriptHitOptions
+): ScriptHit[] {
+  return collectScriptFieldHits(doc, options, 'any');
+}
+
+/**
  * JSON-typed XML elements on host rows and inside sys_update_xml payloads.
  *
  * Same shape as listScriptFields so callers can encode write-back through the
@@ -105,8 +118,9 @@ export function listHits(
 }
 
 /**
- * Innermost hit covering `absoluteOffset`. Script-typed fields win by range
- * (field identity). Otherwise the layer walk / JSON-string eligibility rules.
+ * Innermost hit covering `absoluteOffset`.
+ * Script-typed fields win, then a script inside a JSON string, then CSS, HTML,
+ * or XML. A JSON field is returned only when `includeJsonFields` is set.
  */
 export function scriptAt(
   text: string,
@@ -119,14 +133,13 @@ export function scriptAt(
 ): ScriptHit | null {
   const doc = parseSnXml(text, options?.hostPath);
   const javascriptSupport = options?.javascriptSupport ?? 'ES5';
-  const fields = collectScriptFieldHits(doc, options);
+  const fields = collectScriptFieldHits(doc, options, 'any');
   const covering = fields.filter(
     (h) => absoluteOffset >= h.hostStart && absoluteOffset < h.hostEnd
   );
-  if (covering.length > 0) {
-    return covering.reduce((best, hit) =>
-      hit.hostEnd - hit.hostStart < best.hostEnd - best.hostStart ? hit : best
-    );
+  const scripts = covering.filter((h) => h.language === 'javascript');
+  if (scripts.length > 0) {
+    return smallestHit(scripts);
   }
 
   const layered = detectEmbeddedScriptAtOffset(text, absoluteOffset);
@@ -144,6 +157,7 @@ export function scriptAt(
       layers: layered.layers,
       indent: detectCommonIndent(layered.code),
       role,
+      language: 'javascript',
       tableName: layered.tableName,
       fieldName: layered.fieldName,
       action: '',
@@ -161,6 +175,12 @@ export function scriptAt(
     options?.stableHostId
   );
   if (!json) {
+    const rest = covering.filter(
+      (h) => h.language !== 'javascript' && h.language !== 'json'
+    );
+    if (rest.length > 0) {
+      return smallestHit(rest);
+    }
     return options?.includeJsonFields
       ? jsonFieldAt(doc, absoluteOffset, options)
       : null;
@@ -173,6 +193,7 @@ export function scriptAt(
     layers,
     indent: detectCommonIndent(json.editorCode),
     role: 'jsonString',
+    language: 'javascript',
     tableName: json.tableName,
     fieldName: json.fieldName,
     action: '',
@@ -300,12 +321,28 @@ export function restoreIndent(code: string, indent: string): string {
     .join('\n');
 }
 
+/** Smallest host range. Nested fields win over the payload that contains them. */
+function smallestHit(hits: ScriptHit[]): ScriptHit {
+  return hits.reduce((best, hit) =>
+    hit.hostEnd - hit.hostStart < best.hostEnd - best.hostStart ? hit : best
+  );
+}
+
+function roleForLanguage(language: EmbeddedLanguage): ScriptHitRole {
+  if (language === 'json') {
+    return 'jsonField';
+  }
+  if (language === 'javascript') {
+    return 'scriptField';
+  }
+  return 'embeddedField';
+}
+
 function collectScriptFieldHits(
   doc: ParsedDocument,
   options?: ScriptHitOptions,
-  language: EmbeddedLanguage = 'javascript'
+  language: EmbeddedLanguage | 'any' = 'javascript'
 ): ScriptHit[] {
-  const role: ScriptHitRole = language === 'json' ? 'jsonField' : 'scriptField';
   const includeDelete = options?.includeDelete === true;
   const javascriptSupport = options?.javascriptSupport ?? 'ES5';
   const documentApp = detectSysAppMetadata(doc.text);
@@ -335,7 +372,7 @@ function collectScriptFieldHits(
       rowXml
     );
     for (const field of row.embeddedFields) {
-      if (field.language !== language || !field.decodedContent.trim()) {
+      if (!fieldMatchesLanguage(field.language, language) || !field.decodedContent.trim()) {
         continue;
       }
       hits.push(
@@ -351,8 +388,7 @@ function collectScriptFieldHits(
               kind: field.isCdata ? 'cdata' : 'xmlText',
               fieldName: field.fieldName
             }
-          ],
-          role
+          ]
         )
       );
     }
@@ -372,8 +408,7 @@ function collectScriptFieldHits(
         includeDelete,
         javascriptSupport,
         scopeApps,
-        language,
-        role
+        language
       )
     );
   }
@@ -389,7 +424,6 @@ function fieldToHit(
   callerScope: string | undefined,
   ownDeclarationName: string | undefined,
   layers: EncodingLayer[],
-  role: ScriptHitRole,
   hostStart = field.bodyStartOffset,
   hostEnd = field.bodyEndOffset,
   code = field.decodedContent
@@ -400,7 +434,8 @@ function fieldToHit(
     hostEnd,
     layers,
     indent: detectCommonIndent(code),
-    role,
+    role: roleForLanguage(field.language),
+    language: field.language,
     tableName,
     fieldName: field.fieldName,
     action,
@@ -422,8 +457,7 @@ function payloadScriptFieldHits(
     documentAppSysId?: string;
     documentAppScope?: string;
   },
-  language: EmbeddedLanguage,
-  role: ScriptHitRole
+  language: EmbeddedLanguage | 'any'
 ): ScriptHit[] {
   const rowXml = doc.text.slice(row.startOffset, row.endOffset);
   const payload = locatePayloadBody(rowXml, row.startOffset);
@@ -475,7 +509,7 @@ function payloadScriptFieldHits(
       innerXml
     );
     for (const field of innerRow.embeddedFields) {
-      if (field.language !== language || !field.decodedContent.trim()) {
+      if (!fieldMatchesLanguage(field.language, language) || !field.decodedContent.trim()) {
         continue;
       }
       const absStart = payload.bodyAbs + toRawInPayload(field.bodyStartOffset);
@@ -496,7 +530,6 @@ function payloadScriptFieldHits(
               fieldName: field.fieldName
             }
           ],
-          role,
           absStart,
           absEnd
         )
@@ -504,6 +537,13 @@ function payloadScriptFieldHits(
     }
   }
   return hits;
+}
+
+function fieldMatchesLanguage(
+  fieldLanguage: EmbeddedLanguage,
+  wanted: EmbeddedLanguage | 'any'
+): boolean {
+  return wanted === 'any' || fieldLanguage === wanted;
 }
 
 function locatePayloadBody(

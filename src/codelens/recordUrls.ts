@@ -7,7 +7,7 @@
 
 /** The four ServiceNow URL variants for one record row. */
 export interface RecordUrls {
-  /** Studio: `servicenow_studio.do?table={table}&sysId={sysId}` */
+  /** Studio: `/servicenow_studio.do?table={table}&sysId={sysId}` */
   studio: string;
   /** Standard form via nav_to: `/nav_to.do?uri={table}.do?sys_id={sysId}` */
   navForm: string;
@@ -42,8 +42,8 @@ export const COPY_EMOJI = '📋';
  */
 export function buildRecordUrls(table: string, sysId: string): RecordUrls {
   return {
-    studio: `servicenow_studio.do?table=${table}&sysId=${sysId}`,
-    navForm: `/nav_to.do?uri=${table}.do?sys_id=${sysId}`,
+    studio: `/sn_glider_app/servicenow_studio.do?table=${table}&sysId=${sysId}`,
+    navForm: `/nav_to.do?uri=${table}.do%3Fsys_id%3D${sysId}`,
     jsonApi: `/${table}.do?JSONv2&sysparm_action=get&sysparm_sys_id=${sysId}`,
     xmlApi: `/${table}.do?XML=&sys_id=${sysId}`
   };

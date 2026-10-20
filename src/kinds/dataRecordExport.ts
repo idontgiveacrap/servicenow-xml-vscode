@@ -1,5 +1,6 @@
 import { KindProfile, SnDiagnostic } from './types';
 import { isPrimaryAction, isValidSysId } from '../parseSnXml';
+import { recordKey } from '../tableExpectations';
 
 /**
  * List/form data XML exports: <unload> (or record_update) rows without scoped-app metadata.
@@ -58,7 +59,7 @@ export const dataRecordExport: KindProfile = {
 
     for (const row of primary) {
       if (!row.sysId) {
-        if (ctx?.requireRecordSysIds) {
+        if (ctx?.requireRecordSysIds && recordKey(row.tableName).kind === 'sys_id') {
           diagnostics.push({
             message: `<${row.tableName}> is missing <sys_id>.`,
             severity: 'error',

@@ -1,4 +1,5 @@
 import type { CachedDependency, CachedReference, CachedSchemaField } from './cache';
+import { pickCanonicalRecord } from './recordDetail';
 import {
   DependencyEdge,
   FieldSymbol,
@@ -26,6 +27,8 @@ export class Registry {
   private readonly byScope = new Map<string, string[]>();
   private readonly byUri = new Map<string, string[]>();
   private readonly byKind = new Map<SymbolKind, string[]>();
+  /** Record symbol ids keyed by lowercase sys_id. */
+  private readonly bySysId = new Map<string, string[]>();
   private readonly edges: DependencyEdge[] = [];
   /** Workspace dictionary columns. These win over the platform pack for the same table.element. */
   private projectFields: CachedSchemaField[] = [];
@@ -45,6 +48,7 @@ export class Registry {
     this.byScope.clear();
     this.byUri.clear();
     this.byKind.clear();
+    this.bySysId.clear();
     this.edges.length = 0;
     this.projectFields = [];
     this.referenceEdges = [];
@@ -109,6 +113,26 @@ export class Registry {
 
   get(id: string): RegistrySymbol | undefined {
     return this.symbols.get(id);
+  }
+
+  /**
+   * Canonical workspace row for a sys_id, when the navigator cache has loaded it.
+   * Does not scan the workspace.
+   */
+  lookupBySysId(sysId: string): RecordSymbol | undefined {
+    const key = sysId.toLowerCase();
+    const ids = this.bySysId.get(key);
+    if (!ids || ids.length === 0) {
+      return undefined;
+    }
+    const records: RecordSymbol[] = [];
+    for (const id of ids) {
+      const symbol = this.symbols.get(id);
+      if (symbol?.kind === 'Record') {
+        records.push(symbol);
+      }
+    }
+    return pickCanonicalRecord(records, { sysId: key });
   }
 
   lookup(name: string): RegistrySymbol[] {
@@ -382,6 +406,9 @@ export class Registry {
     }
     if (symbol.kind === 'Record') {
       this.pushIndex(this.byTable, symbol.table, id);
+      if (symbol.sysId) {
+        this.pushIndex(this.bySysId, symbol.sysId.toLowerCase(), id);
+      }
     } else if (symbol.kind === 'Field') {
       this.pushIndex(this.byTable, symbol.table, id);
     } else if (symbol.kind === 'Table') {
@@ -400,6 +427,9 @@ export class Registry {
     }
     if (symbol.kind === 'Record') {
       this.pullIndex(this.byTable, symbol.table, id);
+      if (symbol.sysId) {
+        this.pullIndex(this.bySysId, symbol.sysId.toLowerCase(), id);
+      }
     } else if (symbol.kind === 'Field') {
       this.pullIndex(this.byTable, symbol.table, id);
     } else if (symbol.kind === 'Table') {

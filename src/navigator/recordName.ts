@@ -1,4 +1,5 @@
 import { parseExportFileName } from '../fileName';
+import { recordKey } from '../tableExpectations';
 import {
   decodeXmlEntities,
   extractRowFieldText,
@@ -48,11 +49,12 @@ export function extractRecordIdentities(
     if (dictionary) {
       return [dictionary];
     }
+    const fallbackTable = extractRootTableAttribute(text) || fileMeta?.table;
     const fallback = buildIdentity(
       text,
-      extractRootTableAttribute(text) || fileMeta?.table,
+      fallbackTable,
       undefined,
-      fileMeta?.sysId,
+      filenameSysId(fallbackTable, fileMeta?.sysId),
       0
     );
     return fallback ? [fallback] : [];
@@ -64,11 +66,24 @@ export function extractRecordIdentities(
         row.rowText,
         row.tableName,
         row.action,
-        index === 0 && row.tableName === fileMeta?.table ? fileMeta.sysId : undefined,
+        index === 0 ? filenameSysId(row.tableName, fileMeta?.table === row.tableName ? fileMeta.sysId : undefined) : undefined,
         row.startOffset
       )
     )
     .filter((identity): identity is RecordIdentity => identity !== undefined);
+}
+
+/**
+ * Filename `{table}_{sys_id}` is a sys_id only when that table uses sys_id as its key.
+ */
+function filenameSysId(
+  table: string | undefined,
+  sysId: string | undefined
+): string | undefined {
+  if (!sysId || recordKey(table).kind !== 'sys_id') {
+    return undefined;
+  }
+  return sysId;
 }
 
 /**

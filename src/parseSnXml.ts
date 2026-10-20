@@ -10,7 +10,12 @@ import {
   SnDiagnostic,
   SYS_ID_RE
 } from './kinds/types';
-import { isCssFieldName, isScriptTypedField } from './registry/fieldKinds';
+import {
+  isCssFieldName,
+  isHtmlTypedField,
+  isScriptTypedField,
+  isXmlTypedField
+} from './registry/fieldKinds';
 import { looksLikeJavaScript } from './embedded/jsLikeness';
 
 /**
@@ -597,10 +602,10 @@ function pushFlowStepScriptValue(
 /**
  * Language of a leaf field.
  *
- * Script/CSS come from Registry fieldKinds (dictionary embeddedLanguage).
- * JSON is decided by body shape: ServiceNow spreads JSON across far more
- * elements than a name list keeps up with, and structural fields like
- * `payload` / `sys_*` stay excluded.
+ * Script, CSS, HTML, and XML come from Registry fieldKinds. Jelly is XML in
+ * that pack (`sys_ui_page.html`, `sys_ui_macro.xml`). JSON is decided by body
+ * shape. A `<payload>` that holds markup is XML for the side editor; it is not
+ * recolored in the host document. Other `sys_*` fields stay unclassified.
  */
 function languageForChild(
   tableName: string | undefined,
@@ -614,10 +619,24 @@ function languageForChild(
   if (isCssFieldName(fieldName)) {
     return 'css';
   }
-  if (lower === 'payload' || lower.startsWith('sys_')) {
+  if (isHtmlTypedField(tableName, fieldName)) {
+    return 'html';
+  }
+  if (isXmlTypedField(tableName, fieldName)) {
+    return 'xml';
+  }
+  if (lower === 'payload') {
+    return looksLikeMarkup(decodedContent) ? 'xml' : undefined;
+  }
+  if (lower.startsWith('sys_')) {
     return undefined;
   }
   return looksLikeJsonBody(decodedContent) ? 'json' : undefined;
+}
+
+/** Body opens as markup. Used for payload XML, not as a well-formedness check. */
+function looksLikeMarkup(decodedContent: string): boolean {
+  return decodedContent.trim().startsWith('<');
 }
 
 /**

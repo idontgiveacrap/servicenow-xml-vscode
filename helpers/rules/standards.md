@@ -34,17 +34,19 @@ Apply only for ServiceNow Git exports, ServiceNow scripts, or ServiceNow platfor
 Use **servicenow-xml-registry** before searching the workspace:
 
 - `search_records` — export rows by substring or table. `aggregate: true` returns counts by table and action, not row bodies
+- `lookup_by_sys_id` — one workspace row by sys_id: table, display name, path, and start offset. `get_record` is the full field map
 - `lookup_by_name` — exact display name, `api_name`, or declaration name
 - `lookup_script_include` — Script Include / UI Script (bundled + workspace). `includeOutline` adds method name, params, and line. `method` adds a capped source excerpt
 - `get_record` — one parsed export row (`sys_id`, or `table` plus exact name). Newest `sysUpdatedOn` when that sys_id is duplicated. Embedded script, JSON, and XML are lengths unless `includeEmbedded` is true
 - `get_workspace_app` — scope, `jsLevel` (`ES5` or `ES12`), `supportsES12`, `restrictTableAccess`
 - `registry_diagnostics_context` — symbol counts plus the app snapshot. `projectFieldCount` is workspace columns. Platform columns stay in the packed dictionary
 - `list_diagnostics` — those counts, plus duplicate sys_ids and the deleted-reference count
-- `list_tables` / `get_table` / `list_columns` / `search_schema` — platform pack plus project `sys_dictionary` / `<database>` exports. Project columns win. Each field `source` is `platform` or `project`. `list_tables` lists project tables first; `source` is `project` or `platform`. `get_table` `extends` is the parent table; call `get_table` on that name for inherited columns. Do not open dictionary XML for a column list
+- `list_tables` / `get_table` / `list_columns` / `search_schema` — platform pack plus project `sys_dictionary` / `<database>` exports. Project columns win. Each field `source` is `platform` or `project`. `list_tables` lists project tables first; `source` is `project` or `platform`. `get_table` `extends` is the parent table; call `get_table` on that name for inherited columns. `list_columns` is the same call as `get_table`. Without `fields`, the column list is capped and `truncated` is set. Do not open dictionary XML for a column list
+- `get_scripting_section` — pass `query` or `name` for matches in one section. Pass `limit` alone for a capped slice. It does not return the whole section. `lookup_platform_api` is the Registry symbol; `lookup_scripting_name` is the scripting-reference doc for that name
 - `query_dependencies` — filtered edges: `sys_id_ref`, `calls`, or `extends`. Not a full graph dump
 - `references_to` / `references_from` — sys_id edges. `targetState` is `in_project`, `deleted`, or `not_in_project`
 - `list_reference_issues` — deleted-target references (same errors as the editor). `includeNotInProject: true` also lists ids absent from the export; those are not Problems-panel diagnostics
-- `lookup_scripting_name` — platform API docs on Registry symbols
+- `lookup_scripting_name` — scripting-reference doc for a platform API name. `lookup_platform_api` is the Registry symbol without that doc
 - `get_js_performance_meta` / `search_js_performance` / `lookup_js_performance` — bundled JavaScript performance evidence
 
 Open the matching XML under `update/`. Use **servicenow-xml-instance** for live data.

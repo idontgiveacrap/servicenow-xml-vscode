@@ -5,4 +5,8 @@ export interface FieldKindsPack {
   clientScriptPairs: string[];
   cssFieldNames: string[];
   jsonFieldNames: string[];
+  /** `table.element` pairs whose dictionary type is HTML. */
+  htmlPairs?: string[];
+  /** `table.element` pairs whose dictionary type is XML, including Jelly bodies. */
+  xmlPairs?: string[];
 }

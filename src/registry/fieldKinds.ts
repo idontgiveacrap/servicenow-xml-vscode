@@ -15,6 +15,8 @@ const cssFieldNames = new Set(
 const jsonFieldNames = new Set(
   PACK.jsonFieldNames.map((name) => name.toLowerCase())
 );
+const htmlPairs = new Set((PACK.htmlPairs ?? []).map((pair) => pair.toLowerCase()));
+const xmlPairs = new Set((PACK.xmlPairs ?? []).map((pair) => pair.toLowerCase()));
 
 /** Always-on script element names (CDATA expected) before table.field lookup. */
 export const BOOTSTRAP_SCRIPT_FIELD_NAMES = [
@@ -60,6 +62,34 @@ export function isCssFieldName(fieldName: string): boolean {
  */
 export function isJsonFieldName(fieldName: string): boolean {
   return jsonFieldNames.has(fieldName.toLowerCase());
+}
+
+/**
+ * True when dictionary marks this table.field as HTML.
+ * Element name alone is not enough: names like `details` are HTML on some tables only.
+ */
+export function isHtmlTypedField(
+  tableName: string | undefined,
+  fieldName: string
+): boolean {
+  if (!tableName) {
+    return false;
+  }
+  return htmlPairs.has(`${tableName.toLowerCase()}.${fieldName.toLowerCase()}`);
+}
+
+/**
+ * True when dictionary marks this table.field as XML.
+ * Jelly bodies (`sys_ui_page.html`, `sys_ui_macro.xml`) are XML in the pack.
+ */
+export function isXmlTypedField(
+  tableName: string | undefined,
+  fieldName: string
+): boolean {
+  if (!tableName) {
+    return false;
+  }
+  return xmlPairs.has(`${tableName.toLowerCase()}.${fieldName.toLowerCase()}`);
 }
 
 /**

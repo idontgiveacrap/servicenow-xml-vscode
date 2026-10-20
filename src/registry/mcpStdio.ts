@@ -34,13 +34,16 @@ export function runMcpStdio(handlers: {
     description: string;
     inputSchema: Record<string, unknown>;
   }>;
+  /** Shown to the client on initialize so agents can pick a tool without reading every description. */
+  instructions?: string;
   callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
 }): void {
   const methodHandlers: Record<string, Handler> = {
     initialize: () => ({
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: handlers.name, version: handlers.version }
+      serverInfo: { name: handlers.name, version: handlers.version },
+      ...(handlers.instructions ? { instructions: handlers.instructions } : {})
     }),
     'notifications/initialized': () => null,
     'tools/list': () => ({ tools: handlers.tools }),

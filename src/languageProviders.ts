@@ -20,6 +20,12 @@ import {
   OutlineSymbolKind
 } from './documentSymbols';
 import { getWorkspaceRegistryService } from './registry/vscodeAdapter';
+import {
+  forwardCompletion,
+  forwardDefinition,
+  forwardHover,
+  forwardsToLanguageService
+} from './embedded/forwardLanguage';
 
 const XML_SELECTOR: vscode.DocumentSelector = { language: 'xml' };
 
@@ -35,11 +41,17 @@ export function registerRegistryLanguageProviders(
     vscode.languages.registerCompletionItemProvider(
       XML_SELECTOR,
       {
-        provideCompletionItems(document, position) {
+        async provideCompletionItems(document, position) {
           const text = document.getText();
           const offset = document.offsetAt(position);
           const hit = scriptAt(text, offset, { hostPath: document.uri.fsPath });
-          if (!hit || (hit.role !== 'scriptField' && hit.role !== 'jsonString')) {
+          if (!hit) {
+            return undefined;
+          }
+          if (forwardsToLanguageService(hit)) {
+            return forwardCompletion(document, position, hit);
+          }
+          if (hit.role !== 'scriptField' && hit.role !== 'jsonString') {
             return undefined;
           }
           const candidates = scriptCompletions({
@@ -64,7 +76,13 @@ export function registerRegistryLanguageProviders(
     ),
 
     vscode.languages.registerHoverProvider(XML_SELECTOR, {
-      provideHover(document, position) {
+      async provideHover(document, position) {
+        const hit = scriptAt(document.getText(), document.offsetAt(position), {
+          hostPath: document.uri.fsPath
+        });
+        if (hit && forwardsToLanguageService(hit)) {
+          return forwardHover(document, position, hit);
+        }
         const wordRange = document.getWordRangeAtPosition(
           position,
           /[A-Za-z_$][\w$]*/
@@ -93,7 +111,13 @@ export function registerRegistryLanguageProviders(
     }),
 
     vscode.languages.registerDefinitionProvider(XML_SELECTOR, {
-      provideDefinition(document, position) {
+      async provideDefinition(document, position) {
+        const hit = scriptAt(document.getText(), document.offsetAt(position), {
+          hostPath: document.uri.fsPath
+        });
+        if (hit && forwardsToLanguageService(hit)) {
+          return forwardDefinition(document, position, hit);
+        }
         const wordRange = document.getWordRangeAtPosition(
           position,
           /[A-Za-z_$][\w$]*/

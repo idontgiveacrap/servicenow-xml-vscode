@@ -31,7 +31,7 @@ export interface SnDiagnostic {
   code?: string;
 }
 
-export type EmbeddedLanguage = 'javascript' | 'json' | 'css';
+export type EmbeddedLanguage = 'javascript' | 'json' | 'css' | 'html' | 'xml';
 
 /** One table-named child under record_update / unload (or equivalent root). */
 export interface RecordRow {

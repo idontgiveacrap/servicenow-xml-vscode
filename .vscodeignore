@@ -1,6 +1,7 @@
 .vscode/**
 .vscode-test/**
 src/**
+# Smoke/pack scripts (also matches helpers/**/scripts/; intentional).
 scripts/**
 node_modules/**
 .gitignore
@@ -11,5 +12,17 @@ esbuild.js
 fixtures/**
 dist/**
 !dist/extension.js
+!dist/registryMcp.js
+!dist/instanceMcp.js
+!dist/data/**
 *.vsix
 .git/**
+.claude/**
+package-lock.json
+.servicenow-xml/**
+**/__pycache__/**
+**/*.pyc
+# Helper install only syncs .cursor-plugin + rules; drop unused plugin trees.
+helpers/**/data/**
+helpers/**/hooks/**
+helpers/**/scripts/**

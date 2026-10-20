@@ -49,7 +49,7 @@ try {
     outfile: bundlePath,
     logLevel: 'silent'
   });
-  const { buildRecordUrls, joinBaseUrl, isAbsoluteUrl, URL_TYPES, URL_LABELS } =
+  const { buildRecordUrls, joinUrl, isAbsoluteUrl, URL_TYPES, URL_LABELS } =
     require(bundlePath);
 
   // --- buildRecordUrls ---
@@ -94,27 +94,27 @@ try {
   assert.equal(URL_LABELS.jsonApi, 'JSON', 'JSON label');
   assert.equal(URL_LABELS.xmlApi, 'XML', 'XML label');
 
-  // --- joinBaseUrl ---
+  // --- joinUrl ---
 
   assert.equal(
-    joinBaseUrl('https://my-instance.service-now.com', '/nav_to.do?uri=x.do?sys_id=y'),
+    joinUrl('https://my-instance.service-now.com', '/nav_to.do?uri=x.do?sys_id=y'),
     'https://my-instance.service-now.com/nav_to.do?uri=x.do?sys_id=y',
-    'joinBaseUrl must insert a single slash between host and relative path'
+    'joinUrl must insert a single slash between host and relative path'
   );
   assert.equal(
-    joinBaseUrl('https://my-instance.service-now.com/', '/nav_to.do?uri=x.do?sys_id=y'),
+    joinUrl('https://my-instance.service-now.com/', '/nav_to.do?uri=x.do?sys_id=y'),
     'https://my-instance.service-now.com/nav_to.do?uri=x.do?sys_id=y',
-    'joinBaseUrl must strip trailing slash from base'
+    'joinUrl must strip trailing slash from base'
   );
   assert.equal(
-    joinBaseUrl('https://my-instance.service-now.com//', '/nav_to.do'),
+    joinUrl('https://my-instance.service-now.com//', '/nav_to.do'),
     'https://my-instance.service-now.com/nav_to.do',
-    'joinBaseUrl must strip multiple trailing slashes'
+    'joinUrl must strip multiple trailing slashes'
   );
   assert.equal(
-    joinBaseUrl('', '/nav_to.do?uri=x'),
+    joinUrl('', '/nav_to.do?uri=x'),
     '/nav_to.do?uri=x',
-    'joinBaseUrl with empty base returns the path unchanged'
+    'joinUrl with empty base returns the path unchanged'
   );
 
   // --- isAbsoluteUrl ---

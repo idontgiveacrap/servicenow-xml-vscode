@@ -44,6 +44,9 @@ import {
 } from './scriptingKnowledge';
 import type { ScriptIncludeWhitelist, ScopeList } from '../scriptDeclarations';
 
+/** Unfiltered get_table / list_columns responses stop here and set truncated. */
+const FIELD_LIST_CAP = 80;
+
 function dataDir(): string {
   if (process.env.REGISTRY_DATA_DIR) {
     return process.env.REGISTRY_DATA_DIR;
@@ -181,12 +184,21 @@ function dispatch(
         registry.listProjectFields(table)
       );
       const parent = registry.projectTableExtends(table);
+      const requested = Array.isArray(args.fields)
+        ? new Set(args.fields.map((name) => String(name).toLowerCase()))
+        : undefined;
+      const selected = requested
+        ? fields.filter((field) => requested.has(field.name.toLowerCase()))
+        : fields;
+      const truncated = !requested && selected.length > FIELD_LIST_CAP;
       return {
         table,
         label: registry.projectTableLabel(table) ?? info?.label,
         known: !!(info || fields.length || fieldIndex.hasTable(table)),
         ...(parent ? { extends: parent } : {}),
-        fields
+        fields: truncated ? selected.slice(0, FIELD_LIST_CAP) : selected,
+        total: selected.length,
+        ...(truncated ? { truncated: true } : {})
       };
     }
     case 'search_schema': {
@@ -397,6 +409,20 @@ function dispatch(
         })
       };
     }
+    case 'lookup_by_sys_id': {
+      const sysId = String(args.sys_id ?? '');
+      const record = registry.lookupBySysId(sysId);
+      if (!record) {
+        throw new Error('record not found');
+      }
+      return {
+        table: record.table,
+        displayName: record.displayName,
+        sysId: record.sysId,
+        relativePath: record.relativePath,
+        startOffset: record.startOffset
+      };
+    }
     case 'get_record': {
       const record = pickCanonicalRecord(registry.listRecords(), {
         sysId: args.sys_id ? String(args.sys_id) : undefined,
@@ -440,11 +466,31 @@ function dispatch(
       return scripting.getMeta();
     case 'list_scripting_sections':
       return { sections: scripting.listSections() };
-    case 'get_scripting_section':
-      return {
-        section: args.section,
-        data: scripting.getSection(String(args.section ?? ''))
-      };
+    case 'get_scripting_section': {
+      const section = String(args.section ?? '');
+      const query = String(args.query ?? args.name ?? '').trim();
+      if (query) {
+        return {
+          section,
+          matches: scripting.search(query, section, limit)
+        };
+      }
+      if (args.limit !== undefined) {
+        const data = scripting.getSection(section);
+        if (!Array.isArray(data)) {
+          return { section, data, truncated: false };
+        }
+        return {
+          section,
+          data: data.slice(0, limit),
+          total: data.length,
+          truncated: data.length > limit
+        };
+      }
+      throw new Error(
+        'query or name is required; pass limit to take a capped slice of the section'
+      );
+    }
     case 'lookup_scripting_name': {
       const meta = scripting.getMeta() as { available?: boolean };
       if (!meta.available) {
@@ -505,20 +551,35 @@ const tools = [
   {
     name: 'get_table',
     description:
-      'Get one table and its fields (name, label, type, reference, source). Project columns override the platform pack. extends is the parent table name when the export has one; call get_table on that name for inherited columns.',
+      'Get one table and its fields (name, label, type, reference, source). Project columns override the platform pack. extends is the parent table name when the export has one; call get_table on that name for inherited columns. Without fields, the list is capped and truncated is set. list_columns is the same call.',
     inputSchema: {
       type: 'object',
-      properties: { table: { type: 'string' } },
+      properties: {
+        table: { type: 'string' },
+        fields: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'Column names to return. Omit to take a capped list of every column.'
+        }
+      },
       required: ['table']
     }
   },
   {
     name: 'list_columns',
     description:
-      'List fields for one table (name, label, type, reference, source) from the combined dictionary.',
+      'Same call as get_table: fields for one table from the combined dictionary. Pass fields to avoid the capped list.',
     inputSchema: {
       type: 'object',
-      properties: { table: { type: 'string' } },
+      properties: {
+        table: { type: 'string' },
+        fields: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Column names to return. Omit to take a capped list.'
+        }
+      },
       required: ['table']
     }
   },
@@ -534,7 +595,8 @@ const tools = [
   },
   {
     name: 'lookup_platform_api',
-    description: 'Lookup a platform global / API name from the Registry.',
+    description:
+      'Lookup a platform global / API name from Registry symbols. For the scripting-reference doc payload on that name, use lookup_scripting_name.',
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string' } },
@@ -550,8 +612,14 @@ const tools = [
       properties: {
         query: { type: 'string' },
         table: { type: 'string' },
-        limit: { type: 'number' },
-        aggregate: { type: 'boolean' }
+        limit: {
+          type: 'number',
+          description: 'Max rows to return. Default 50, cap 100.'
+        },
+        aggregate: {
+          type: 'boolean',
+          description: 'When true, return counts by table and action instead of row bodies.'
+        }
       }
     }
   },
@@ -607,8 +675,15 @@ const tools = [
     inputSchema: {
       type: 'object',
       properties: {
-        limit: { type: 'number' },
-        includeNotInProject: { type: 'boolean' }
+        limit: {
+          type: 'number',
+          description: 'Max issues to return. Default 50, cap 100.'
+        },
+        includeNotInProject: {
+          type: 'boolean',
+          description:
+            'Also list ids absent from the export. Those are not editor diagnostics.'
+        }
       }
     }
   },
@@ -635,17 +710,33 @@ const tools = [
   },
   {
     name: 'get_scripting_section',
-    description: 'Get one scripting reference section by key.',
+    description:
+      'Entries in one scripting reference section. Pass query or name for matches. Pass limit alone for a capped slice. The whole section is not returned.',
     inputSchema: {
       type: 'object',
-      properties: { section: { type: 'string' } },
+      properties: {
+        section: { type: 'string' },
+        query: {
+          type: 'string',
+          description: 'Substring to match inside the section.'
+        },
+        name: {
+          type: 'string',
+          description: 'Alias of query.'
+        },
+        limit: {
+          type: 'number',
+          description:
+            'Max matches, or the slice size when query is omitted. Default 50, cap 100.'
+        }
+      },
       required: ['section']
     }
   },
   {
     name: 'lookup_scripting_name',
     description:
-      'Lookup a name on Registry platform symbols that carry scripting-reference doc payloads.',
+      'Scripting-reference doc payload for a platform API name. For the Registry symbol without that doc, use lookup_platform_api.',
     inputSchema: {
       type: 'object',
       properties: { name: { type: 'string' } },
@@ -667,7 +758,8 @@ const tools = [
   },
   {
     name: 'list_runtime_items',
-    description: 'List runtime_items from the scripting reference pack.',
+    description:
+      'The runtime_items section of the scripting reference pack. Same data as get_scripting_section with section runtime_items; prefer get_scripting_section with a query when you need one entry.',
     inputSchema: { type: 'object', properties: {} }
   },
   {
@@ -706,6 +798,18 @@ const tools = [
     }
   },
   {
+    name: 'lookup_by_sys_id',
+    description:
+      'Slim workspace row for one sys_id: table, displayName, sysId, relativePath, startOffset. Use get_record when you need the field map.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        sys_id: { type: 'string', description: '32-character record sys_id.' }
+      },
+      required: ['sys_id']
+    }
+  },
+  {
     name: 'get_record',
     description:
       'Parsed fields for one workspace export row (sys_id, or table plus exact name). Newest sysUpdatedOn wins when the sys_id is duplicated. Embedded script, JSON, XML, and CSS are lengths unless includeEmbedded is true, then a 2000-character excerpt. This is the export, not the live instance.',
@@ -715,7 +819,11 @@ const tools = [
         sys_id: { type: 'string' },
         table: { type: 'string' },
         name: { type: 'string' },
-        includeEmbedded: { type: 'boolean' }
+        includeEmbedded: {
+          type: 'boolean',
+          description:
+            'When true, embedded script, JSON, XML, and CSS are a 2000-character excerpt. Otherwise those fields are lengths.'
+        }
       }
     }
   },
@@ -738,6 +846,8 @@ const tools = [
 runMcpStdio({
   name: 'servicenow-xml-registry',
   version: '1.0.0',
+  instructions:
+    'Source order: repo files, then this registry, then servicenow-xml-docs, then servicenow-xml-instance. Start with search_records or lookup_by_sys_id for a workspace row, get_record for its fields, get_table for columns, and list_diagnostics for duplicate sys_ids and deleted references.',
   tools,
   callTool: async (name, args) => {
     syncWorkspaceCache(registry, workspace);

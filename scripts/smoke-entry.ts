@@ -161,6 +161,89 @@ for (const [label, xml, expected] of supportSamples) {
 }
 
 {
+  const jelly = parseSnXml(
+    '<record_update><sys_ui_page action="INSERT_OR_UPDATE"><html><![CDATA[<j:jelly></j:jelly>]]></html></sys_ui_page></record_update>'
+  );
+  const jellyLang = jelly.rows[0]?.embeddedFields.find((f) => f.fieldName === 'html')?.language;
+  if (jellyLang !== 'xml') {
+    console.log(`FAIL jelly html field language: ${jellyLang}`);
+    failed++;
+  }
+  const html = parseSnXml(
+    '<record_update><announcement action="INSERT_OR_UPDATE"><details><![CDATA[<p>Hi</p>]]></details></announcement></record_update>'
+  );
+  const htmlLang = html.rows[0]?.embeddedFields.find((f) => f.fieldName === 'details')?.language;
+  if (htmlLang !== 'html') {
+    console.log(`FAIL announcement.details language: ${htmlLang}`);
+    failed++;
+  }
+  const payload = parseSnXml(
+    '<record_update><sys_update_xml action="INSERT_OR_UPDATE"><payload><![CDATA[<record_update></record_update>]]></payload></sys_update_xml></record_update>'
+  );
+  const payloadLang = payload.rows[0]?.embeddedFields.find((f) => f.fieldName === 'payload')?.language;
+  if (payloadLang !== 'xml') {
+    console.log(`FAIL payload language: ${payloadLang}`);
+    failed++;
+  }
+}
+
+{
+  const scope = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+  const dictionary = classifyAndValidate(
+    parseSnXml(
+      `<record_update><sys_dictionary action="INSERT_OR_UPDATE"><name>incident</name><element>priority</element><sys_scope>${scope}</sys_scope><sys_update_name>sys_dictionary_incident_priority</sys_update_name></sys_dictionary></record_update>`
+    ),
+    { requireRecordSysIds: true }
+  );
+  const dictionaryCodes = dictionary.diagnostics.map((d) => d.code);
+  if (
+    dictionaryCodes.includes('scoped-missing-sys-id') ||
+    dictionaryCodes.includes('scoped-sys-update-name-mismatch')
+  ) {
+    console.log(
+      `FAIL sys_dictionary without sys_id: [${dictionaryCodes.join(', ')}]`
+    );
+    failed++;
+  }
+  const badHex = classifyAndValidate(
+    parseSnXml(
+      `<record_update><sys_documentation action="INSERT_OR_UPDATE"><sys_id>not-hex</sys_id><sys_scope>${scope}</sys_scope><sys_update_name>sys_documentation_incident_short_description_en</sys_update_name></sys_documentation></record_update>`
+    ),
+    { requireRecordSysIds: true }
+  );
+  if (!badHex.diagnostics.some((d) => d.code === 'scoped-bad-sys-id')) {
+    console.log(
+      `FAIL bad sys_id on sys_documentation: [${badHex.diagnostics.map((d) => d.code).join(', ')}]`
+    );
+    failed++;
+  }
+  const script = classifyAndValidate(
+    parseSnXml(
+      `<record_update><sys_script action="INSERT_OR_UPDATE"><name>x</name><sys_scope>${scope}</sys_scope><sys_update_name>sys_script_missing</sys_update_name></sys_script></record_update>`
+    ),
+    { requireRecordSysIds: true }
+  );
+  if (!script.diagnostics.some((d) => d.code === 'scoped-missing-sys-id')) {
+    console.log(
+      `FAIL sys_script missing sys_id: [${script.diagnostics.map((d) => d.code).join(', ')}]`
+    );
+    failed++;
+  }
+  const choiceSet = classifyAndValidate(
+    parseSnXml(
+      `<unload><sys_choice_set action="INSERT_OR_UPDATE"><name>priority</name></sys_choice_set></unload>`
+    ),
+    { requireRecordSysIds: true }
+  );
+  if (choiceSet.diagnostics.some((d) => d.code === 'data-missing-sys-id')) {
+    console.log(
+      `FAIL sys_choice_set missing sys_id: [${choiceSet.diagnostics.map((d) => d.code).join(', ')}]`
+    );
+    failed++;
+  }
+}
+
+{
   const sysId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
   const result = classifyAndValidate(
     parseSnXml(

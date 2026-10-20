@@ -10,10 +10,10 @@ import * as vscode from 'vscode';
 import { ensureGitignoreEntry } from './jsonStringEditor/drafts';
 import { looksLikeSnExportDocument } from './snDocumentShape';
 import { parseSnXml } from './parseSnXml';
+import type { EmbeddedLanguage } from './kinds/types';
 import {
   encodeHit,
-  listJsonFields,
-  listScriptFields,
+  listEmbeddedFields,
   restoreIndent,
   scriptAt,
   stripIndent,
@@ -72,9 +72,9 @@ async function formatSnXmlRange(
   const text = document.getText();
   const offset = document.offsetAt(range.start);
   const hit = scriptAt(text, offset);
-  if (hit?.role === 'scriptField') {
+  if (hit && hit.role !== 'jsonString') {
     const original = text.slice(hit.hostStart, hit.hostEnd);
-    const formatted = await formatOneHit(hit, 'javascript', options, token);
+    const formatted = await formatOneHit(hit, hit.language, options, token);
     if (formatted === undefined || formatted === original) {
       return [];
     }
@@ -146,24 +146,24 @@ async function formatSnXmlDocument(
     }
   }
 
-  if (!formatJs && !formatJson) {
-    if (text === original) {
-      return [];
-    }
-    return [vscode.TextEdit.replace(fullRange(document), text)];
-  }
-
   const parsed = parseSnXml(text, document.uri.fsPath);
-  const targets: Array<{ hit: ScriptHit; language: 'javascript' | 'json' }> = [];
-  if (formatJs) {
-    for (const hit of listScriptFields(parsed)) {
-      targets.push({ hit, language: 'javascript' });
+  const targets: Array<{ hit: ScriptHit; language: EmbeddedLanguage }> = [];
+  for (const hit of listEmbeddedFields(parsed)) {
+    if (hit.language === 'javascript' && !formatJs) {
+      continue;
     }
-  }
-  if (formatJson) {
-    for (const hit of listJsonFields(parsed)) {
-      targets.push({ hit, language: 'json' });
+    if (hit.language === 'json' && !formatJson) {
+      continue;
     }
+    if (hit.role === 'jsonString') {
+      continue;
+    }
+    // The payload body is the nested document. Formatting it as one XML field
+    // would replace the inner script and JSON edits applied in the same pass.
+    if (hit.language === 'xml' && hit.fieldName.toLowerCase() === 'payload') {
+      continue;
+    }
+    targets.push({ hit, language: hit.language });
   }
 
   const offsetEdits: Array<{ start: number; end: number; text: string }> = [];
@@ -203,7 +203,7 @@ function isSnXmlFormatTarget(
 
 async function formatOneHit(
   hit: ScriptHit,
-  language: 'javascript' | 'json',
+  language: EmbeddedLanguage,
   options: vscode.FormattingOptions,
   token: vscode.CancellationToken
 ): Promise<string | undefined> {
@@ -249,7 +249,7 @@ function isParseableJson(code: string): boolean {
  */
 async function formatThroughProvider(
   code: string,
-  language: 'javascript' | 'json',
+  language: EmbeddedLanguage,
   options: vscode.FormattingOptions,
   token: vscode.CancellationToken
 ): Promise<string | undefined> {
@@ -330,7 +330,7 @@ function resolveFormatTempDir(): string | undefined {
   return undefined;
 }
 
-const FORMAT_TEMP_FILE_RE = /^format-\d+-[a-z0-9]+\.(?:js|json)$/i;
+const FORMAT_TEMP_FILE_RE = /^format-\d+-[a-z0-9]+\.(?:js|json|css|html|xml)$/i;
 const FORMAT_TEMP_STALE_MS = 60 * 60 * 1000;
 
 function removeStaleFormatTempFiles(dir: string): void {
@@ -356,9 +356,9 @@ function removeStaleFormatTempFiles(dir: string): void {
  */
 function createFormatTempFile(
   code: string,
-  language: 'javascript' | 'json'
+  language: EmbeddedLanguage
 ): FormatTempFile | undefined {
-  const ext = language === 'javascript' ? '.js' : '.json';
+  const ext = extensionForLanguage(language);
   const baseDir =
     resolveFormatTempDir() ??
     path.join(os.tmpdir(), 'servicenow-xml-format-tmp');
@@ -372,6 +372,21 @@ function createFormatTempFile(
     return { uri: vscode.Uri.file(tmpPath), path: tmpPath };
   } catch {
     return undefined;
+  }
+}
+
+function extensionForLanguage(language: EmbeddedLanguage): string {
+  switch (language) {
+    case 'javascript':
+      return '.js';
+    case 'json':
+      return '.json';
+    case 'css':
+      return '.css';
+    case 'html':
+      return '.html';
+    case 'xml':
+      return '.xml';
   }
 }
 

@@ -2,7 +2,7 @@
   "name": "servicenow-xml",
   "displayName": "ServiceNow XML",
   "description": "Colorize and lint embedded ServiceNow scripts in exported XML; kind-aware XML structure validation; optional Records navigator.",
-  "version": "3.7.0",
+  "version": "3.8.1",
   "publisher": "local",
   "license": "GPL-3.0-only",
   "engines": {
@@ -81,15 +81,15 @@
       },
       {
         "command": "servicenowXml.editJsonStringCode",
-        "title": "ServiceNow XML: Edit Embedded Script or JSON…"
+        "title": "ServiceNow XML: Edit Embedded Content…"
       },
       {
         "command": "servicenowXml.loadJsonStringDraft",
-        "title": "ServiceNow XML: Load Draft for Embedded Script…"
+        "title": "ServiceNow XML: Load Draft for Embedded Content…"
       },
       {
         "command": "servicenowXml.manageJsonStringDrafts",
-        "title": "ServiceNow XML: Manage Embedded Script Drafts…"
+        "title": "ServiceNow XML: Manage Embedded Content Drafts…"
       },
       {
         "command": "servicenowXml.pruneRedundantDeletes",
@@ -98,6 +98,10 @@
       {
         "command": "servicenowXml.codelens.openUrl",
         "title": "ServiceNow XML: Open/Copy Record URL"
+      },
+      {
+        "command": "servicenowXml.codelens.openRecord",
+        "title": "ServiceNow XML: Open Referenced Record"
       }
     ],
     "viewsContainers": {
@@ -357,7 +361,8 @@
           "meta.embedded.block.javascript": "javascript",
           "source.js": "javascript",
           "meta.embedded.block.json": "json",
-          "meta.embedded.block.css": "css"
+          "meta.embedded.block.css": "css",
+          "meta.embedded.block.html": "html"
         }
       }
     ]

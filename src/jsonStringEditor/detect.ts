@@ -29,6 +29,11 @@ export interface JsonStringHit {
    * Drives the temp file's language and how write-back verifies the splice.
    */
   role: ScriptHitRole;
+  /**
+   * Language of the temp document. JSON-string scripts stay `javascript`.
+   * Whole-field hits use the field language (json, css, html, xml, javascript).
+   */
+  language?: 'javascript' | 'json' | 'css' | 'html' | 'xml';
   fieldName: string;
   keyPath: string;
   draftKey: string;
@@ -162,6 +167,7 @@ export function detectJsonStringAtOffset(
     hostPath,
     stableHostId: id,
     role: 'jsonString',
+    language: 'javascript',
     fieldName: field.fieldName,
     keyPath: found.keyPath,
     draftKey,
@@ -446,6 +452,7 @@ function findStringByKeyPath(
     hostPath,
     stableHostId: id,
     role: 'jsonString',
+    language: 'javascript',
     fieldName: field.fieldName,
     keyPath: foundValue.keyPath,
     draftKey: makeDraftKey(id, field.fieldName, foundValue.keyPath),

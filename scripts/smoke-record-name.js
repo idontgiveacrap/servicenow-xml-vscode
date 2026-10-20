@@ -169,6 +169,21 @@ try {
     dictionaryRecords[0]
   );
 
+  const dictionaryWithoutId = extractRecordIdentity(
+    '<record_update><sys_dictionary action="INSERT_OR_UPDATE"><name>incident</name></sys_dictionary></record_update>',
+    'sys_dictionary_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
+  );
+  assert.equal(
+    dictionaryWithoutId?.sysId,
+    undefined,
+    'filename sys_id is not the key for sys_dictionary'
+  );
+  const scriptFromFilename = extractRecordIdentity(
+    '<record_update><sys_script action="INSERT_OR_UPDATE"><name>x</name></sys_script></record_update>',
+    'sys_script_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.xml'
+  );
+  assert.equal(scriptFromFilename?.sysId, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
+
   const rowlessRootTable = extractRecordIdentity(
     '<record_update table="sys_choice"/>',
     'unconventional_name.xml'
